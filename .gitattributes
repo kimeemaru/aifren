@@ -1,0 +1,7 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Unity serializes blank YAML list entries as "- " (with a required trailing
+# space). Do not let generic whitespace checks rewrite those generated files.
+unity/AIFrenUnityPoc/ProjectSettings/*.asset whitespace=-trailing-space
+unity/AIFrenUnityPoc/Assets/**/*.meta whitespace=-trailing-space

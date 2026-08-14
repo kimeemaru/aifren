@@ -1,0 +1,180 @@
+# ============================================================
+# Python
+# ============================================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Virtual environments
+.venv/
+.venv-kokoro/
+.venv-aifren/
+venv/
+env/
+ENV/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+
+
+# ============================================================
+# Secrets / Configuration
+# ============================================================
+
+.env
+.env.*
+*.secret
+secrets.json
+credentials.json
+secrets/
+# Local API credentials
+config_secret.py
+config_local.py
+config_private.py
+local_settings.py
+.aifren_local_settings.json
+*.local
+characters/default/avatar.png
+
+# ============================================================
+# Local AI Models
+# ============================================================
+
+models/
+.cache/
+checkpoints/
+weights/
+
+
+# ============================================================
+# Conversation / Personal Data
+# ============================================================
+
+conversation.json
+conversation_summary.json
+memories.json
+
+
+# ============================================================
+# Generated Audio
+# ============================================================
+
+*.wav
+*.mp3
+*.ogg
+*.flac
+*.m4a
+*.aac
+*.webm
+*.vrm
+
+
+# ============================================================
+# Logs
+# ============================================================
+
+*.log
+logs/
+
+
+# ============================================================
+# IDE / Editor
+# ============================================================
+
+.vscode/
+.idea/
+*.code-workspace
+.vs/
+
+
+# ============================================================
+# Operating System
+# ============================================================
+
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+
+# ============================================================
+# Temporary Files
+# ============================================================
+
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+temp/
+tmp/
+
+
+# ============================================================
+# Test / Development Output
+# ============================================================
+
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+
+# ============================================================
+# Unity generated files
+# ============================================================
+
+[Ll]ibrary/
+[Tt]emp/
+[Ll]ogs/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Uu]ser[Ss]ettings/
+MemoryCaptures/
+Recordings/
+*.csproj
+*.sln
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+
+# Local character assets remain ignored except for the cleared default
+# VRoidPreset_A asset required by a public clone to load the default avatar.
+unity/AIFrenUnityPoc/Assets/Resources/LocalCharacter/
+!unity/AIFrenUnityPoc/Assets/Resources/LocalCharacter/
+!unity/AIFrenUnityPoc/Assets/Resources/LocalCharacter/model.vrm
+!unity/AIFrenUnityPoc/Assets/Resources/LocalCharacter/model.vrm.meta
+
+# Optional user-supplied companion backgrounds. The runtime configuration
+# refers to Resources/LocalBackground/background when a local Sprite exists.
+unity/AIFrenUnityPoc/Assets/Resources/LocalBackground/
+unity/AIFrenUnityPoc/Assets/Resources/LocalBackground.meta
+
+# Reviewed, redistributable presentation assets. User-supplied local media
+# remains ignored by the broader audio/avatar rules above.
+!unity/AIFrenUnityPoc/Assets/Resources/Presentation/
+!unity/AIFrenUnityPoc/Assets/Resources/Presentation/**
+
+
+# ============================================================
+# Local Runtime Files
+# ============================================================
+
+*.db
+*.sqlite
+*.sqlite3
+*.pid
+*.lock
+memory_v2_shadow/

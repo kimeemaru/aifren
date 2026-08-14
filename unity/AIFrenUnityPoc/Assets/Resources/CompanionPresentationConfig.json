@@ -1,0 +1,6 @@
+{
+  "backgroundResourcePath": "LocalBackground/background",
+  "defaultRevealWordsPerSecond": 7.0,
+  "backgroundTopColor": { "r": 0.12, "g": 0.16, "b": 0.25, "a": 1.0 },
+  "backgroundBottomColor": { "r": 0.32, "g": 0.20, "b": 0.36, "a": 1.0 }
+}

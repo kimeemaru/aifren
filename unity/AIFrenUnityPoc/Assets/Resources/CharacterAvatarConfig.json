@@ -1,0 +1,37 @@
+{
+  "avatarResourcePath": "LocalCharacter/model",
+  "position": {
+    "x": 0.0,
+    "y": 0.0,
+    "z": 0.0
+  },
+  "rotationEuler": {
+    "x": 0.0,
+    "y": 0.0,
+    "z": 0.0
+  },
+  "scale": 1.25,
+  "cameraOffset": {
+    "x": 0.0,
+    "y": 1.45,
+    "z": -3.2
+  },
+  "lookAtHeight": 1.4,
+  "fieldOfView": 25.0,
+  "fullBodyCameraPadding": 1.3,
+  "renderTextureSupersample": 1.15,
+  "landscapeUiCrop": { "x": 0.20, "y": 0.2375, "width": 0.6, "height": 0.525 },
+  "portraitUiCrop": { "x": 0.30, "y": 0.22, "width": 0.40, "height": 0.56 },
+  "landscapeAlignmentOffset": { "x": 0.0, "y": 0.1625 },
+  "portraitAlignmentOffset": { "x": 0.0, "y": 0.14 },
+  "landscapeDefaultZoom": 1.0,
+  "portraitDefaultZoom": 1.0,
+  "idleSwayDegrees": 1.2,
+  "idleSwayCyclesPerSecond": 0.08,
+  "relaxedArmDown": -0.55,
+  "facingYawOffset": 0.0,
+  "keyLightIntensity": 0.65,
+  "fillLightIntensity": 0.2,
+  "ambientIntensity": 0.5,
+  "reflectionIntensity": 0.35
+}

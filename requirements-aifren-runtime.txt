@@ -1,0 +1,19 @@
+# Reproducible local AIFren runtime: Python 3.10-3.12 only.
+# Includes the normal backend plus the selected Kokoro provider.
+# Chatterbox and MiniMax are deliberately excluded.
+# websockets 17 requires Python 3.11; 16.1 supports the Python 3.10 Kokoro
+# runtime and the existing local host API.
+websockets==16.1
+openai==2.53.0
+sentence-transformers==5.7.0
+faster-whisper==1.2.1
+pynput==1.8.2
+piper-tts==1.6.0
+sounddevice==0.5.5
+kokoro==0.9.4
+# PyTorch is installed separately by setup_aifren_runtime.bat from the
+# official CUDA wheel index.  Keeping it out of this file prevents this normal
+# dependency pass from replacing the CUDA-enabled runtime with a CPU wheel.
+# Kokoro's English G2P also needs en-core-web-sm 3.8.0.  The setup script
+# installs that official spaCy release only when it is missing, so repeat
+# setup runs do not needlessly re-download it.

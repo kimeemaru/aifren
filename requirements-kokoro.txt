@@ -1,0 +1,7 @@
+# Optional isolated Kokoro experiment environment (Python 3.10-3.12).
+# This intentionally does not include requirements.txt: Kokoro's supported
+# Python versions do not satisfy the optional WebSocket transport dependency.
+piper-tts==1.6.0
+sounddevice
+kokoro==0.9.4
+soundfile

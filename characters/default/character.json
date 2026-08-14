@@ -1,0 +1,14 @@
+{
+    "name": "Serval",
+    "description": "Serval from Kemono Friends",
+    "version": "1.0",
+    "voice": {
+        "provider": null,
+        "voice_id": null
+    },
+    "avatar": {
+        "enabled": true,
+        "model": null,
+        "path": "avatar.png"
+    }
+}
