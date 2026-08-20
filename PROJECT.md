@@ -37,6 +37,9 @@ long-term memory; an editable file-backed personality; local embedding
 retrieval; local-capable Whisper STT; Kokoro TTS (`af_heart`, speed `1.0`) with
 Piper fallback; global F8 push-to-talk in Tkinter; and window-focused,
 rebindable PTT in the Unity development client.
+Unity currently owns presentation-only idle/reactive animation and
+envelope-driven mouth motion; the Python backend remains authoritative for
+speech audio and all canonical data.
 
 The reproducible Python 3.10 AIFren runtime includes the selected Kokoro
 provider. The current character configuration is Serval, while character data
@@ -45,6 +48,33 @@ without discarding continuity.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for current boundaries and persistence,
 and [AGENTS.md](AGENTS.md) for concise working instructions.
+
+## Current development focus
+
+Friend-test packaging is deferred. The current priority is a visual
+presentation and avatar-viewer remake.
+
+- Target VRoid Hub-level avatar sharpness at comparable on-screen face and
+  upper-body size. The current UV/crop framing is transitional; do not keep
+  patching it as final architecture.
+- Preferred direction: stable, high-resolution full-avatar RenderTexture ->
+  presentation container -> X/Y translation plus transform scale, with
+  independent portrait and landscape presentation state.
+- The eventual viewer should accept arbitrary standards-compliant VRM assets
+  where possible, with graceful capability fallback when a model lacks an
+  optional feature.
+- **Background policy:** Light/Dark affects UI only; there is no automatic
+  day/night cycle. Background is independent from theme, portrait and
+  landscape remember separate selections, the intended portrait default is a
+  solid white/light neutral, and the intended landscape default is the bundled
+  bedroom. Later work may allow user PNG backgrounds, but not a user
+  crop/framing editor.
+- **Dialogue presentation:** improve typography/font, spacing, and reveal/fade
+  while preserving the backend-owned complete response and speech flow.
+
+Deferred unless separately approved: portable friend-test packaging, Memory V2
+authority, further UV-framing patches, multi-character work, deeper animation,
+and Linux packaging.
 
 ## Current non-goals
 
@@ -192,7 +222,7 @@ components and assets retain their own licenses. Any future portable
 friend-test package must include `LICENSE.md` and the applicable separate
 third-party notices.
 
-### Future portable friend-test package
+### Deferred portable friend-test package
 
 This is a packaging requirement, not a current deliverable. The intended
 Windows experience is: extract a `.7z`, double-click `AIFren.exe`, silently
@@ -213,26 +243,26 @@ icon and simple startup presentation; do not replace it merely for packaging.
 
 ## Completed architecture stages
 
-1. `43eb06c` — frontend-independent `AssistantService`.
-2. `5544170` — `Conversation.build_context()` as the authoritative context
+1. Frontend-independent `AssistantService`.
+2. `Conversation.build_context()` as the authoritative context
    builder.
-3. `f6257bb` — memory integrity: atomic persistence, validation, provenance,
+3. Memory integrity: atomic persistence, validation, provenance,
    and user-only memory evidence.
-4. `9b96e8c` — Tkinter text turns through the service.
-5. `297aa7a` — PTT/STT through the same service boundary.
-6. `27874a7` — loopback-only local WebSocket transport.
+4. Tkinter text turns through the service.
+5. PTT/STT through the same service boundary.
+6. Loopback-only local WebSocket transport.
 7. Unity proof-of-concept and VRM support — separate local presentation client.
-8. `443ad45` — Kokoro TTS provider with Piper fallback.
-9. `47064a0` — Unity companion presentation/runtime: reproducible real Kokoro
+8. Kokoro TTS provider with Piper fallback.
+9. Unity companion presentation/runtime: reproducible real Kokoro
    runtime, compact/scrolled dialogue, history/settings, VRM framing/lighting,
    and presentation validation.
 
 ## Near-term roadmap
 
-1. Improve memory quality, backup/recovery, and character-scoped persistence
-   as distinct data-focused stages.
-2. Develop the Unity companion viewport separately: UI responsiveness,
-   animation, and lip sync before richer environments.
+1. Remake the Unity avatar viewer and dialogue presentation around the current
+   visual focus before deeper animation or world work.
+2. Improve memory quality, backup/recovery, and character-scoped persistence
+   as separately approved data-focused stages.
 3. Evolve input toward configurable voice/PTT and support a deliberate
    multi-character lifecycle without disrupting the one-character daily-use
    experience.

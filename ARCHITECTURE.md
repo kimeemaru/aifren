@@ -16,8 +16,8 @@ Unity companion --local WebSocket--> backend_host.py --> AssistantService
 ```
 
 The backend remains authoritative for conversation, memory, personality, turn
-serialization, TTS/STT, and persistent data. Unity is a desktop proof of
-concept, not a replacement backend or game architecture.
+serialization, TTS/STT, and persistent data. Unity is the current desktop
+presentation client, not a replacement backend or game architecture.
 
 ## Ownership boundaries
 
@@ -131,14 +131,32 @@ resources cleanly.
 
 ## Current Unity boundary
 
-The Unity client provides a 2D companion presentation with optional local VRM,
-snapshot/history display, text submission, backend state, TTS volume/stop,
-word reveal, bounded scrollable dialogue, and secondary history. Local
-VRM/background assets are Git-ignored and presentation-only.
+**CURRENT:** The Unity client provides a 2D companion presentation with an
+optional VRM, snapshot/history display, text submission, backend state, TTS
+volume/stop, word reveal, bounded scrollable dialogue, secondary history, and
+window-focused rebindable PTT. It owns presentation-only idle/reaction behavior
+and a minimal mouth animation driven by backend TTS duration/envelope events.
+Python TTS still plays through computer speakers.
 
-Unity does not own persistence, LLM context, memory, STT/PTT, TTS audio data,
-lip sync, or character configuration. Python TTS plays through computer
-speakers.
+Unity does not own persistence, LLM context, Memory V1, STT capture or
+transcription, TTS audio data, or character configuration. The backend remains
+the source of truth for those systems.
+
+**TRANSITIONAL:** The complete padded VRM body is captured to a RenderTexture,
+then the Unity UI crops/pans/zooms it independently for portrait and landscape.
+That UV/crop framing model is not the final avatar-viewer architecture.
+
+**FUTURE:** Preserve the full-avatar capture while moving presentation toward a
+stable high-resolution RenderTexture inside a presentation container with X/Y
+translation and transform scale. Final phoneme/viseme lip sync and richer
+animation remain separate work.
+
+### Memory authority
+
+Memory V1 (`memories.json` through `memory/memory.py`) remains authoritative.
+Memory V2 schema, import, retrieval, and shadow/evaluation work are
+experimental and non-authoritative; they must not replace V1 persistence or
+become prompt input without a separately approved migration stage.
 
 ## Future architecture guidance
 
