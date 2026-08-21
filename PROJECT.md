@@ -8,6 +8,8 @@ meaningful relationship without treating every launch as a new chat. The long
 term destination is fully local operation, with replaceable local or
 network-backed implementations during development.
 
+For the detailed durable product and future-system decisions behind this summary, see [`docs/DESIGN_DECISIONS.md`](docs/DESIGN_DECISIONS.md).
+
 ## Durable principles
 
 1. Raw conversation is canonical. Summaries, embeddings, indexes, and memories
