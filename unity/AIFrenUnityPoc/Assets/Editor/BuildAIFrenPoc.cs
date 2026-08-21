@@ -5,21 +5,31 @@ using UnityEngine;
 
 namespace AIFren.UnityPoc.Editor
 {
-    /// <summary>Developer-only reproducible Windows build entry point.</summary>
+    /// <summary>Developer-only reproducible standalone build entry points.</summary>
     public static class BuildAIFrenPoc
     {
         public static void BuildWindows()
         {
+            BuildStandalone(BuildTarget.StandaloneWindows64, "Windows", "AIFrenPoc.exe");
+        }
+
+        public static void BuildLinux()
+        {
+            BuildStandalone(BuildTarget.StandaloneLinux64, "Linux", "AIFrenPoc.x86_64");
+        }
+
+        private static void BuildStandalone(BuildTarget target, string platformDirectory, string playerName)
+        {
             string projectRoot = Directory.GetParent(Application.dataPath).FullName;
             RefuseLocalPresentationAssetsByDefault();
-            string outputDirectory = Path.Combine(projectRoot, "Builds", "Windows");
+            string outputDirectory = Path.Combine(projectRoot, "Builds", platformDirectory);
             Directory.CreateDirectory(outputDirectory);
 
             BuildPlayerOptions options = new BuildPlayerOptions
             {
                 scenes = new[] { "Assets/Scenes/AIFrenPoc.unity" },
-                locationPathName = Path.Combine(outputDirectory, "AIFrenPoc.exe"),
-                target = BuildTarget.StandaloneWindows64,
+                locationPathName = Path.Combine(outputDirectory, playerName),
+                target = target,
                 // Private visual-test builds should resemble a shipped player.
                 // Unity's Development option adds its own bottom-right watermark.
                 options = BuildOptions.None

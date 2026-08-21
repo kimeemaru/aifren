@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
+import time
 import threading
 from typing import Any, Callable, Optional
 
@@ -81,6 +82,8 @@ class AssistantService:
         # remains auto-submit by default.
         self._ptt_auto_submit_transcriptions = True
         self._tts_reports_playback_start = False
+        self._tts_state_lock = threading.Lock()
+        self._active_tts_playback_id = 0
         self._configure_tts_playback_events()
 
     def _configure_tts_playback_events(self) -> None:
@@ -88,17 +91,42 @@ class AssistantService:
         if callable(callback_setter):
             callback_setter(self._on_tts_playback_started)
             self._tts_reports_playback_start = True
+        finished_callback_setter = getattr(self.tts, "set_playback_finished_callback", None)
+        if callable(finished_callback_setter):
+            finished_callback_setter(self._on_tts_playback_finished)
 
     def _on_tts_playback_started(
-        self, duration_seconds: float, lip_sync_envelope: list[float] | None = None
+        self,
+        duration_seconds: float,
+        lip_sync_envelope: list[float] | None = None,
+        word_start_seconds: list[float] | None = None,
+        playback_id: int | None = None,
     ) -> None:
         """Forward actual local playback start without coupling to a frontend."""
+        with self._tts_state_lock:
+            self._active_tts_playback_id = int(playback_id or 0)
         self._emit(
             "tts_state",
             state="playback_started",
             duration_seconds=float(duration_seconds),
             lip_sync_envelope=list(lip_sync_envelope or ()),
+            word_start_seconds=list(word_start_seconds or ()),
+            playback_id=int(playback_id or 0),
         )
+
+    def _on_tts_playback_finished(self, playback_id: int | None = None) -> None:
+        """Forward a natural local playback completion to presentation clients."""
+        completed_id = int(playback_id or 0)
+        with self._tts_state_lock:
+            if completed_id and self._active_tts_playback_id not in (0, completed_id):
+                print(
+                    "[AIFren TTS] ignored stale natural completion; "
+                    f"id={completed_id}; active={self._active_tts_playback_id}"
+                )
+                return
+            self._active_tts_playback_id = 0
+        print(f"[AIFren TTS] service natural completion; id={completed_id}; PTT ready")
+        self._emit("tts_state", state="stopped", playback_id=completed_id)
 
     @classmethod
     def create_default(cls) -> "AssistantService":
@@ -162,8 +190,48 @@ class AssistantService:
 
     @staticmethod
     def clean_text_for_tts(text: str) -> str:
-        """Keep roleplay emotes visible while omitting them from speech."""
-        return re.sub(r"\*[^*\r\n]*\*", "", text).strip()
+        """Omit action emotes while preserving inline asterisk emphasis for speech."""
+        action_verbs = {
+            "smile", "smiles", "smiled", "smiling", "nod", "nods", "nodded", "nodding",
+            "shake", "shakes", "shook", "shaking", "wave", "waves", "waved", "waving",
+            "shrug", "shrugs", "shrugged", "shrugging", "tilt", "tilts", "tilted", "tilting",
+            "cross", "crosses", "crossed", "crossing", "look", "looks", "looked", "looking",
+            "sigh", "sighs", "sighed", "sighing", "think", "thinks", "thought", "thinking",
+            "ponder", "ponders", "pondered", "pondering", "laugh", "laughs", "laughed", "laughing",
+            "grin", "grins", "grinned", "grinning", "frown", "frowns", "frowned", "frowning",
+            "turn", "turns", "turned", "turning", "blink", "blinks", "blinked", "blinking",
+            "pause", "pauses", "paused", "pausing", "blush", "blushes", "blushed", "blushing",
+            "chuckle", "chuckles", "chuckled", "chuckling", "giggle", "giggles", "giggled", "giggling",
+            "gasp", "gasps", "gasped", "gasping", "stare", "stares", "stared", "staring",
+            "glance", "glances", "glanced", "glancing", "raise", "raises", "raised", "raising",
+            "lower", "lowers", "lowered", "lowering", "rub", "rubs", "rubbed", "rubbing",
+            "bite", "bites", "bit", "biting", "lean", "leans", "leaned", "leaning",
+            "shift", "shifts", "shifted", "shifting", "tap", "taps", "tapped", "tapping",
+            "take", "takes", "took", "taking", "breathe", "breathes", "breathed", "breathing",
+            "walk", "walks", "walked", "walking",
+        }
+
+        def replace(match: re.Match[str]) -> str:
+            content = match.group(1).strip()
+            words = content.split()
+            first = words[0].strip('"\'.,!?;:').lower() if words else ""
+            second = words[1].strip('"\'.,!?;:').lower() if len(words) > 1 else ""
+            # Keep this fallback aligned with DialoguePresentationParser:
+            # a long single-marker roleplay beat is an action unless it used
+            # double-marker emphasis (normalized before this replacement).
+            if first in action_verbs or second in action_verbs or len(words) >= 4:
+                return ""
+            return content
+
+        # Double markers are always emphasis, never stage directions. Normalize
+        # them first so well-formed Markdown emphasis cannot reach the provider
+        # as literal asterisks. Single markers retain the shared action rule.
+        text = re.sub(
+            r"(?<![\\*])\*\*([^\s*][^*\r\n]*?)\*\*(?!\*)",
+            lambda match: match.group(1).strip(),
+            text,
+        )
+        return re.sub(r"(?<![\\*])\*([^\s*][^*\r\n]*?)\*(?!\*)", replace, text).strip()
 
     def _generate_reply(self, user_message: str) -> str:
         if self._response_generator is not None:
@@ -202,6 +270,8 @@ class AssistantService:
             return TurnResult(user_message=user_message, error=error)
 
         try:
+            turn_started_at = time.monotonic()
+            print("[AIFren Timing] user accepted; backend turn started t=0.000s")
             self._emit("turn_started", user_message=user_message)
             self._emit("status", state="thinking", message="Thinking...")
 
@@ -216,15 +286,18 @@ class AssistantService:
             finally:
                 if self._memory_v2_shadow is not None:
                     setattr(self.conversation, "_capture_v1_retrieval_diagnostics", False)
+            print(f"[AIFren Timing] full assistant response ready t={time.monotonic() - turn_started_at:.3f}s")
             self._emit("assistant_response", content=reply)
 
             spoken_text = self.clean_text_for_tts(reply)
             if speak and spoken_text:
                 self._emit("status", state="speaking", message="Speaking...")
                 self._emit("tts_state", state="starting")
+                print(f"[AIFren Timing] TTS synthesis requested t={time.monotonic() - turn_started_at:.3f}s")
 
                 try:
                     started = self.tts.speak(spoken_text)
+                    print(f"[AIFren Timing] TTS synthesis/playback dispatch returned t={time.monotonic() - turn_started_at:.3f}s")
                     if started is False:
                         self._emit("tts_state", state="failed")
                     else:
@@ -308,8 +381,21 @@ class AssistantService:
             self._emit("memory_shadow", shadow={"state": "invalid"}, error={"source": "memory_v2_shadow", "kind": type(error).__name__})
 
     def stop_speaking(self) -> None:
-        self.tts.stop()
-        self._emit("tts_state", state="stopped")
+        """Immediately invalidate local speech; presentation observes only."""
+        started_at = time.monotonic()
+        with self._tts_state_lock:
+            active_playback_id = self._active_tts_playback_id
+            self._active_tts_playback_id = 0
+        tts_state = getattr(self.tts, "playback_debug_state", None)
+        before = tts_state() if callable(tts_state) else {"active_id": active_playback_id}
+        print(f"[AIFren TTS] stop requested; state={before}")
+        invalidated_id = self.tts.stop()
+        playback_id = int(invalidated_id or active_playback_id or 0)
+        print(
+            "[AIFren TTS] stop returned; "
+            f"id={playback_id}; elapsed={(time.monotonic() - started_at) * 1000:.1f}ms"
+        )
+        self._emit("tts_state", state="stopped", playback_id=playback_id)
 
     def start_push_to_talk(self, listen_globally: bool = True, binding: str | None = None) -> Any:
         """Enable existing F8 PTT and route its voice events through service events."""
@@ -413,7 +499,10 @@ class AssistantService:
             self._emit("status", message=status[0], state=status[1])
 
     def _handle_ptt_tts_interrupt(self) -> None:
+        print("[AIFren PTT] interrupt requested; cancelling TTS before microphone capture")
+        started_at = time.monotonic()
         self.stop_speaking()
+        print(f"[AIFren PTT] TTS cancellation dispatched in {(time.monotonic() - started_at) * 1000:.1f}ms")
         self._emit("voice_event", action="tts_interrupted")
 
     def _handle_ptt_error(self, message: str) -> None:

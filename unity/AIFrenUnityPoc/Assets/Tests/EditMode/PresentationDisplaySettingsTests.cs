@@ -50,6 +50,16 @@ namespace AIFren.UnityPoc.Tests.EditMode
         }
 
         [Test]
+        public void MonitorSelectionUsesItsOwnReportedResolutionInsteadOfThePreviousDisplay()
+        {
+            Vector2Int selected = PresentationDisplaySettingsPolicy.ResolutionForSelectedDisplay(2560, 1440, 1280, 720);
+
+            Assert.AreEqual(new Vector2Int(2560, 1440), selected);
+            Assert.IsTrue(PresentationDisplaySettingsPolicy.ShouldDeferResolutionUntilDisplayMove(1, 0));
+            Assert.IsFalse(PresentationDisplaySettingsPolicy.ShouldDeferResolutionUntilDisplayMove(0, 0));
+        }
+
+        [Test]
         public void CloneKeepsASeparateRevertSnapshot()
         {
             PresentationDisplaySettings saved = new PresentationDisplaySettings { width = 1920, height = 1080 };

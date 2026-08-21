@@ -97,6 +97,8 @@ namespace AIFren.UnityPoc.Protocol
         public float volume;
         public float duration_seconds;
         public float[] lip_sync_envelope;
+        public float[] word_start_seconds;
+        public int playback_id;
         public bool global_listener;
         public string[] lines;
     }

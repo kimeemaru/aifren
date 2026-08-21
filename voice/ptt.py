@@ -10,19 +10,28 @@ from pynput import keyboard, mouse
 PTT_KEY = keyboard.Key.f8
 
 
+def _mouse_button(*names):
+    """Return the first side-button spelling provided by this pynput backend."""
+    for name in names:
+        button = getattr(mouse.Button, name, None)
+        if button is not None:
+            return button
+    return None
+
+
 def _normalise_binding(binding):
     """Translate Unity's persisted KeyCode spelling to pynput input values."""
     value = str(binding or "F8").strip()
-    mouse_bindings = {
-        # Unity: Mouse0/1/2 are left/right/middle, then Mouse3/4 map to
-        # Windows' first/second thumb buttons. pynput calls those x1/x2.
-        "Mouse3": mouse.Button.x1,
-        "Mouse4": mouse.Button.x2,
-    }
-    if value in mouse_bindings:
-        return mouse_bindings[value]
+    # pynput exposes x1/x2 on Windows. Its X11 backend instead exposes the
+    # conventional side buttons as button8/button9/button10. Look these up
+    # only for the requested binding so unsupported hardware never prevents
+    # keyboard PTT from starting.
+    if value == "Mouse3":
+        return _mouse_button("x1", "button8")
+    if value == "Mouse4":
+        return _mouse_button("x2", "button9")
     if value == "Mouse5":
-        return None
+        return _mouse_button("button10")
     if len(value) == 1 and value.isalnum():
         return value.lower()
     key_name = value.lower()
@@ -385,7 +394,6 @@ class PushToTalk:
             "stopped"
         )
 
-        print(f"PTT release ({source}) accepted.")
         print(
             "Push-to-talk stopped."
         )

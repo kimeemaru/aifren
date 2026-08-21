@@ -120,6 +120,23 @@ namespace AIFren.UnityPoc.UI
             }
             return result.OrderBy(resolution => resolution.x * resolution.y).ThenBy(resolution => resolution.x).ToList();
         }
+
+        /// <summary>
+        /// A display switch must never inherit another display's window size.
+        /// DisplayInfo is the portable per-display source Unity exposes; mode
+        /// lists remain platform-specific and are only used after the move.
+        /// </summary>
+        public static Vector2Int ResolutionForSelectedDisplay(int displayWidth, int displayHeight, int fallbackWidth, int fallbackHeight)
+        {
+            return displayWidth > 0 && displayHeight > 0
+                ? new Vector2Int(displayWidth, displayHeight)
+                : new Vector2Int(Mathf.Max(640, fallbackWidth), Mathf.Max(480, fallbackHeight));
+        }
+
+        public static bool ShouldDeferResolutionUntilDisplayMove(int requestedDisplayIndex, int currentDisplayIndex)
+        {
+            return requestedDisplayIndex != currentDisplayIndex;
+        }
     }
 
     /// <summary>Local-calendar grouping for persisted and live conversation entries.</summary>

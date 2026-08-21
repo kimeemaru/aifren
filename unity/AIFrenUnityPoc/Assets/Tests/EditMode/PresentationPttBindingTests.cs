@@ -18,5 +18,16 @@ namespace AIFren.UnityPoc.Tests.EditMode
         {
             Assert.IsFalse(PresentationPttBinding.IsValid(KeyCode.Escape));
         }
+
+        [Test]
+        public void PressedPttReleasesWhenFocusOrHeldStateIsLost()
+        {
+            Assert.IsFalse(PresentationPttInputPolicy.ShouldStart(false, true));
+            Assert.IsTrue(PresentationPttInputPolicy.ShouldStart(true, true));
+            Assert.IsTrue(PresentationPttInputPolicy.ShouldRelease(true, false, true));
+            Assert.IsTrue(PresentationPttInputPolicy.ShouldRelease(true, true, false));
+            Assert.IsFalse(PresentationPttInputPolicy.ShouldRelease(true, true, true));
+            Assert.IsFalse(PresentationPttInputPolicy.ShouldRelease(false, false, false));
+        }
     }
 }

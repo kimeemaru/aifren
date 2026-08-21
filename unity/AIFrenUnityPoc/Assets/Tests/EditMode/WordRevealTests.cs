@@ -37,6 +37,66 @@ namespace AIFren.UnityPoc.Tests.EditMode
         }
 
         [Test]
+        public void SeededWordFadesBeforeBecomingOpaque()
+        {
+            WordReveal reveal = new WordReveal { WordsPerSecond = 5f };
+            reveal.Begin("Hello there", false);
+
+            Assert.IsTrue(reveal.RevealNext());
+            Assert.AreEqual("Hello ", reveal.VisibleText);
+            Assert.Less(reveal.LatestTokenAlpha, 0.01f);
+
+            reveal.Advance(.12f);
+            Assert.GreaterOrEqual(reveal.LatestTokenAlpha, .99f);
+        }
+
+        [Test]
+        public void TimestampDrivenFadeDoesNotRevealAnExtraWord()
+        {
+            WordReveal reveal = new WordReveal { WordsPerSecond = 100f };
+            reveal.Begin("One two", false);
+            reveal.RevealTo(1);
+
+            reveal.AdvanceLatestTokenFade(1f);
+
+            Assert.AreEqual(1, reveal.RevealedTokenCount);
+            Assert.GreaterOrEqual(reveal.LatestTokenAlpha, .99f);
+        }
+
+        [Test]
+        public void TimestampDueFinalTokenCompletesItsVisualRamp()
+        {
+            WordReveal reveal = new WordReveal();
+            reveal.Begin("Last word", false);
+
+            reveal.RevealTo(2);
+
+            Assert.IsTrue(reveal.IsComplete);
+            Assert.IsTrue(reveal.LatestTokenIsFading);
+            reveal.AdvanceLatestTokenFade(.12f);
+            Assert.IsFalse(reveal.LatestTokenIsFading);
+        }
+
+        [Test]
+        public void TransitionDueOpeningPhraseRemainsPendingUntilPresentedInOrder()
+        {
+            WordReveal reveal = new WordReveal();
+            reveal.Begin("Once upon a time there was", false);
+
+            // Four timestamps may elapse while this page is non-renderable.
+            // They remain unpresented until the page commits.
+            Assert.AreEqual(0, reveal.RevealedTokenCount);
+            string[] expected = { "Once ", "Once upon ", "Once upon a ", "Once upon a time " };
+            for (int index = 0; index < expected.Length; index++)
+            {
+                reveal.RevealNext();
+                reveal.AdvanceLatestTokenFade(.12f);
+                Assert.AreEqual(expected[index], reveal.VisibleText);
+                Assert.IsFalse(reveal.LatestTokenIsFading);
+            }
+        }
+
+        [Test]
         public void PresentationConfigurationRejectsNonPositiveRevealSpeed()
         {
             CompanionPresentationConfiguration configuration = new CompanionPresentationConfiguration

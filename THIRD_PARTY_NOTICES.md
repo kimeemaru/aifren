@@ -7,7 +7,7 @@ the exact versions and distribution terms below.
 
 The exact current Unity presentation-asset and bundle decision record is
 maintained in `docs/DISTRIBUTION_ASSET_MANIFEST.md`. An asset is not cleared
-merely because it is present in the private repository or has been used during
+merely because it is present in a development checkout or has been used during
 local testing.
 
 ## Release inventory

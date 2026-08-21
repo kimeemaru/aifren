@@ -1,6 +1,8 @@
 import io
 import os
+import re
 import threading
+import time
 import wave
 
 import numpy as np
@@ -67,6 +69,8 @@ class PiperTextToSpeech:
         """Set up the provider-independent sounddevice playback controls."""
 
         self.playback_thread = None
+        self.playback_generation = 0
+        self.playback_generation_lock = threading.Lock()
 
         self.stop_event = (
             threading.Event()
@@ -78,6 +82,14 @@ class PiperTextToSpeech:
 
         self.playback_finished.set()
         self.playback_started_callback = None
+        self.playback_finished_callback = None
+        # A generation is both a playback id for presentation clients and the
+        # cancellation token for the local audio pipeline.  Keep the active
+        # synthesis and active stream separate: neither subtitle timing nor a
+        # natural-completion callback may decide whether PTT can interrupt.
+        self.playback_state_lock = threading.Lock()
+        self.active_synthesis_generation = None
+        self.active_playback_generation = None
 
         # ----------------------------------------------------
         # Volume
@@ -103,21 +115,88 @@ class PiperTextToSpeech:
         """Notify a frontend-neutral owner once local audio output starts."""
         self.playback_started_callback = callback if callable(callback) else None
 
-    def _notify_playback_started(self, duration_seconds, lip_sync_envelope=None):
+    def set_playback_finished_callback(self, callback):
+        """Notify a frontend-neutral owner when local playback naturally ends."""
+        self.playback_finished_callback = callback if callable(callback) else None
+
+    def _notify_playback_started(self, duration_seconds, lip_sync_envelope=None, word_start_seconds=None, playback_id=None):
         callback = self.playback_started_callback
         if callback is None:
             return
         try:
-            callback(float(duration_seconds), lip_sync_envelope)
+            callback(float(duration_seconds), lip_sync_envelope, list(word_start_seconds or ()), playback_id)
         except TypeError:
-            # Existing integrations may still accept only a duration value.
+            # Existing integrations may still accept the historic two or one
+            # callback arguments.
             try:
-                callback(float(duration_seconds))
+                callback(float(duration_seconds), lip_sync_envelope)
+            except TypeError:
+                try:
+                    callback(float(duration_seconds))
+                except Exception:
+                    pass
             except Exception:
                 pass
         except Exception:
             # Presentation notification must never interrupt local playback.
             pass
+
+    def _notify_playback_finished(self, playback_id):
+        callback = self.playback_finished_callback
+        if callback is None:
+            return
+        try:
+            callback(playback_id)
+        except Exception:
+            pass
+
+    def _next_playback_generation(self):
+        with self.playback_generation_lock:
+            self.playback_generation += 1
+            return self.playback_generation
+
+    def _is_current_playback_generation(self, generation):
+        with self.playback_generation_lock:
+            return generation == self.playback_generation
+
+    def playback_debug_state(self):
+        """Return a small, non-control diagnostic snapshot for dev logging."""
+        with self.playback_state_lock:
+            synthesis_generation = self.active_synthesis_generation
+            playback_generation = self.active_playback_generation
+        with self.playback_generation_lock:
+            current_generation = self.playback_generation
+        with self.stream_lock:
+            stream = self.stream
+        thread = self.playback_thread
+        return {
+            "generation": current_generation,
+            "synthesizing": synthesis_generation,
+            "playing": playback_generation,
+            "stream": stream is not None,
+            "thread": bool(thread and thread.is_alive()),
+            "cancelled": self.stop_event.is_set(),
+        }
+
+    def _mark_synthesis_active(self, generation):
+        with self.playback_state_lock:
+            self.active_synthesis_generation = generation
+
+    def _retire_synthesis(self, generation):
+        with self.playback_state_lock:
+            if self.active_synthesis_generation == generation:
+                self.active_synthesis_generation = None
+
+    def _mark_playback_active(self, generation):
+        with self.playback_state_lock:
+            if self.active_synthesis_generation == generation:
+                self.active_synthesis_generation = None
+            self.active_playback_generation = generation
+
+    def _retire_playback(self, generation):
+        with self.playback_state_lock:
+            if self.active_playback_generation == generation:
+                self.active_playback_generation = None
 
     @staticmethod
     def build_lip_sync_envelope(audio, sample_rate, samples_per_second=24):
@@ -226,6 +305,8 @@ class PiperTextToSpeech:
         # ----------------------------------------------------
 
         self.stop()
+        generation = self._next_playback_generation()
+        self._mark_synthesis_active(generation)
 
         self.stop_event.clear()
 
@@ -312,10 +393,15 @@ class PiperTextToSpeech:
                     1
                 )
 
-            return self._start_playback(audio, sample_rate)
+            if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
+                self._retire_synthesis(generation)
+                self.playback_finished.set()
+                return False
+            return self._start_playback(audio, sample_rate, generation)
 
         except Exception as e:
 
+            self._retire_synthesis(generation)
             self.playback_finished.set()
 
             print(
@@ -328,14 +414,26 @@ class PiperTextToSpeech:
     # Audio Playback
     # ========================================================
 
-    def _start_playback(self, audio, sample_rate):
+    def _start_playback(self, audio, sample_rate, generation=None, word_start_seconds=None):
         """Start already-synthesized float audio through the shared player."""
+        if generation is None:
+            generation = self._next_playback_generation()
+        elif not self._is_current_playback_generation(generation):
+            # PTT or a newer request stopped this synthesis before it reached
+            # the audio device. Never resurrect stale speech after an interrupt.
+            self.playback_finished.set()
+            return False
+        if self.stop_event.is_set():
+            self._retire_synthesis(generation)
+            self.playback_finished.set()
+            return False
         duration_seconds = len(audio) / float(sample_rate) if sample_rate else 0.0
         lip_sync_envelope = self.build_lip_sync_envelope(audio, sample_rate)
+        self._mark_playback_active(generation)
         self.playback_thread = (
             threading.Thread(
                 target=self._play_audio,
-                args=(audio, sample_rate, duration_seconds, lip_sync_envelope),
+                args=(audio, sample_rate, duration_seconds, lip_sync_envelope, word_start_seconds, generation),
                 daemon=True,
             )
         )
@@ -348,6 +446,8 @@ class PiperTextToSpeech:
         sample_rate,
         duration_seconds,
         lip_sync_envelope,
+        word_start_seconds,
+        generation,
     ):
 
         position = 0
@@ -379,7 +479,7 @@ class PiperTextToSpeech:
                 # Stop immediately when requested.
                 # --------------------------------------------
 
-                if self.stop_event.is_set():
+                if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
 
                     outdata.fill(
                         0
@@ -451,7 +551,17 @@ class PiperTextToSpeech:
                 self.stream = stream
 
             stream.start()
-            self._notify_playback_started(duration_seconds, lip_sync_envelope)
+            # A PTT press can invalidate playback between stream creation and
+            # start. Do not emit a false playback_started event or let that
+            # stale stream produce another audible callback.
+            if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
+                try:
+                    stream.abort()
+                except Exception:
+                    pass
+                return
+            print(f"[AIFren Timing] audio playback started; id={generation}; duration={duration_seconds:.3f}s")
+            self._notify_playback_started(duration_seconds, lip_sync_envelope, word_start_seconds, generation)
 
             # ------------------------------------------------
             # Wait until playback finishes or is stopped.
@@ -459,7 +569,7 @@ class PiperTextToSpeech:
 
             while stream.active:
 
-                if self.stop_event.is_set():
+                if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
 
                     break
 
@@ -469,7 +579,7 @@ class PiperTextToSpeech:
 
         except Exception as e:
 
-            if not self.stop_event.is_set():
+            if not self.stop_event.is_set() and self._is_current_playback_generation(generation):
 
                 print(
                     f"\nTTS playback error: {e}"
@@ -503,7 +613,17 @@ class PiperTextToSpeech:
 
                     self.stream = None
 
-            self.playback_finished.set()
+            naturally_completed = (
+                not self.stop_event.is_set()
+                and self._is_current_playback_generation(generation)
+            )
+            self._retire_playback(generation)
+            if self.playback_thread is threading.current_thread():
+                self.playback_thread = None
+            if naturally_completed:
+                self.playback_finished.set()
+                print(f"[AIFren TTS] natural completion; id={generation}; state={self.playback_debug_state()}")
+                self._notify_playback_finished(generation)
 
     # ========================================================
     # Stop Speaking
@@ -511,7 +631,21 @@ class PiperTextToSpeech:
 
     def stop(self):
 
+        # Invalidate both active playback and any in-progress synthesis before
+        # touching the shared audio stream. A later speak() gets a new token.
+        interrupted_generation = self._next_playback_generation()
         self.stop_event.set()
+        with self.playback_state_lock:
+            interrupted_synthesis = self.active_synthesis_generation
+            interrupted_playback = self.active_playback_generation
+            self.active_synthesis_generation = None
+            self.active_playback_generation = None
+        started_at = time.monotonic()
+        print(
+            "[AIFren TTS] cancellation requested; "
+            f"new_generation={interrupted_generation}; synthesis={interrupted_synthesis}; "
+            f"playback={interrupted_playback}"
+        )
 
         # ----------------------------------------------------
         # Stop active stream.
@@ -530,33 +664,20 @@ class PiperTextToSpeech:
             except Exception:
                 pass
 
-        # ----------------------------------------------------
-        # Wait briefly for playback thread.
-        # ----------------------------------------------------
-
-        thread = (
-            self.playback_thread
-        )
-
-        if (
-            thread
-            and thread.is_alive()
-            and thread is not threading.current_thread()
-        ):
-
-            thread.join(
-                timeout=0.25
-            )
-
-        self.playback_thread = None
+        # Do not join the audio worker here. PTT must begin microphone capture
+        # immediately; the invalidated worker cleans its own stream up and is
+        # forbidden from publishing a natural-completion event.
+        thread = self.playback_thread
+        if thread is not None and not thread.is_alive():
+            self.playback_thread = None
 
         # ----------------------------------------------------
         # Reset state for next speech.
         # ----------------------------------------------------
 
-        self.stop_event.clear()
-
         self.playback_finished.set()
+        print(f"[AIFren TTS] cancellation dispatched in {(time.monotonic() - started_at) * 1000:.1f}ms")
+        return interrupted_playback
 
 
 class KokoroTextToSpeech(PiperTextToSpeech):
@@ -593,21 +714,61 @@ class KokoroTextToSpeech(PiperTextToSpeech):
         self._initialize_playback_state()
         print("Kokoro TTS loaded.")
 
-    def _generate_audio(self, text):
+    def _generate_audio(self, text, generation=None):
+        synthesis_started_at = time.monotonic()
         chunks = []
+        word_starts = []
+        offset_seconds = 0.0
         for result in self.pipeline(text, voice=str(self.voice_path), speed=self.speed):
+            # Kokoro yields incrementally. A PTT interruption cannot always
+            # preempt work already inside a model kernel, but it must prevent
+            # all later chunks and any stale audio from reaching the player.
+            if generation is not None and (
+                self.stop_event.is_set()
+                or not self._is_current_playback_generation(generation)
+            ):
+                self._retire_synthesis(generation)
+                print(f"[AIFren TTS] synthesis cancelled; id={generation}")
+                return None
             audio = result.audio
             if hasattr(audio, "detach"):
                 audio = audio.detach().cpu().numpy()
-            chunks.append(np.asarray(audio, dtype=np.float32).reshape(-1))
+            chunk = np.asarray(audio, dtype=np.float32).reshape(-1)
+            chunks.append(chunk)
+            word_starts.extend(self._result_word_starts(getattr(result, "tokens", None), offset_seconds))
+            offset_seconds += len(chunk) / 24000.0
         if not chunks:
             raise ValueError("Kokoro produced no audio.")
-        return np.concatenate(chunks).reshape(-1, 1), 24000
+        expected_words = re.findall(r"\S+", text or "")
+        # Kokoro tokenization can expand or normalize text. Only expose
+        # alignment when it still maps one-to-one to the exact spoken words;
+        # otherwise callers retain their deterministic fallback schedule.
+        if len(word_starts) != len(expected_words):
+            word_starts = []
+        print(
+            "[AIFren Timing] Kokoro synthesis/audio ready "
+            f"t={time.monotonic() - synthesis_started_at:.3f}s; "
+            f"aligned_words={len(word_starts)}/{len(expected_words)}"
+        )
+        return np.concatenate(chunks).reshape(-1, 1), 24000, word_starts
+
+    @staticmethod
+    def _result_word_starts(tokens, offset_seconds):
+        starts = []
+        for token in tokens or ():
+            text = str(getattr(token, "text", "") or "").strip()
+            start = getattr(token, "start_ts", None)
+            if start is None or not text or not any(character.isalnum() for character in text):
+                continue
+            # MToken text is lexical for the English Kokoro pipeline; retain
+            # one timestamp for every whitespace-delimited spoken word.
+            starts.extend(offset_seconds + float(start) for _ in re.findall(r"\S+", text))
+        return starts
 
     def synthesize(self, text, output_file):
         if not text:
             return False
-        audio, sample_rate = self._generate_audio(text)
+        audio, sample_rate, _ = self._generate_audio(text)
         with wave.open(output_file, "wb") as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
@@ -619,15 +780,20 @@ class KokoroTextToSpeech(PiperTextToSpeech):
         if not text:
             return False
         self.stop()
+        generation = self._next_playback_generation()
+        self._mark_synthesis_active(generation)
         self.stop_event.clear()
         self.playback_finished.clear()
         try:
-            audio, sample_rate = self._generate_audio(text)
-            if self.stop_event.is_set():
+            generated = self._generate_audio(text, generation)
+            if generated is None or self.stop_event.is_set() or not self._is_current_playback_generation(generation):
+                self._retire_synthesis(generation)
                 self.playback_finished.set()
                 return False
-            return self._start_playback(audio, sample_rate)
+            audio, sample_rate, word_starts = generated
+            return self._start_playback(audio, sample_rate, generation, word_starts)
         except Exception as error:
+            self._retire_synthesis(generation)
             self.playback_finished.set()
             print(f"\nKokoro TTS synthesis error: {error}")
             return False

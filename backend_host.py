@@ -159,7 +159,10 @@ class AIFrenWebSocketHost:
                 # existing PTT implementation ignores unmatched releases.
                 release_ptt = getattr(self.service, "push_to_talk_release", None)
                 if callable(release_ptt):
-                    release_ptt()
+                    try:
+                        release_ptt()
+                    except Exception as error:
+                        self._log(f"PTT disconnect release failed: {type(error).__name__}")
 
     async def _handle_command(self, websocket, raw_message: Any) -> None:
         if not isinstance(raw_message, str):
@@ -226,11 +229,19 @@ class AIFrenWebSocketHost:
             return
 
         if command == "ptt_press":
-            self.service.push_to_talk_press()
+            try:
+                self.service.push_to_talk_press()
+            except Exception as error:
+                self._log(f"PTT press failed: {type(error).__name__}")
+                await self._send_command_error(websocket, "ptt_press_failed", str(error))
             return
 
         if command == "ptt_release":
-            self.service.push_to_talk_release()
+            try:
+                self.service.push_to_talk_release()
+            except Exception as error:
+                self._log(f"PTT release failed: {type(error).__name__}")
+                await self._send_command_error(websocket, "ptt_release_failed", str(error))
             return
 
         if command == "set_ptt_binding":

@@ -1,4 +1,7 @@
 using System;
+using System.IO;
+using System.Threading.Tasks;
+using UniVRM10;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -11,11 +14,19 @@ namespace AIFren.UnityPoc.Avatar
     /// </summary>
     public sealed class AvatarLoader : MonoBehaviour
     {
+        public const string CustomModelPathPreference = "AIFren.AvatarModelPath";
+        internal static void ClearCustomModelPathPreference()
+        {
+            PlayerPrefs.DeleteKey(CustomModelPathPreference);
+            PlayerPrefs.Save();
+        }
         public event Action<GameObject> AvatarLoaded;
         public event Action<string> AvatarLoadFailed;
 
         public GameObject ActiveAvatar { get; private set; }
         public string LastError { get; private set; } = string.Empty;
+        public string ActiveModelPath { get; private set; } = string.Empty;
+        public string LastLoadedModelName { get; private set; } = string.Empty;
 
         private Camera previewCamera;
         private Light keyLight;
@@ -37,15 +48,29 @@ namespace AIFren.UnityPoc.Avatar
         private float originalReflectionIntensity;
         private bool savedRenderSettings;
         private AvatarAnimationController animationController;
+        private Vector2Int lastLoggedPresentationTextureSize;
+        private bool directPresentation = true;
+        private AvatarPresentationValues directPresentationValues = new AvatarPresentationValues { scale = 1f };
+        private AvatarViewerBackground directBackground = AvatarViewerBackground.LightNeutral;
+        private Texture directBedroomTexture;
+        private AvatarDirectBackgroundRenderer directBackgroundRenderer;
+        private float directBaselineAspect = -1f;
 
         private void Start()
         {
-            LoadConfiguredAvatar();
+            string savedPath = PlayerPrefs.GetString(CustomModelPathPreference, string.Empty);
+            if (!string.IsNullOrWhiteSpace(savedPath) && File.Exists(savedPath))
+                _ = LoadAvatarFromPathAsync(savedPath);
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(savedPath))
+                    Debug.LogWarning("Saved avatar model is unavailable; using the bundled model.");
+                LoadConfiguredAvatar();
+            }
         }
 
         public bool LoadConfiguredAvatar()
         {
-            DestroyActiveAvatar();
             AvatarConfiguration configuration = AvatarConfiguration.Load();
 
             if (!configuration.IsValid(out string validationError))
@@ -67,29 +92,83 @@ namespace AIFren.UnityPoc.Avatar
 
             try
             {
-                ActiveAvatar = Instantiate(avatarPrefab);
-                ActiveAvatar.name = "Active VRM Avatar";
-                ActiveAvatar.transform.position = configuration.position.ToVector3();
-                ActiveAvatar.transform.rotation = Quaternion.Euler(configuration.rotationEuler.ToVector3());
-                ActiveAvatar.transform.localScale = Vector3.one * configuration.scale;
-                activeConfiguration = configuration;
-                idleBasePosition = ActiveAvatar.transform.position;
-                ConfigureRelaxedPose(configuration);
-                ConfigurePreviewCamera(configuration);
-                idleBaseRotation = ActiveAvatar.transform.rotation;
-                animationController = gameObject.GetComponent<AvatarAnimationController>() ??
-                    gameObject.AddComponent<AvatarAnimationController>();
-                animationController.Configure(ActiveAvatar);
-                LastError = string.Empty;
-                AvatarLoaded?.Invoke(ActiveAvatar);
+                ActivateAvatar(Instantiate(avatarPrefab), configuration, "Bundled model");
                 return true;
             }
             catch (Exception exception)
             {
-                DestroyActiveAvatar();
                 Fail("Unable to instantiate the VRM avatar: " + exception.Message);
                 return false;
             }
+        }
+
+        /// <summary>Loads VRM 1.0 or migrates VRM 0.x through UniVRM's unified runtime API.</summary>
+        public async Task<bool> LoadAvatarFromPathAsync(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path) ||
+                !string.Equals(Path.GetExtension(path), ".vrm", StringComparison.OrdinalIgnoreCase))
+            {
+                Fail("Choose a readable .vrm file.");
+                return false;
+            }
+
+            GameObject candidate = null;
+            try
+            {
+                string metadataName = string.Empty;
+                Vrm10Instance instance = await Vrm10.LoadPathAsync(path, canLoadVrm0X: true, showMeshes: true,
+                    vrmMetaInformationCallback: (_, vrm10, vrm0) => metadataName = MetadataName(vrm10) ?? MetadataName(vrm0));
+                if (instance == null) throw new InvalidOperationException("UniVRM returned no avatar instance.");
+                candidate = instance.gameObject;
+                if (candidate.GetComponentsInChildren<Renderer>(true).Length == 0)
+                    throw new InvalidOperationException("The VRM contains no renderable avatar geometry.");
+                ActivateAvatar(candidate, AvatarConfiguration.Load(), path);
+                LastLoadedModelName = string.IsNullOrWhiteSpace(metadataName) ? Path.GetFileNameWithoutExtension(path) : metadataName.Trim();
+                return true;
+            }
+            catch (Exception exception)
+            {
+                if (candidate != null && candidate != ActiveAvatar) Destroy(candidate);
+                Fail("Could not load VRM: " + exception.Message);
+                return false;
+            }
+        }
+
+        private static string MetadataName(object metadata)
+        {
+            if (metadata == null) return null;
+            foreach (string member in new[] { "name", "title", "Title", "Name" })
+            {
+                var field = metadata.GetType().GetField(member);
+                string value = field != null ? field.GetValue(metadata) as string : null;
+                if (!string.IsNullOrWhiteSpace(value)) return value;
+                var property = metadata.GetType().GetProperty(member);
+                value = property != null ? property.GetValue(metadata, null) as string : null;
+                if (!string.IsNullOrWhiteSpace(value)) return value;
+            }
+            return null;
+        }
+
+        private void ActivateAvatar(GameObject avatar, AvatarConfiguration configuration, string source)
+        {
+            GameObject previous = ActiveAvatar;
+            ActiveAvatar = avatar;
+            ActiveAvatar.name = "Active VRM Avatar";
+            ActiveAvatar.transform.position = configuration.position.ToVector3();
+            ActiveAvatar.transform.rotation = Quaternion.Euler(configuration.rotationEuler.ToVector3());
+            ActiveAvatar.transform.localScale = Vector3.one * configuration.scale;
+            activeConfiguration = configuration;
+            idleBasePosition = ActiveAvatar.transform.position;
+            ConfigureRelaxedPose(configuration);
+            ConfigurePreviewCamera(configuration);
+            idleBaseRotation = ActiveAvatar.transform.rotation;
+            animationController = gameObject.GetComponent<AvatarAnimationController>() ?? gameObject.AddComponent<AvatarAnimationController>();
+            animationController.Configure(ActiveAvatar);
+            ActiveModelPath = source;
+            LastError = string.Empty;
+            loggedFullBodyFrustum = false;
+            AvatarLoaded?.Invoke(ActiveAvatar);
+            if (previous != null && previous != ActiveAvatar) Destroy(previous);
         }
 
         private void ConfigurePreviewCamera(AvatarConfiguration configuration)
@@ -122,7 +201,8 @@ namespace AIFren.UnityPoc.Avatar
             keyLight.intensity = configuration.keyLightIntensity;
             fillLight.intensity = configuration.fillLightIntensity;
             ConfigureSoftEnvironmentLighting(configuration);
-            ConfigureRenderTexture();
+            if (directPresentation) ApplyDirectPresentationView();
+            else ConfigureRenderTexture();
         }
 
         private void ConfigureSoftEnvironmentLighting(AvatarConfiguration configuration)
@@ -148,19 +228,66 @@ namespace AIFren.UnityPoc.Avatar
         }
 
         /// <summary>
+        /// Selects the direct screen camera or the retained RenderTexture path.
+        /// The RenderTexture implementation remains available as a rollback.
+        /// </summary>
+        public void SetDirectPresentation(bool enabled)
+        {
+            if (directPresentation == enabled) return;
+            directPresentation = enabled;
+            directBaselineAspect = -1f;
+            if (previewCamera == null) return;
+
+            if (directPresentation)
+            {
+                ReleasePreviewTexture();
+                previewCamera.targetTexture = null;
+                EnsureDirectBackgroundRenderer();
+                ApplyDirectPresentationView();
+            }
+            else
+            {
+                directBackgroundRenderer?.SetVisible(false);
+                previewCamera.clearFlags = CameraClearFlags.SolidColor;
+                previewCamera.usePhysicalProperties = false;
+                previewCamera.lensShift = Vector2.zero;
+                previewCamera.fieldOfView = activeConfiguration != null ? activeConfiguration.fieldOfView : previewCamera.fieldOfView;
+                ConfigureRenderTexture();
+            }
+        }
+
+        public void SetDirectPresentationValues(AvatarPresentationValues values)
+        {
+            directPresentationValues = values;
+            if (directPresentation) ApplyDirectPresentationView();
+        }
+
+        public void SetDirectBackground(AvatarViewerBackground background, Texture bedroomTexture)
+        {
+            directBackground = background;
+            directBedroomTexture = bedroomTexture;
+            // Controller UI construction runs before this component's Start
+            // method can create the preview camera. Retain the selection now;
+            // ConfigurePreviewCamera applies it once the direct camera exists.
+            if (!directPresentation || previewCamera == null) return;
+            EnsureDirectBackgroundRenderer();
+            directBackgroundRenderer.Set(directBackground, directBedroomTexture);
+        }
+
+        /// <summary>
         /// The UI controller owns orientation. Never infer it from the fitted
-        /// RawImage because user crop/zoom can change that image's dimensions.
+        /// RawImage because presentation transforms change its dimensions.
         /// </summary>
         public void SetPresentationOrientation(bool isPortrait)
         {
             if (previewIsPortrait == isPortrait) return;
             previewIsPortrait = isPortrait;
-            ConfigureRenderTexture();
+            if (directPresentation) ApplyDirectPresentationView(); else ConfigureRenderTexture();
         }
 
         /// <summary>
-        /// Sets the stable presentation viewport used to size the full-body
-        /// capture. User UV crop changes do not alter this capture basis.
+        /// Sets the stable presentation container used to size the full-body
+        /// capture. UI layout never alters the camera's complete-body framing.
         /// </summary>
         public void SetPresentationViewportPixels(Vector2 pixels)
         {
@@ -168,7 +295,7 @@ namespace AIFren.UnityPoc.Avatar
             if (hasPreviewViewportPixels && Vector2.SqrMagnitude(previewViewportPixels - safePixels) < .25f) return;
             previewViewportPixels = safePixels;
             hasPreviewViewportPixels = true;
-            ConfigureRenderTexture();
+            if (directPresentation) directBaselineAspect = -1f; else ConfigureRenderTexture();
         }
 
         /// <summary>Keeps the avatar target in sync with the active graphics AA setting.</summary>
@@ -179,25 +306,42 @@ namespace AIFren.UnityPoc.Avatar
             {
                 previewCamera.allowMSAA = samples > 0;
             }
-            ConfigureRenderTexture();
+            if (!directPresentation) ConfigureRenderTexture();
         }
 
         /// <summary>
         /// Presentation-only supersampling. This never affects the full-body
-        /// camera, its padding, orientation, or the UI framing crop.
+        /// camera, its padding, orientation, or its full-avatar composition.
         /// </summary>
         public void SetPresentationRenderScale(float scale)
         {
             float normalized = Mathf.Clamp(scale, 1f, 2f);
             if (Mathf.Abs(presentationRenderScale - normalized) < .001f) return;
             presentationRenderScale = normalized;
-            ConfigureRenderTexture();
+            if (!directPresentation) ConfigureRenderTexture();
         }
 
         private void LateUpdate()
         {
-            ConfigureRenderTexture();
-            UpdatePreviewFraming();
+            if (directPresentation)
+            {
+                float aspect = Mathf.Max(.1f, Screen.width / (float)Mathf.Max(1, Screen.height));
+                if (Mathf.Abs(directBaselineAspect - aspect) > .0001f)
+                {
+                    directBaselineAspect = aspect;
+                    previewCamera.fieldOfView = activeConfiguration != null
+                        ? activeConfiguration.fieldOfView
+                        : previewCamera.fieldOfView;
+                    previewCamera.lensShift = Vector2.zero;
+                    UpdatePreviewFraming();
+                }
+                ApplyDirectPresentationView();
+            }
+            else
+            {
+                ConfigureRenderTexture();
+                UpdatePreviewFraming();
+            }
 
             if (hasRelaxedPose)
             {
@@ -284,19 +428,19 @@ namespace AIFren.UnityPoc.Avatar
 
         private void ConfigureRenderTexture()
         {
-            if (previewCamera == null || previewSurface == null)
+            if (directPresentation || previewCamera == null || previewSurface == null)
             {
                 return;
             }
 
             Rect rect = previewSurface.rectTransform.rect;
-            AvatarCrop crop = GetPresentationCrop();
+            AvatarPresentationTransform presentation = GetPresentationTransform();
             Vector2 capturePixels = hasPreviewViewportPixels
                 ? previewViewportPixels
                 : new Vector2(rect.width, rect.height);
             Vector2Int requiredSize = AvatarRenderQuality.RequiredRenderTextureSize(
                 capturePixels,
-                crop,
+                presentation != null ? presentation.scale : 1f,
                 (activeConfiguration != null ? activeConfiguration.renderTextureSupersample : 1f) * presentationRenderScale
             );
             requiredSize = AvatarRenderQuality.ClampToMaximumDimension(requiredSize);
@@ -349,15 +493,18 @@ namespace AIFren.UnityPoc.Avatar
             bool hasAvatarBounds = TryGetAvatarBounds(out Bounds avatarBounds);
             if (hasAvatarBounds)
             {
-                // This camera deliberately contains the *entire* avatar.  The
-                // visible close-up is produced later by RawImage uv cropping,
-                // so gestures and animated body parts never pop into view.
+                // This camera deliberately contains the complete avatar with
+                // only its authored margin. Presentation transforms never
+                // compensate for camera framing.
                 lookTarget = avatarBounds.center;
-                float aspect = previewTexture != null
+                float aspect = directPresentation
+                    ? Mathf.Max(.1f, Screen.width / (float)Mathf.Max(1, Screen.height))
+                    : previewTexture != null
                     ? previewTexture.width / (float)previewTexture.height
                     : 16f / 9f;
                 cameraDistance = AvatarFraming.RequiredCameraDistance(
                     avatarBounds,
+                    -cameraDirection,
                     previewCamera.fieldOfView,
                     aspect,
                     activeConfiguration.fullBodyCameraPadding
@@ -366,13 +513,68 @@ namespace AIFren.UnityPoc.Avatar
 
             previewCamera.transform.position = lookTarget + (cameraDirection * cameraDistance);
             previewCamera.transform.LookAt(lookTarget);
+            if (hasAvatarBounds) LogPresentationOccupancy(avatarBounds);
             if (hasAvatarBounds) ValidateFullBodyFrustum(avatarBounds);
         }
 
-        private AvatarCrop GetPresentationCrop()
+        private void ApplyDirectPresentationView()
         {
-            if (activeConfiguration == null) return new AvatarCrop();
-            return previewIsPortrait ? activeConfiguration.portraitUiCrop : activeConfiguration.landscapeUiCrop;
+            if (!directPresentation || previewCamera == null || activeConfiguration == null) return;
+            AvatarDirectCameraView view = AvatarDirectPresentationCamera.FromPresentation(
+                activeConfiguration.fieldOfView, directPresentationValues);
+            previewCamera.targetTexture = null;
+            previewCamera.clearFlags = CameraClearFlags.Depth;
+            previewCamera.usePhysicalProperties = true;
+            previewCamera.fieldOfView = view.fieldOfView;
+            previewCamera.lensShift = view.lensShift;
+            EnsureDirectBackgroundRenderer();
+            directBackgroundRenderer.Set(directBackground, directBedroomTexture);
+        }
+
+        private void EnsureDirectBackgroundRenderer()
+        {
+            if (previewCamera != null && directBackgroundRenderer == null)
+                directBackgroundRenderer = new AvatarDirectBackgroundRenderer(previewCamera);
+        }
+
+        private void ReleasePreviewTexture()
+        {
+            if (previewTexture == null) return;
+            previewTexture.Release();
+            Destroy(previewTexture);
+            previewTexture = null;
+        }
+
+        private void LogPresentationOccupancy(Bounds bounds)
+        {
+            if (previewTexture == null || previewCamera == null) return;
+            Vector2Int textureSize = new Vector2Int(previewTexture.width, previewTexture.height);
+            if (textureSize == lastLoggedPresentationTextureSize) return;
+
+            float minimumX = 1f, minimumY = 1f, maximumX = 0f, maximumY = 0f;
+            for (int x = -1; x <= 1; x += 2)
+            for (int y = -1; y <= 1; y += 2)
+            for (int z = -1; z <= 1; z += 2)
+            {
+                Vector3 point = bounds.center + Vector3.Scale(bounds.extents, new Vector3(x, y, z));
+                Vector3 viewport = previewCamera.WorldToViewportPoint(point);
+                minimumX = Mathf.Min(minimumX, viewport.x);
+                minimumY = Mathf.Min(minimumY, viewport.y);
+                maximumX = Mathf.Max(maximumX, viewport.x);
+                maximumY = Mathf.Max(maximumY, viewport.y);
+            }
+
+            lastLoggedPresentationTextureSize = textureSize;
+            Debug.Log(string.Format(
+                "[AIFren Avatar] RT {0}x{1}; complete-bounds occupancy {2:P1} wide x {3:P1} high; renderer bounds {4:F2} x {5:F2} x {6:F2}.",
+                textureSize.x, textureSize.y, maximumX - minimumX, maximumY - minimumY,
+                bounds.size.x, bounds.size.y, bounds.size.z));
+        }
+
+        private AvatarPresentationTransform GetPresentationTransform()
+        {
+            if (activeConfiguration == null) return null;
+            return activeConfiguration.PresentationTransform(previewIsPortrait);
         }
 
         [System.Diagnostics.Conditional("DEVELOPMENT_BUILD")]
@@ -450,9 +652,9 @@ namespace AIFren.UnityPoc.Avatar
 
             if (previewTexture != null)
             {
-                previewTexture.Release();
-                Destroy(previewTexture);
+                ReleasePreviewTexture();
             }
+            directBackgroundRenderer?.Dispose();
         }
 
         private void Fail(string error)

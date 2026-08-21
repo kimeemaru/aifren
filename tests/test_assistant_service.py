@@ -41,9 +41,13 @@ class FakeTTS:
         self.stopped = 0
         self.volume = None
         self.playback_started_callback = None
+        self.playback_finished_callback = None
 
     def set_playback_started_callback(self, callback):
         self.playback_started_callback = callback
+
+    def set_playback_finished_callback(self, callback):
+        self.playback_finished_callback = callback
 
     def speak(self, text):
         self.spoken.append(text)
@@ -96,7 +100,7 @@ class FakePushToTalk:
 
 
 def fake_response_generator(llm, conversation, memory, message, character_prompt):
-    return "*Serval waves.*\n\nHello!"
+    return "*AIFren waves.*\n\nHello!"
 
 
 class AssistantServiceTests(unittest.TestCase):
@@ -109,7 +113,7 @@ class AssistantServiceTests(unittest.TestCase):
             memory=self.memory,
             conversation=self.conversation,
             voice=object(),
-            character={"name": "Serval"},
+            character={"name": "AIFren"},
             character_prompt="character prompt",
             tts=self.tts,
             response_generator=fake_response_generator,
@@ -123,7 +127,7 @@ class AssistantServiceTests(unittest.TestCase):
         result = self.service.process_text_turn("Hello")
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(result.reply, "*Serval waves.*\n\nHello!")
+        self.assertEqual(result.reply, "*AIFren waves.*\n\nHello!")
         self.assertEqual(result.spoken_text, "Hello!")
         self.assertEqual(self.tts.spoken, ["Hello!"])
         self.assertEqual(
@@ -152,6 +156,43 @@ class AssistantServiceTests(unittest.TestCase):
         )
         playback = next(event for event in events if event.data.get("state") == "playback_started")
         self.assertEqual(playback.data["duration_seconds"], 2.5)
+
+    def test_playback_alignment_and_completion_are_forwarded_without_changing_turn_data(self):
+        events = []
+        self.service.subscribe(events.append)
+
+        self.tts.playback_started_callback(1.5, [0.1], [0.0, 0.7], 42)
+        self.tts.playback_finished_callback(42)
+
+        started = events[0]
+        self.assertEqual("playback_started", started.data["state"])
+        self.assertEqual([0.0, 0.7], started.data["word_start_seconds"])
+        self.assertEqual(42, started.data["playback_id"])
+        self.assertEqual("stopped", events[1].data["state"])
+        self.assertEqual(42, events[1].data["playback_id"])
+
+    def test_stale_natural_completion_cannot_clear_newer_playback_state(self):
+        events = []
+        self.service.subscribe(events.append)
+
+        self.tts.playback_started_callback(1.0, [], [], 10)
+        self.tts.playback_started_callback(1.0, [], [], 11)
+        self.tts.playback_finished_callback(10)
+
+        self.assertEqual(11, self.service._active_tts_playback_id)
+        self.assertEqual([], [event for event in events if event.data.get("state") == "stopped"])
+
+        self.tts.playback_finished_callback(11)
+        self.assertEqual(0, self.service._active_tts_playback_id)
+        self.assertEqual(11, events[-1].data["playback_id"])
+
+    def test_explicit_stop_clears_service_playback_state_before_tts_cleanup(self):
+        self.tts.playback_started_callback(1.0, [], [], 23)
+
+        self.service.stop_speaking()
+
+        self.assertEqual(0, self.service._active_tts_playback_id)
+        self.assertEqual(1, self.tts.stopped)
 
     def test_turn_can_skip_speech_for_a_frontend_that_owns_playback(self):
         result = self.service.process_text_turn("Hello", speak=False)
@@ -312,7 +353,7 @@ class AssistantServiceTests(unittest.TestCase):
 
         service = AssistantService(
             llm=object(), memory=self.memory, conversation=self.conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="character prompt", tts=self.tts,
+            character={"name": "AIFren"}, character_prompt="character prompt", tts=self.tts,
             response_generator=fake_response_generator, ptt_factory=UnavailablePushToTalk,
         )
         events = []

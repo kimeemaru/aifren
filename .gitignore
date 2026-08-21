@@ -35,7 +35,6 @@ secrets/
 config_secret.py
 config_local.py
 config_private.py
-local_settings.py
 .aifren_local_settings.json
 *.local
 characters/default/avatar.png

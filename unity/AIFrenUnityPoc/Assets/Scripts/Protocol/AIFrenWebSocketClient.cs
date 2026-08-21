@@ -5,6 +5,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using UnityEngine;
 
 namespace AIFren.UnityPoc.Protocol
 {
@@ -23,15 +24,19 @@ namespace AIFren.UnityPoc.Protocol
         private ClientWebSocket socket;
         private CancellationTokenSource cancellation;
         private Task receiveTask;
+        private readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
 
         public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
         public string LastError { get; private set; } = string.Empty;
+        public string LastDisconnectReason { get; private set; } = string.Empty;
 
         public async Task ConnectAsync(string endpoint)
         {
             await DisconnectAsync();
             State = ConnectionState.Connecting;
             LastError = string.Empty;
+            LastDisconnectReason = string.Empty;
+            Debug.Log("[AIFren Transport] Connecting to local backend.");
 
             try
             {
@@ -39,6 +44,7 @@ namespace AIFren.UnityPoc.Protocol
                 cancellation = new CancellationTokenSource();
                 await socket.ConnectAsync(new Uri(endpoint), cancellation.Token);
                 State = ConnectionState.Connected;
+                Debug.Log("[AIFren Transport] Connected to local backend.");
                 receiveTask = ReceiveLoopAsync(socket, cancellation.Token);
                 await SendCommandAsync(new ClientCommand { command = "get_snapshot" });
             }
@@ -157,6 +163,7 @@ namespace AIFren.UnityPoc.Protocol
             if (State != ConnectionState.Error)
             {
                 State = ConnectionState.Disconnected;
+                Debug.Log("[AIFren Transport] Disconnected from local backend.");
             }
         }
 
@@ -175,14 +182,21 @@ namespace AIFren.UnityPoc.Protocol
 
         private async Task SendCommandAsync(ClientCommand command)
         {
-            if (socket == null || socket.State != WebSocketState.Open)
-            {
-                SetError("Not connected to the AIFren backend.");
-                return;
-            }
-
+            await sendLock.WaitAsync();
             try
             {
+                if (socket == null || socket.State != WebSocketState.Open)
+                {
+                    SetError("Not connected to the AIFren backend.");
+                    return;
+                }
+
+                // ClientWebSocket permits one outstanding send. Focus changes
+                // can make a PTT press and release occur in adjacent frames,
+                // especially for Linux mouse buttons, so serialize every
+                // command instead of turning that benign sequence into a
+                // transport error that disables the input field.
+                Debug.Log("[AIFren Transport] Sending command: " + command.command);
                 byte[] bytes = Encoding.UTF8.GetBytes(AIFrenProtocol.SerializeCommand(command));
                 await socket.SendAsync(
                     new ArraySegment<byte>(bytes),
@@ -194,6 +208,10 @@ namespace AIFren.UnityPoc.Protocol
             catch (Exception exception)
             {
                 SetError(exception.Message);
+            }
+            finally
+            {
+                sendLock.Release();
             }
         }
 
@@ -219,6 +237,10 @@ namespace AIFren.UnityPoc.Protocol
                             if (result.MessageType == WebSocketMessageType.Close)
                             {
                                 State = ConnectionState.Disconnected;
+                                LastDisconnectReason = string.IsNullOrWhiteSpace(result.CloseStatusDescription)
+                                    ? "Backend closed the local connection."
+                                    : result.CloseStatusDescription;
+                                Debug.LogWarning("[AIFren Transport] " + LastDisconnectReason);
                                 return;
                             }
 
@@ -244,7 +266,9 @@ namespace AIFren.UnityPoc.Protocol
         private void SetError(string message)
         {
             LastError = message;
+            LastDisconnectReason = message;
             State = ConnectionState.Error;
+            Debug.LogWarning("[AIFren Transport] Error: " + message);
         }
     }
 }

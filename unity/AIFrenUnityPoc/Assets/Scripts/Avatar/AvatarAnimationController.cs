@@ -24,7 +24,19 @@ namespace AIFren.UnityPoc.Avatar
         private object happyKey;
         private object surprisedKey;
         private Transform head;
+        private Transform leftShoulder;
+        private Transform rightShoulder;
+        private Transform leftUpperArm;
+        private Transform rightUpperArm;
+        private Transform leftLowerArm;
+        private Transform rightLowerArm;
         private Quaternion headBaseRotation;
+        private Quaternion leftShoulderBaseRotation;
+        private Quaternion rightShoulderBaseRotation;
+        private Quaternion leftUpperArmBaseRotation;
+        private Quaternion rightUpperArmBaseRotation;
+        private Quaternion leftLowerArmBaseRotation;
+        private Quaternion rightLowerArmBaseRotation;
         private bool hasBlink;
         private bool hasMouth;
         private bool hasHappy;
@@ -37,6 +49,11 @@ namespace AIFren.UnityPoc.Avatar
         private float blinkStartedAt = -1f;
         private float reactionUntil;
         private float reactionWeight;
+        private AvatarGestureIntent activeGesture;
+        private float gestureStartedAt;
+        private float gestureDuration;
+        private float nextGestureAt;
+        private AvatarGestureIntent lastGesture;
 
         public void Configure(GameObject avatar)
         {
@@ -49,6 +66,18 @@ namespace AIFren.UnityPoc.Avatar
             {
                 head = humanoidAnimator.GetBoneTransform(HumanBodyBones.Head);
                 if (head != null) headBaseRotation = head.localRotation;
+                leftShoulder = humanoidAnimator.GetBoneTransform(HumanBodyBones.LeftShoulder);
+                rightShoulder = humanoidAnimator.GetBoneTransform(HumanBodyBones.RightShoulder);
+                if (leftShoulder != null) leftShoulderBaseRotation = leftShoulder.localRotation;
+                if (rightShoulder != null) rightShoulderBaseRotation = rightShoulder.localRotation;
+                leftUpperArm = humanoidAnimator.GetBoneTransform(HumanBodyBones.LeftUpperArm);
+                rightUpperArm = humanoidAnimator.GetBoneTransform(HumanBodyBones.RightUpperArm);
+                leftLowerArm = humanoidAnimator.GetBoneTransform(HumanBodyBones.LeftLowerArm);
+                rightLowerArm = humanoidAnimator.GetBoneTransform(HumanBodyBones.RightLowerArm);
+                if (leftUpperArm != null) leftUpperArmBaseRotation = leftUpperArm.localRotation;
+                if (rightUpperArm != null) rightUpperArmBaseRotation = rightUpperArm.localRotation;
+                if (leftLowerArm != null) leftLowerArmBaseRotation = leftLowerArm.localRotation;
+                if (rightLowerArm != null) rightLowerArmBaseRotation = rightLowerArm.localRotation;
             }
             if (!ConfigureExpressionRuntime())
             {
@@ -68,6 +97,7 @@ namespace AIFren.UnityPoc.Avatar
         public void ClearAvatar()
         {
             StopSpeech();
+            ResetGestureBones();
             if (runtimeExpression != null)
             {
                 SetWeight(blinkKey, 0f);
@@ -80,8 +110,13 @@ namespace AIFren.UnityPoc.Avatar
             setWeightMethod = null;
             blinkKey = mouthKey = happyKey = surprisedKey = null;
             head = null;
+            leftShoulder = rightShoulder = null;
+            leftUpperArm = rightUpperArm = leftLowerArm = rightLowerArm = null;
             hasBlink = hasMouth = hasHappy = hasSurprised = false;
             reactionUntil = 0f;
+            activeGesture = AvatarGestureIntent.None;
+            lastGesture = AvatarGestureIntent.None;
+            gestureStartedAt = gestureDuration = nextGestureAt = 0f;
         }
 
         public void BeginSpeech(float durationSeconds, float[] envelope)
@@ -108,23 +143,131 @@ namespace AIFren.UnityPoc.Avatar
             reactionUntil = Time.unscaledTime + .85f;
         }
 
+        /// <summary>Plays one brief semantic gesture using Humanoid bones, never model-specific clips.</summary>
+        public bool PlayGesture(AvatarGestureIntent intent)
+        {
+            float now = Time.unscaledTime;
+            if (intent == AvatarGestureIntent.None) return false;
+            if (activeGesture != AvatarGestureIntent.None)
+            {
+                Debug.Log("[AvatarGesture] ignored " + intent + "; " + activeGesture + " is still active.");
+                return false;
+            }
+            if (AvatarAnimationMath.IsSameGestureCoolingDown(intent, lastGesture, now, nextGestureAt))
+            {
+                Debug.Log("[AvatarGesture] ignored " + intent + " due to cooldown.");
+                return false;
+            }
+            if (!CanPlay(intent))
+            {
+                Debug.LogWarning("[AvatarGesture] cannot start " + intent + "; required Humanoid bones are unavailable.");
+                return false;
+            }
+            activeGesture = intent;
+            lastGesture = intent;
+            gestureStartedAt = now;
+            gestureDuration = GestureDuration(intent);
+            nextGestureAt = now + gestureDuration + 1.1f;
+            Debug.Log("[AvatarGesture] started " + intent + ".");
+            return true;
+        }
+
         private void Update()
         {
-            if (runtimeExpression == null) return;
-            UpdateMouth();
-            UpdateBlink();
-            UpdateReaction();
+            if (runtimeExpression != null)
+            {
+                UpdateMouth();
+                UpdateBlink();
+                UpdateReaction();
+            }
         }
 
         private void LateUpdate()
         {
-            if (runtimeExpression == null || head == null) return;
             float time = Time.unscaledTime;
             // Tiny unscripted head life; it deliberately does not mouse-track
             // or replace UniVRM's optional look-at setup.
             float yaw = Mathf.Sin(time * .37f) * .7f;
             float pitch = Mathf.Sin(time * .23f + .8f) * .35f;
-            head.localRotation = headBaseRotation * Quaternion.Euler(pitch, yaw, 0f);
+            if (head != null) head.localRotation = headBaseRotation * Quaternion.Euler(pitch, yaw, 0f);
+            ApplyGesture(time, pitch, yaw);
+        }
+
+        private void ApplyGesture(float now, float idlePitch, float idleYaw)
+        {
+            if (activeGesture == AvatarGestureIntent.None) return;
+            float progress = (now - gestureStartedAt) / Mathf.Max(.01f, gestureDuration);
+            if (progress >= 1f)
+            {
+                ResetGestureBones();
+                activeGesture = AvatarGestureIntent.None;
+                return;
+            }
+
+            float pulse = AvatarAnimationMath.GestureEnvelope(progress);
+            if (activeGesture == AvatarGestureIntent.Nod && head != null)
+                head.localRotation = headBaseRotation * Quaternion.Euler(idlePitch + Mathf.Sin(progress * Mathf.PI * 2f) * 10f * pulse, idleYaw, 0f);
+            else if (activeGesture == AvatarGestureIntent.HeadShake && head != null)
+                head.localRotation = headBaseRotation * Quaternion.Euler(idlePitch, idleYaw + Mathf.Sin(progress * Mathf.PI * 3f) * 13f * pulse, 0f);
+            else if (activeGesture == AvatarGestureIntent.HeadTilt && head != null)
+                head.localRotation = headBaseRotation * Quaternion.Euler(idlePitch, idleYaw, -11f * pulse);
+            else if (activeGesture == AvatarGestureIntent.Thinking)
+            {
+                if (head != null) head.localRotation = headBaseRotation * Quaternion.Euler(idlePitch - 4f * pulse, idleYaw + 7f * pulse, -7f * pulse);
+                if (rightUpperArm != null) rightUpperArm.localRotation = rightUpperArmBaseRotation * Quaternion.Euler(-14f * pulse, 4f * pulse, -16f * pulse);
+                if (rightLowerArm != null) rightLowerArm.localRotation = rightLowerArmBaseRotation * Quaternion.Euler(-18f * pulse, 0f, 12f * pulse);
+            }
+            else if (activeGesture == AvatarGestureIntent.Wave)
+            {
+                bool useRightArm = rightUpperArm != null;
+                Transform upperArm = useRightArm ? rightUpperArm : leftUpperArm;
+                Transform lowerArm = useRightArm ? rightLowerArm : leftLowerArm;
+                Quaternion upperArmBase = useRightArm ? rightUpperArmBaseRotation : leftUpperArmBaseRotation;
+                Quaternion lowerArmBase = useRightArm ? rightLowerArmBaseRotation : leftLowerArmBaseRotation;
+                float side = useRightArm ? 1f : -1f;
+                if (upperArm != null) upperArm.localRotation = upperArmBase * Quaternion.Euler(-42f * pulse, 8f * pulse, -38f * side * pulse);
+                if (lowerArm != null) lowerArm.localRotation = lowerArmBase * Quaternion.Euler(-18f * pulse, 0f, Mathf.Sin(progress * Mathf.PI * 5f) * 34f * side * pulse);
+            }
+            else if (activeGesture == AvatarGestureIntent.Shrug)
+            {
+                if (leftShoulder != null) leftShoulder.localRotation = leftShoulderBaseRotation * Quaternion.Euler(0f, 0f, 13f * pulse);
+                if (rightShoulder != null) rightShoulder.localRotation = rightShoulderBaseRotation * Quaternion.Euler(0f, 0f, -13f * pulse);
+                if (leftUpperArm != null) leftUpperArm.localRotation = leftUpperArmBaseRotation * Quaternion.Euler(-6f * pulse, 0f, 13f * pulse);
+                if (rightUpperArm != null) rightUpperArm.localRotation = rightUpperArmBaseRotation * Quaternion.Euler(-6f * pulse, 0f, -13f * pulse);
+            }
+        }
+
+        private bool CanPlay(AvatarGestureIntent intent)
+        {
+            if (intent == AvatarGestureIntent.Wave) return rightUpperArm != null || leftUpperArm != null;
+            if (intent == AvatarGestureIntent.Shrug) return leftShoulder != null || rightShoulder != null || leftUpperArm != null || rightUpperArm != null;
+            if (intent == AvatarGestureIntent.Thinking) return head != null || rightUpperArm != null;
+            return head != null;
+        }
+
+        private static float GestureDuration(AvatarGestureIntent intent)
+        {
+            switch (intent)
+            {
+                case AvatarGestureIntent.Nod: return .72f;
+                case AvatarGestureIntent.HeadShake: return .82f;
+                case AvatarGestureIntent.Wave: return 1.0f;
+                case AvatarGestureIntent.Shrug: return .74f;
+                case AvatarGestureIntent.HeadTilt: return .76f;
+                case AvatarGestureIntent.Thinking: return 1.05f;
+                default: return .7f;
+            }
+        }
+
+        private void ResetGestureBones()
+        {
+            if (head != null) head.localRotation = headBaseRotation;
+            if (leftShoulder != null) leftShoulder.localRotation = leftShoulderBaseRotation;
+            if (rightShoulder != null) rightShoulder.localRotation = rightShoulderBaseRotation;
+            if (leftUpperArm != null) leftUpperArm.localRotation = leftUpperArmBaseRotation;
+            if (rightUpperArm != null) rightUpperArm.localRotation = rightUpperArmBaseRotation;
+            if (leftLowerArm != null) leftLowerArm.localRotation = leftLowerArmBaseRotation;
+            if (rightLowerArm != null) rightLowerArm.localRotation = rightLowerArmBaseRotation;
         }
 
         private void UpdateMouth()
@@ -225,6 +368,17 @@ namespace AIFren.UnityPoc.Avatar
 
     public static class AvatarAnimationMath
     {
+        public static bool IsSameGestureCoolingDown(AvatarGestureIntent requested, AvatarGestureIntent previous, float now, float cooldownEndsAt) =>
+            requested == previous && now < cooldownEndsAt;
+
+        public static float GestureEnvelope(float normalizedTime)
+        {
+            float time = Mathf.Clamp01(normalizedTime);
+            float easeIn = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(time / .18f));
+            float easeOut = 1f - Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((time - .72f) / .28f));
+            return easeIn * easeOut;
+        }
+
         public static float SampleEnvelope(float[] envelope, float elapsedSeconds, float durationSeconds)
         {
             if (envelope == null || envelope.Length == 0 || durationSeconds <= 0f) return 0f;

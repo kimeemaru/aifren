@@ -2,43 +2,177 @@
 
 ## Vision
 
-AIFren is local-first, long-lived companion software. Continuity over years is the product: durable conversation, personality, memory, and relationship rather than a session-based chatbot. The eventual goal is fully local operation with replaceable providers and frontends.
+AIFren is local-first, long-lived companion software. Continuity over years is
+the product: one character should retain durable history, personality, and a
+meaningful relationship without treating every launch as a new chat. The long
+term destination is fully local operation, with replaceable local or
+network-backed implementations during development.
 
-## Current presentation
+## Durable principles
 
-The Unity default is direct rendering: `viewer background -> direct-rendered VRM -> Screen Space Overlay UI`. This avoids magnifying a full-body RenderTexture at close Avatar View framing. The RenderTexture route remains rollback/debug-only. Avatar View stores independent portrait/landscape X/Y/scale; UI visibility is overlay-only and cannot move or resize the avatar. UniVRM supports VRM 1.0 and VRM 0.x. Generic GLB support is not implemented.
+1. Raw conversation is canonical. Summaries, embeddings, indexes, and memories
+   are aids, never a replacement archive.
+2. Character identity, base personality, learned memory, relationship state,
+   and visual avatar assets are separate concepts.
+3. LLM, TTS, STT, embedding, indexes, and frontends remain replaceable.
+4. Data durability, portability, provenance, correction, and explicit scope
+   matter more than short-term convenience.
+5. A continuing character has no ordinary “New Chat” lifecycle.
+
+## Current implementation
+
+The Python backend owns `AssistantService`, canonical persistence, Memory V1,
+provider integration, TTS/PTT, and frontend-neutral events. Tkinter uses it in
+process; the Unity companion connects through loopback `backend_host.py`.
+
+Unity's default presentation is direct rendering:
+
+```text
+viewer background -> direct-rendered VRM -> Screen Space Overlay UI
+```
+
+The previous RenderTexture avatar path is rollback/debug-only. Direct rendering
+avoids raster magnification/crop blur at close Avatar View zoom. Avatar View
+stores independent portrait and landscape X/Y/scale values; hiding UI does not
+resize or reposition the avatar viewport. UniVRM supports VRM 1.0 and VRM 0.x;
+generic GLB loading is not implemented.
 
 ## Managed visual assets
 
-Avatar models and backgrounds are global visual libraries, separate from character identity. Imports are copied into AIFren-managed storage with content-hash identity. Model labels prefer embedded VRM metadata then filename stem; duplicate display names are disambiguated only in UI. Imported models use generated thumbnails with a generic fallback. Background previews preserve aspect and portrait/landscape selections are independent. Built-ins/defaults are non-deletable. Regular click applies an imported asset and makes it the one delete target; Ctrl-click modifies temporary bulk selection. Active and delete-selection state remain distinct.
+Avatar models and backgrounds are global managed visual libraries, not
+character identity data. Imports copy into managed storage with a stable content
+hash. Model display names prefer embedded VRM metadata then filename stem;
+duplicate visible names are disambiguated without changing identity. Imported
+models have persisted head/upper-body thumbnails with a generic fallback.
+Background previews preserve image aspect and portrait/landscape keep independent
+active selection. Built-ins/defaults are permanent and non-deletable.
+
+Normal click applies an imported asset and makes it the sole delete target;
+Ctrl-click modifies temporary bulk-delete selection. Active and delete-selected
+state remain distinct. Visual asset swaps must not change personality, memory,
+history, voice, or relationship state.
 
 ## Data Ownership & Destructive Operations
 
-A subsystem may destructively modify only data/files it owns; references do **not** imply ownership. External imported source files are never deletion targets. Managed cleanup may delete only individual files inside exact managed `Models/`, `Backgrounds/`, and `Thumbnails/` directories. Traversal, absolute external paths, similarly prefixed roots, symlink/reparse escapes, and directories are refused. Tampered metadata is repaired or removed without deleting external files. Deletion is kind-scoped: equal model/background hashes do not grant cross-kind authority.
+A subsystem may destructively modify only data/files it owns. References do
+**not** imply ownership.
 
-Future Character Management may delete only character-owned data and must dereference shared/global visual or voice assets. It must never delete another character's history, memory, or personality. Future memory/personality tools should favor archive/supersede/deactivate where practical and prove unrelated data survives destructive work.
+- An imported source file outside AIFren is never a deletion target.
+- Only individual files in canonical managed `Models/`, `Backgrounds/`, and
+  `Thumbnails/` directories may be deleted.
+- Traversal, malformed/external paths, symlink/reparse escapes, directories,
+  and similarly prefixed roots such as `AssetLibrary2` are refused.
+- Tampered metadata may be repaired/removed without deleting a referenced
+  external file.
+- Deletion is kind-scoped: equal model/background hashes do not imply shared
+  ownership or cross-kind deletion.
 
-## Companion, audio, and subtitles
+This is project-wide. Future Character Management may remove only
+character-owned data; it dereferences shared avatar/background/voice assets and
+must never delete another character's memory/personality/history. Memory and
+personality editors should prefer archive/supersede/deactivate, use explicit
+scopes for destructive work, and test cross-scope survival.
 
-The player runs while unfocused. Always on Top is persisted; Linux X11 uses EWMH where supported. On rotated X11 displays, Linux uses `FullScreenWindow` plus EWMH fullscreen rather than unreliable exclusive fullscreen, preserving selected physical display orientation. Backend disconnect UI offers warning/reconnect and recovery only starts/reuses a repository-owned backend.
+## Companion, display, and Linux
 
-PTT/audio lifecycle is authoritative. Explicit PTT interruption immediately invalidates synthesis/playback, stops audio, and prevents stale synthesis from playing. It never waits for subtitle work or natural playback end. Natural completion retires active playback state; playback IDs prevent stale completion from clearing newer playback. Subtitle timing must never gate PTT readiness, cancellation, audio startup, or backend readiness.
+The player runs in the background so rendering continues unfocused. Always on
+Top is persisted; Linux X11 uses native EWMH/X11 where available. Unity
+`ExclusiveFullScreen` is unreliable on rotated X11 displays, so Linux uses
+`FullScreenWindow` plus EWMH fullscreen and selected physical desktop geometry
+to preserve portrait orientation. Windows behavior remains separate and needs a
+later compatibility pass.
 
-Visible dialogue keeps canonical assistant text unchanged, renders paired `*emotes*` blue, and uses bold normal text. Optional hidden subtitles omit emotes and use a floating lower-screen overlay with progressive reveal/pagination. Page text is sanitized plain text, geometry is precomputed/stable, and TMP mesh/vertex visibility controls reveal rather than inline alpha tags. Valid Kokoro timing may be used; invalid/missing timing uses an immutable fallback plan. Temporary UI peek does not destroy subtitle state; committed Show UI cancels it.
+## PTT/TTS authority
 
-## Memory and roadmap
+Audio lifecycle is authoritative; subtitle presentation is downstream only.
 
-Memory V1 is authoritative and prompt-facing. Memory V2 is non-authoritative shadow/evaluation work until explicit promotion. Planned V2 concepts include profile facts, shared episodes, deterministic active/current state, and separately handled relationship state; evidence, character scope, temporal claims, supersession/dispute handling, and retrieval diversity remain essential. A Memory Viewer/Editor is required before V2 authority.
+- PTT interruption immediately invalidates synthesis/playback generation and
+  aborts active audio.
+- Interrupted/stale synthesis cannot later start playback.
+- Interruption never waits for subtitle scheduling, timing extraction, natural
+  completion, or subtitle work.
+- Natural completion explicitly retires active playback state.
+- Playback IDs prevent stale completion from clearing a newer playback.
+- Subtitle timing/alignment must never gate PTT readiness, interruption,
+  synthesis cancellation, audio startup, or backend readiness.
 
-1. Hidden-subtitle final QA.
-2. Final frontend QA.
-3. Reusable expressions/basic animation with model capability fallback.
-4. Character Management with ownership-safe deletion.
+## Dialogue and hidden subtitles
+
+Canonical assistant content is unchanged by presentation. Normal dialogue keeps
+paired `*emote*` spans visible and blue; normal dialogue is bold. Optional
+hidden subtitles omit emote/action spans and are a floating lower-screen layer,
+not the normal dialogue box or a scroll view. They reveal progressively and
+paginate long replies.
+
+`DialoguePresentationParser` produces typed `PlainText`, `Emphasis`, and
+`Emote` spans. A paired single `*...*` span is an emote when it is a known
+action/stage direction or contains four or more normalized words; otherwise it
+is italic spoken emphasis. Paired `**...**` is always emphasis. Emotes are
+removed from TTS and hidden subtitles but remain available to gesture mapping.
+The Unity parser and backend TTS cleaner intentionally mirror this semantic
+interpretation.
+
+`HiddenSubtitlePresenter` is the sole owner of hidden-subtitle page, mesh,
+renderability, and alpha state. Pages advance by their actual adjusted word
+count, not a requested maximum; page ranges and page text must map every
+global spoken word exactly once, in order. `timingDue` and
+`presentationShown` are distinct so words due while an incoming page or
+temporary UI peek is non-renderable remain pending for visible presentation.
+Complete page geometry is computed before reveal and remains stable; TMP
+mesh/vertex alpha controls word visibility instead of generated inline alpha
+tags. Kokoro timing is forwarded only when finite, monotonic, plausible, and
+one-to-one with cleaned spoken words. Invalid/missing timing uses an immutable
+fallback plan. Temporary UI peek suppresses rendering without cancelling the
+session; committed Show UI cancels it. A short non-final-page readability dwell
+remains future polish, not current behavior.
+
+The chat field is a fixed-height multiline TMP input with a masked Text Area.
+It stays vertically centered while content fits, then uses top-aligned internal
+scrolling only after preferred rendered height exceeds its viewport. Enter
+submits; Shift+Enter inserts a newline.
+
+## Gesture backbone
+
+`AvatarGestureIntent`, `AvatarGestureMapper`, and `AvatarAnimationController`
+form a semantic, Humanoid-mapped presentation layer. The first supported emote
+per response may request Nod, HeadShake, Wave, Shrug, HeadTilt, or Thinking;
+gesture cooldown handles repeated requests while blink and lip-sync remain
+separate. This is procedural groundwork, not a finished animation system.
+
+Manual QA: Nod is acceptable. HeadShake remains somewhat choppy; HeadTilt and
+other gestures can feel robotic, and Wave needs further trigger/visibility QA.
+Future work should evaluate appropriately licensed authored Humanoid clips
+while retaining the semantic intent abstraction. Facial expressions, response
+emotion/intensity metadata, and persistent mood are not implemented.
+
+## Memory status and direction
+
+Memory V1 is authoritative and prompt-facing today. Memory V2 is experimental
+shadow/evaluation work until explicitly promoted. Planned V2 categories include
+user/profile facts, shared episodic memory, active current state, and separate
+relationship state. Active state (clothing, location, held object, activity,
+environment, temporary conditions) belongs in deterministic prompt context, not
+ordinary semantic retrieval. Future claims need evidence, character scope,
+temporal handling, supersession/dispute support, careful user corrections, and
+retrieval balancing relevance, recency, importance, diversity, and repetition
+suppression. A Memory Viewer/Editor is required before V2 becomes authoritative.
+
+## Roadmap
+
+1. Friend-build/package validation and final frontend QA.
+2. Licensed authored-animation source evaluation and gesture polish.
+3. Facial expressions and response emotion/intensity metadata.
+4. Character Management: select/create/rename/delete, personality editor and
+   presets, voice selection, ownership-safe character deletion.
 5. Memory Viewer / Editor.
-6. Memory V2/backend work.
-7. Voice and AI settings.
+6. Memory V2 / backend promotion work.
+7. Voice and AI settings, including PTT/mic/TTS/STT/model recovery controls.
 8. Safe optional web lookup.
 9. Windows compatibility pass.
 10. 1.0 packaging/productization.
 
-Parked: remote/mobile companion, VR, generic GLB, and advanced animation/emotion systems. Built-in ambient/background music is not a priority; functional TTS, microphone, PTT, and justified recovery audio are.
+Parked: LAN-first remote/mobile companion, VR experiments, generic GLB support,
+and advanced animation/emotion systems. The 1.0 direction includes lower-spec
+local models, installer/dependency packaging, import/export/backups, and
+possible open-source/low-cost distribution. Built-in background music is not a
+priority; functional TTS, microphone, PTT, and justified recovery audio are.

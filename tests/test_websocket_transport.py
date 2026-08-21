@@ -32,7 +32,7 @@ class FakeService:
     def __init__(self):
         self.conversation = FakeConversation()
         self.character = {
-            "name": "Serval",
+            "name": "AIFren",
             "description": "A companion",
             "avatar": "avatar.png",
         }
@@ -42,6 +42,9 @@ class FakeService:
         self.stop_calls = 0
         self.volume_calls = []
         self.transcription_modes = []
+        self.ptt_press_calls = 0
+        self.ptt_release_calls = 0
+        self.ptt_error = None
         self.closed = 0
         self.turn_started = threading.Event()
         self.release_turn = threading.Event()
@@ -87,6 +90,16 @@ class FakeService:
     def set_push_to_talk_binding(self, binding):
         self.ptt_binding = binding
 
+    def push_to_talk_press(self):
+        self.ptt_press_calls += 1
+        if self.ptt_error is not None:
+            raise self.ptt_error
+
+    def push_to_talk_release(self):
+        self.ptt_release_calls += 1
+        if self.ptt_error is not None:
+            raise self.ptt_error
+
     def close(self):
         self.closed += 1
 
@@ -123,7 +136,7 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         message = await self.receive_json()
 
         self.assertEqual(message["type"], "snapshot")
-        self.assertEqual(message["data"]["character"]["name"], "Serval")
+        self.assertEqual(message["data"]["character"]["name"], "AIFren")
         self.assertEqual(message["data"]["conversation"][0]["content"], "Welcome back.")
         self.assertEqual(message["data"]["status"]["state"], "ready")
         self.assertEqual(message["data"]["tts"]["volume"], 0.4)
@@ -202,6 +215,20 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         await self.client.send(json.dumps({"command": "set_ptt_binding", "binding": "F8"}))
         await asyncio.sleep(0.05)
         self.assertEqual(self.service.ptt_binding, "F8")
+
+    async def test_ptt_provider_errors_are_returned_without_closing_transport(self):
+        self.service.ptt_error = RuntimeError("PTT unavailable")
+        await self.client.send(json.dumps({"command": "ptt_press"}))
+        press_error = await self.receive_until(lambda item: item.get("type") == "command_error")
+        self.assertEqual(press_error["error"]["code"], "ptt_press_failed")
+
+        await self.client.send(json.dumps({"command": "ptt_release"}))
+        release_error = await self.receive_until(lambda item: item.get("type") == "command_error")
+        self.assertEqual(release_error["error"]["code"], "ptt_release_failed")
+
+        await self.client.send(json.dumps({"command": "get_snapshot"}))
+        snapshot = await self.receive_until(lambda item: item.get("type") == "snapshot")
+        self.assertEqual(snapshot["type"], "snapshot")
 
     async def test_invalid_command_and_clean_shutdown(self):
         await self.client.send("not json")

@@ -29,24 +29,24 @@ namespace AIFren.UnityPoc.Avatar
     }
 
     [Serializable]
-    public sealed class AvatarCrop
+    public sealed class AvatarPresentationTransform
     {
-        // Normalized RenderTexture coordinates. These crop only the UI image;
-        // they never change the camera frustum or the rendered VRM body.
+        public const float MaximumScale = 8f;
+        // A scaled full-view image needs half of its scale in either direction
+        // to bring either original edge to the viewport center. This preserves
+        // the complete direct-view composition range at the maximum zoom.
+        public const float MaximumTranslation = MaximumScale * .5f;
+        // Normalized to the presentation container.  These are authored
+        // layout values, not camera or texture coordinates.
         public float x;
         public float y;
-        public float width = 1f;
-        public float height = 1f;
-
-        public Rect ToRect()
-        {
-            return new Rect(x, y, width, height);
-        }
+        public float scale = 1f;
 
         public bool IsValid()
         {
-            return width > 0f && height > 0f && x >= 0f && y >= 0f &&
-                x + width <= 1f && y + height <= 1f;
+            return scale >= 1f && scale <= MaximumScale &&
+                x >= -MaximumTranslation && x <= MaximumTranslation &&
+                y >= -MaximumTranslation && y <= MaximumTranslation;
         }
     }
 
@@ -63,24 +63,15 @@ namespace AIFren.UnityPoc.Avatar
         public float fieldOfView = 25f;
         // Camera framing always contains the complete dynamic renderer bounds.
         // This extra margin covers arm gestures, sway, hair physics and similar
-        // animation excursions. Presentation crops belong to the UI below.
-        public float fullBodyCameraPadding = 1.30f;
-        // Each displayed crop is rendered above its display resolution so UV
-        // cropping does not turn a full-body safety render into a soft closeup.
-        public float renderTextureSupersample = 1.15f;
-        // The full render stays intact; portrait and landscape crop its RawImage
-        // independently to create the close companion compositions. Crop x/y
-        // stay geometrically centered; visual per-avatar correction is stored
-        // separately so user pan remains a pure, resettable delta.
-        public AvatarCrop landscapeUiCrop = new AvatarCrop { x = .20f, y = .2375f, width = .6f, height = .525f };
-        public AvatarCrop portraitUiCrop = new AvatarCrop { x = .30f, y = .22f, width = .40f, height = .56f };
-        public AvatarVector2 landscapeAlignmentOffset = new AvatarVector2 { x = 0f, y = .1625f };
-        public AvatarVector2 portraitAlignmentOffset = new AvatarVector2 { x = 0f, y = .14f };
-        // The zero-pan authored composition may have a deliberate default zoom.
-        // Keep it alongside its crop and alignment instead of scattering 1f
-        // defaults through startup, persistence, and Reset paths.
-        public float landscapeDefaultZoom = 1f;
-        public float portraitDefaultZoom = 1f;
+        // animation excursions. Presentation composition belongs to the UI below.
+        public float fullBodyCameraPadding = 1.08f;
+        // The complete padded render is supersampled before this presentation
+        // transform enlarges it inside a clipped UI container.
+        public float renderTextureSupersample = 1.35f;
+        // Portrait and landscape keep independently authored composition. The
+        // RawImage always samples the entire RenderTexture (uvRect 0..1).
+        public AvatarPresentationTransform landscapePresentation = new AvatarPresentationTransform { x = 0f, y = 0f, scale = 1f };
+        public AvatarPresentationTransform portraitPresentation = new AvatarPresentationTransform { x = 0f, y = 0f, scale = 1f };
         public float idleSwayDegrees = 1.2f;
         public float idleSwayCyclesPerSecond = 0.08f;
         public float relaxedArmDown = -0.55f;
@@ -106,15 +97,9 @@ namespace AIFren.UnityPoc.Avatar
             return configuration;
         }
 
-        public Vector2 PresentationAlignment(bool portrait)
+        public AvatarPresentationTransform PresentationTransform(bool portrait)
         {
-            AvatarVector2 alignment = portrait ? portraitAlignmentOffset : landscapeAlignmentOffset;
-            return alignment != null ? alignment.ToVector2() : Vector2.zero;
-        }
-
-        public float PresentationDefaultZoom(bool portrait)
-        {
-            return portrait ? portraitDefaultZoom : landscapeDefaultZoom;
+            return portrait ? portraitPresentation : landscapePresentation;
         }
 
         public bool IsValid(out string error)
@@ -149,19 +134,10 @@ namespace AIFren.UnityPoc.Avatar
                 return false;
             }
 
-            if (landscapeUiCrop == null || portraitUiCrop == null ||
-                !landscapeUiCrop.IsValid() || !portraitUiCrop.IsValid())
+            if (landscapePresentation == null || portraitPresentation == null ||
+                !landscapePresentation.IsValid() || !portraitPresentation.IsValid())
             {
-                error = "Avatar UI crop rectangles must stay within the rendered texture.";
-                return false;
-            }
-
-            if (landscapeDefaultZoom < AvatarUiFraming.MinimumZoom(landscapeUiCrop) ||
-                landscapeDefaultZoom > AvatarUiFraming.MaximumZoom ||
-                portraitDefaultZoom < AvatarUiFraming.MinimumZoom(portraitUiCrop) ||
-                portraitDefaultZoom > AvatarUiFraming.MaximumZoom)
-            {
-                error = "Avatar default zoom must stay within the supported framing range.";
+                error = "Avatar presentation transforms must use a supported scale and container translation.";
                 return false;
             }
 
@@ -181,27 +157,54 @@ namespace AIFren.UnityPoc.Avatar
     {
         public static float RequiredCameraDistance(Bounds bounds, float verticalFieldOfView, float aspect, float padding)
         {
+            return RequiredCameraDistance(bounds, Vector3.forward, verticalFieldOfView, aspect, padding);
+        }
+
+        /// <summary>
+        /// Fits every corner of the complete renderer bounds to the actual
+        /// RenderTexture aspect. This avoids treating a tall humanoid as a
+        /// padded sphere, which wastes a large amount of the capture.
+        /// </summary>
+        public static float RequiredCameraDistance(Bounds bounds, Vector3 cameraForward, float verticalFieldOfView, float aspect, float padding)
+        {
             float halfVerticalRadians = Mathf.Deg2Rad * verticalFieldOfView * 0.5f;
-            float halfHorizontalRadians = Mathf.Atan(Mathf.Tan(halfVerticalRadians) * Mathf.Max(0.1f, aspect));
-            float limitingHalfAngle = Mathf.Min(halfVerticalRadians, halfHorizontalRadians);
-            float radius = Mathf.Max(0.01f, bounds.extents.magnitude * Mathf.Max(1f, padding));
-            return radius / Mathf.Sin(limitingHalfAngle);
+            float verticalTangent = Mathf.Max(.0001f, Mathf.Tan(halfVerticalRadians));
+            float horizontalTangent = Mathf.Max(.0001f, verticalTangent * Mathf.Max(.1f, aspect));
+            Quaternion cameraRotation = Quaternion.LookRotation(cameraForward.normalized, Vector3.up);
+            Vector3 right = cameraRotation * Vector3.right;
+            Vector3 up = cameraRotation * Vector3.up;
+            float safePadding = Mathf.Max(1f, padding);
+            float requiredDistance = .01f;
+
+            for (int x = -1; x <= 1; x += 2)
+            for (int y = -1; y <= 1; y += 2)
+            for (int z = -1; z <= 1; z += 2)
+            {
+                Vector3 offset = Vector3.Scale(bounds.extents, new Vector3(x, y, z));
+                float depth = Vector3.Dot(offset, cameraForward.normalized);
+                requiredDistance = Mathf.Max(requiredDistance,
+                    Mathf.Abs(Vector3.Dot(offset, right)) * safePadding / horizontalTangent - depth,
+                    Mathf.Abs(Vector3.Dot(offset, up)) * safePadding / verticalTangent - depth);
+            }
+
+            return requiredDistance;
         }
     }
 
-    /// <summary>Derived render-target sizing for aspect-correct UI cropping.</summary>
+    /// <summary>Derived render-target sizing for high-density full-avatar presentation.</summary>
     public static class AvatarRenderQuality
     {
         public const int MaximumRenderTextureDimension = 3072;
 
-        public static Vector2Int RequiredRenderTextureSize(Vector2 displayedCropPixels, AvatarCrop crop, float supersample)
+        public static Vector2Int RequiredRenderTextureSize(Vector2 presentationPixels, float presentationScale, float supersample)
         {
-            float safeWidth = Mathf.Max(1f, displayedCropPixels.x);
-            float safeHeight = Mathf.Max(1f, displayedCropPixels.y);
+            float safeWidth = Mathf.Max(1f, presentationPixels.x);
+            float safeHeight = Mathf.Max(1f, presentationPixels.y);
+            float safeScale = Mathf.Max(1f, presentationScale);
             float safeSupersample = Mathf.Max(1f, supersample);
             return new Vector2Int(
-                Mathf.CeilToInt(safeWidth / Mathf.Max(.01f, crop.width) * safeSupersample),
-                Mathf.CeilToInt(safeHeight / Mathf.Max(.01f, crop.height) * safeSupersample)
+                Mathf.CeilToInt(safeWidth * safeScale * safeSupersample),
+                Mathf.CeilToInt(safeHeight * safeScale * safeSupersample)
             );
         }
 
@@ -219,92 +222,5 @@ namespace AIFren.UnityPoc.Avatar
             );
         }
 
-        public static bool CropMatchesDisplayAspect(Vector2 displayedCropPixels, AvatarCrop crop, float tolerance = .015f)
-        {
-            if (displayedCropPixels.x <= 0f || displayedCropPixels.y <= 0f || crop == null || !crop.IsValid()) return false;
-            float displayAspect = displayedCropPixels.x / displayedCropPixels.y;
-            float cropAspect = crop.width / crop.height;
-            return Mathf.Abs(displayAspect - cropAspect) <= tolerance;
-        }
-    }
-
-    /// <summary>
-    /// Resolves presentation-only UI sampling from the full padded avatar RT.
-    /// The renderer/camera stays full-body; this class only returns a valid UV
-    /// rectangle and the matching display aspect for a chosen composition.
-    /// </summary>
-    public static class AvatarUiFraming
-    {
-        public const float MaximumZoom = 3.5f;
-
-        public static float MinimumZoom(AvatarCrop authoredCrop)
-        {
-            if (authoredCrop == null || !authoredCrop.IsValid()) return 1f;
-            // At this zoom both authored dimensions expand to the complete RT.
-            return Mathf.Clamp(Mathf.Min(authoredCrop.width, authoredCrop.height), .01f, 1f);
-        }
-
-        public static Rect Resolve(AvatarCrop authoredCrop, float zoom, float horizontalPan, float verticalPan)
-        {
-            Vector2 legacyAlignment = authoredCrop == null
-                ? Vector2.zero
-                : new Vector2(
-                    authoredCrop.x + authoredCrop.width * .5f - .5f,
-                    authoredCrop.y + authoredCrop.height * .5f - .5f
-                );
-            return Resolve(authoredCrop, legacyAlignment, zoom, horizontalPan, verticalPan);
-        }
-
-        public static Rect Resolve(AvatarCrop authoredCrop, Vector2 alignmentOffset, float zoom, float horizontalPan, float verticalPan)
-        {
-            if (authoredCrop == null || !authoredCrop.IsValid()) return new Rect(0f, 0f, 1f, 1f);
-
-            float safeZoom = Mathf.Clamp(zoom, MinimumZoom(authoredCrop), MaximumZoom);
-            float width = Mathf.Min(1f, authoredCrop.width / safeZoom);
-            float height = Mathf.Min(1f, authoredCrop.height / safeZoom);
-            // Canonical composition: literal RT center + hidden avatar alignment
-            // + user pan. The alignment is never mutated by Reset or persistence.
-            float defaultX = Mathf.Clamp(.5f + alignmentOffset.x, width * .5f, 1f - width * .5f);
-            float defaultY = Mathf.Clamp(.5f + alignmentOffset.y, height * .5f, 1f - height * .5f);
-            float centerX = ApplyPan(defaultX, width, horizontalPan);
-            float centerY = ApplyPan(defaultY, height, verticalPan);
-            return new Rect(centerX - width * .5f, centerY - height * .5f, width, height);
-        }
-
-        public static float DisplayAspect(Rect crop, int renderTextureWidth, int renderTextureHeight)
-        {
-            return Mathf.Max(.01f, crop.width * Mathf.Max(1, renderTextureWidth) /
-                (crop.height * Mathf.Max(1, renderTextureHeight)));
-        }
-
-        /// <summary>
-        /// True only when a crop at this zoom has remaining legal movement on
-        /// the requested axis. At full-RT zoom there is intentionally no pan;
-        /// callers must leave the stored user delta alone rather than letting
-        /// an invisible drag accumulate and jump at the next zoom level.
-        /// </summary>
-        public static bool HasPanRange(AvatarCrop authoredCrop, float zoom, bool horizontal)
-        {
-            if (authoredCrop == null || !authoredCrop.IsValid()) return false;
-            float safeZoom = Mathf.Clamp(zoom, MinimumZoom(authoredCrop), MaximumZoom);
-            float dimension = horizontal
-                ? Mathf.Min(1f, authoredCrop.width / safeZoom)
-                : Mathf.Min(1f, authoredCrop.height / safeZoom);
-            return 1f - dimension > .0001f;
-        }
-
-        private static float ApplyPan(float defaultCenter, float dimension, float pan)
-        {
-            float minimum = dimension * .5f;
-            float maximum = 1f - minimum;
-            if (maximum - minimum <= .0001f)
-            {
-                return .5f;
-            }
-            float clampedPan = Mathf.Clamp(pan, -1f, 1f);
-            return clampedPan < 0f
-                ? Mathf.Lerp(defaultCenter, minimum, -clampedPan)
-                : Mathf.Lerp(defaultCenter, maximum, clampedPan);
-        }
     }
 }
