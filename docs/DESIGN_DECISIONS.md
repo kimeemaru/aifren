@@ -1,7 +1,7 @@
 # AIFren Design Decisions
 
 > **Status:** Durable product/system design record.
-> **Updated:** 2026-08-21.
+> **Updated:** 2026-08-22.
 > **Purpose:** Preserve the detailed reasoning, invariants, and future-system decisions that are intentionally kept concise in `PROJECT.md`.
 >
 > - See [`../PROJECT.md`](../PROJECT.md) for the concise direction and roadmap.
@@ -675,7 +675,19 @@ The LLM should not need to know Unity clip filenames or model-specific bone name
 
 ### Current direction — authored animation evaluation
 
-The next animation-quality step is to investigate **free/permissively licensed authored Humanoid animation clips** that can legally be redistributed in a future public/commercial release.
+AIFren prefers authored **VRMA** animation where practical for portable VRM humanoid body animation. Native VRMA is a presentation format, not a new semantic API: `AvatarGestureIntent` remains the behavior boundary and a VRMA filename/path must never reach backend or LLM behavior.
+
+Procedural gestures remain useful fallback, debug, and micro-motion mechanisms even if VRMA becomes the preferred polished authored format. Standard/default mappings should be reusable across compatible VRMs; optional per-character overrides are a future extension, not a requirement to maintain complete animation libraries per character.
+
+Gesture VRMAs should normally be body-focused. Body gesture, facial expression, lip sync, blink, and gaze are separately arbitrated channels so a deliberate gesture can coexist with AIFren-controlled face/speech presentation.
+
+Successful VRMA loading is not, by itself, proof of portable visual compatibility. Before shipping an authored animation, validate its normalized Humanoid/rest-pose behavior on multiple compatible target VRMs and prefer assets with predictable, portable pose data.
+
+Conversational authored gestures should normally be in-place: preserve the avatar's world/root placement unless an animation is explicitly classified as locomotion or another intentional full-body repositioning action.
+
+For UniVRM runtime VRMA playback, create the runtime ControlRig while the imported VRM is still in its reference pose, before applying AIFren's presentation-only relaxed pose. Conversational FullBodyInPlace playback uses one captured AIFren presentation hips baseline for entry, playback, and exit. Source reference placement must not reposition the character, while authored hips motion remains relative to the VRMA reference pose; this permits a gesture that intentionally starts crouched to preserve that crouch. Authored body gestures should transition into and out of that persistent baseline gracefully; these body transitions must remain separate from face, lip sync, blink, and gaze ownership.
+
+The next animation-quality step is to investigate **free/permissively licensed authored animation assets** that can legally be redistributed in a future public/commercial release.
 
 Before integrating a source, verify:
 
@@ -701,6 +713,8 @@ The intended expression/animation model has three conceptual layers:
 3. **brief body gesture/animation** — a deliberate physical gesture.
 
 A brief gesture can finish while the facial expression or mood presentation remains.
+
+Deliberate gestures are temporary presentation events: they return to baseline presentation after completion. Each assistant response has zero or one deliberate semantic gesture by default; multiple deliberate gestures are not queued within one response unless a later explicit design decision changes that rule.
 
 ### Planned / decided — initial semantic expression vocabulary
 
@@ -731,7 +745,7 @@ The LLM should ideally choose response emotion explicitly.
 
 Avoid an extra LLM call solely to classify emotion if the main response generation can return structured presentation metadata in the same turn.
 
-A future response contract may include fields conceptually equivalent to:
+A future `ResponsePresentationMetadata` contract may include fields conceptually equivalent to:
 
 - `emotion`,
 - `intensity`,
@@ -739,22 +753,41 @@ A future response contract may include fields conceptually equivalent to:
 
 The exact wire/schema format is not fixed by this document.
 
-### Planned / decided — persistence and decay
+An absent/no-change emotion update is valid. Each assistant turn may change the persistent visible facial expression/intensity or intentionally leave the current expression unchanged. Emotion semantics remain independent of VRM blendshape/expression names; Unity maps semantic emotion onto the active VRM's available expression capabilities.
+
+The expression decision should represent the character's reaction to the full conversational context: the user's message, character personality, relevant relationship/context, previous facial/presentation state, and the response being produced.
+
+### Planned / decided — visible expression persistence
 
 Emotion should not flip arbitrarily every sentence.
 
 Desired behavior:
 
-- mild reactions decay relatively quickly;
-- strong reactions may persist longer;
-- mood has inertia;
-- personality affects reaction thresholds;
-- relationship context may affect reaction strength;
-- transient gesture completion does not require facial expression to reset immediately;
-- an expression may remain while listening rather than snapping to neutral, unless UX testing later shows that this feels wrong;
+- the previous expression remains while waiting for interaction;
+- after the user interacts, the dialogue-and-metadata result updates the expression or leaves it unchanged;
+- that resulting expression persists through speech completion and while awaiting the next interaction;
+- transient gesture completion does not require facial expression to reset;
 - expression transitions should blend smoothly when technically practical.
 
 Variety is desirable, but random twitchiness is not.
+
+The intended lifecycle is:
+
+```text
+previous expression remains while waiting
+    -> user interacts
+    -> LLM produces dialogue + presentation metadata
+    -> expression updates or remains unchanged
+    -> speech begins
+    -> zero or one deliberate gesture occurs
+    -> gesture returns to baseline
+    -> speech ends
+    -> resulting expression persists while awaiting the next interaction
+```
+
+### Planned / decided — future mood remains separate
+
+Persistent mood is separate from the currently visible expression. Mood may later bias reaction thresholds, expression transitions, and reaction strength, but it is not required for the first expression implementation.
 
 ### Planned / decided — relationship to personality
 
@@ -1431,4 +1464,3 @@ Conversely, an old implementation detail found in historical chat, an obsolete b
 - Explicit newer user direction always wins. Update this document when that direction becomes a durable decision so future chats and agents do not resurrect superseded plans.
 
 ---
-
