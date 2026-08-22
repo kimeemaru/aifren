@@ -745,7 +745,7 @@ A useful initial semantic expression vocabulary is expected to include concepts 
 - concerned,
 - thinking.
 
-These expressions are **not yet an implemented authoritative semantic system**. The semantic vocabulary should map onto whatever each avatar can actually express; a future dialogue presentation metadata layer will resolve semantic emotion and intensity through the Unity capability layer rather than addressing concrete morphs directly.
+The dialogue response path may carry this bounded semantic emotion/intensity vocabulary and one optional semantic gesture in the same inference that produces dialogue. Python keeps that metadata frontend-neutral alongside the authoritative response; Unity resolves it through the active avatar's available capabilities rather than addressing concrete morphs directly. An absent emotion preserves the current persistent visible expression, while explicit neutral clears it.
 
 ### Exploratory / parked
 
@@ -813,7 +813,7 @@ Personality influences **how strongly and how easily** a character reacts. Mood 
 
 ### Implemented / current
 
-There is no complete authoritative mood/emotion or dialogue-metadata system. The manual avatar expression capability layer is presentation groundwork only; persistent mood and LLM-driven semantic expression selection remain future work.
+There is no complete authoritative mood system. Persistent mood, richer semantic vocabularies, and autonomous gaze remain future work; the current bounded response-presentation metadata is deliberately not mood or character-memory state.
 
 ### Undecided
 
@@ -1432,15 +1432,16 @@ The major visual/direct-rendering, background, dialogue, subtitle, input, and fr
 
 Current order when development quota/time allows:
 
-1. investigate free/permissively licensed authored Humanoid animation clips;
-2. improve or replace robotic procedural gestures while preserving `AvatarGestureIntent`;
-3. add facial expressions plus response emotion/intensity metadata;
-4. build Character Management;
-5. build a scalable Memory Viewer / Editor;
-6. continue Memory V2/backend promotion work only after inspection/provenance/safety requirements are met;
-7. expand Voice/AI settings and provider choices;
-8. perform the dedicated Windows compatibility pass;
-9. continue 1.0 packaging/productization.
+1. establish reliable long-term episodic and temporal memory retrieval before
+   any Memory V2 prompt-facing canary;
+2. design active/current state, relationship state, and a scalable
+   non-destructive Memory Viewer / Editor;
+3. continue friend-build/package and Unity frontend validation;
+4. improve licensed authored animation and presentation only after memory
+   correctness is no longer the release blocker;
+5. expand Voice/AI settings and provider choices;
+6. perform the dedicated Windows compatibility pass;
+7. continue 1.0 packaging/productization.
 
 Friend-build testing may continue opportunistically, but producing a portable Linux friend archive is no longer a missing milestone.
 

@@ -7,7 +7,7 @@ Read [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](ARCHITECTURE.md), and
 
 - Preserve working behavior with small, reviewable changes. Do not begin an unrelated roadmap stage without approval.
 - `conversation.json`, `conversation_summary.json`, `memories.json`, and character data are durable canonical records. Do not casually move, rewrite, or migrate them.
-- `AssistantService` owns backend turns, canonical persistence, memory processing, TTS/PTT lifecycle, and backend events. `backend_host.py` is the loopback WebSocket adapter. Unity and Tkinter are presentation clients, not alternate backends.
+- `AssistantService` owns backend turns, canonical persistence, memory processing, TTS/PTT lifecycle, and backend events. `backend_host.py` is the loopback WebSocket adapter. Unity is the production frontend; Tkinter is legacy/debug-only. Both are presentation clients, not alternate backends.
 - Keep LLM, TTS, STT, embedding, and frontend implementations replaceable. Frontends must not mutate `Memory.memories` directly.
 - Character identity, personality, conversation, and memory are separate from global visual avatar/background assets. A visual asset swap must not change a character's durable identity.
 - Direct VRM rendering is the normal Unity path. The RenderTexture presentation path is rollback/debug-only; do not reintroduce UV crop framing as a feature.

@@ -24,8 +24,9 @@ For the detailed durable product and future-system decisions behind this summary
 ## Current implementation
 
 The Python backend owns `AssistantService`, canonical persistence, Memory V1,
-provider integration, TTS/PTT, and frontend-neutral events. Tkinter uses it in
-process; the Unity companion connects through loopback `backend_host.py`.
+provider integration, TTS/PTT, and frontend-neutral events. Unity is the
+canonical product frontend and connects through loopback `backend_host.py`;
+the older Tkinter client is legacy/debug-only.
 
 Unity's default presentation is direct rendering:
 
@@ -147,34 +148,35 @@ separate. This is procedural groundwork, not a finished animation system.
 Manual QA: Nod is acceptable. HeadShake remains somewhat choppy; HeadTilt and
 other gestures can feel robotic, and Wave needs further trigger/visibility QA.
 Future work should evaluate appropriately licensed authored Humanoid clips
-while retaining the semantic intent abstraction. Facial expressions, response
-emotion/intensity metadata, and persistent mood are not implemented.
+while retaining the semantic intent abstraction. Expressions and gaze are
+separate presentation channels from blink, mouth/lip-sync, and body gesture;
+concrete avatar presentation remains Unity-owned.
 
 ## Memory status and direction
 
-Memory V1 is authoritative and prompt-facing today. Memory V2 is experimental
-shadow/evaluation work until explicitly promoted. Planned V2 categories include
-user/profile facts, shared episodic memory, active current state, and separate
-relationship state. Active state (clothing, location, held object, activity,
-environment, temporary conditions) belongs in deterministic prompt context, not
-ordinary semantic retrieval. Future claims need evidence, character scope,
-temporal handling, supersession/dispute support, careful user corrections, and
-retrieval balancing relevance, recency, importance, diversity, and repetition
-suppression. A Memory Viewer/Editor is required before V2 becomes authoritative.
+Memory V1 and `memories.json` remain authoritative and prompt-facing. Memory
+V2 is experimental local shadow/evaluation work, not production authority or a
+canary. It has character-scoped SQLite events/claims/evidence, append-oriented
+lifecycle history, non-destructive supersession/archive, rebuildable FTS and
+embedding/ANN support, and fail-open dual-read diagnostics. Raw conversation
+remains canonical source material.
+
+The factual/lifecycle foundation is under evaluation and does not yet establish
+reliable lifetime episodic or temporal recall. V2 must not be promoted until
+that problem, active/current state, relationship state, and a usable
+non-destructive memory viewer/editor have explicit evidence-based designs.
 
 ## Roadmap
 
-1. Friend-build/package validation and final frontend QA.
-2. Licensed authored-animation source evaluation and gesture polish.
-3. Facial expressions and response emotion/intensity metadata.
-4. Character Management: select/create/rename/delete, personality editor and
-   presets, voice selection, ownership-safe character deletion.
-5. Memory Viewer / Editor.
-6. Memory V2 / backend promotion work.
-7. Voice and AI settings, including PTT/mic/TTS/STT/model recovery controls.
-8. Safe optional web lookup.
-9. Windows compatibility pass.
-10. 1.0 packaging/productization.
+1. Memory correctness: evaluate reliable lifetime episodic/temporal recall
+   before any V2 prompt-facing canary.
+2. Active/current state, relationship state, and Memory Viewer/Editor design.
+3. Friend-build/package validation and Unity frontend QA.
+4. Animation/presentation and character-management expansion.
+5. Voice and AI settings, including PTT/mic/TTS/STT/model recovery controls.
+6. Safe optional web lookup.
+7. Windows compatibility pass.
+8. 1.0 packaging/productization.
 
 Parked: LAN-first remote/mobile companion, VR experiments, generic GLB support,
 and advanced animation/emotion systems. The 1.0 direction includes lower-spec

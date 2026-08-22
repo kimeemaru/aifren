@@ -53,6 +53,10 @@ For dialogue/presentation changes, include focused tests for
 
 ## Guardrails
 
+- Unity is the canonical/default user-facing frontend. Keep Python services and
+  the loopback protocol frontend-neutral; `gui.py` is legacy/debug-only. Do
+  not duplicate product settings, character, or memory UX in Tkinter.
+
 - Do not put subtitles/timing on the TTS/PTT critical path.
 - Keep hidden-subtitle ownership deterministic: page text/ranges must cover
   every spoken word exactly once in global order. `HiddenSubtitlePresenter` is
@@ -71,8 +75,9 @@ For dialogue/presentation changes, include focused tests for
 - Model/background swaps must not mutate character identity or canonical data.
 - Never trust managed-library metadata as deletion authority: validate canonical
   containment and exact kind directory first.
-- Memory V2 remains shadow-only until a Memory Viewer/Editor and explicit
-  promotion decision exist.
+- Memory V1 remains authoritative and prompt-facing. Memory V2 remains
+  fail-open shadow/evaluation work until reliable lifetime episodic/temporal
+  recall, a Memory Viewer/Editor, and an explicit promotion decision exist.
 
 ## Diagnostics
 

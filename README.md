@@ -7,19 +7,23 @@ It currently consists of a Python application backend and a Unity companion pres
 ## What works today
 
 - Canonical raw conversation archive, derived summaries, and authoritative Memory V1.
-- Editable character configuration and base personality, separate from learned memory/history and visual avatar assets.
+- First-class character identities with persisted selection and isolated
+  personality/history/memory scope, separate from reusable visual assets.
 - Replaceable LLM/TTS/STT boundaries; the current response provider requires a user-supplied key, while Kokoro local TTS has a Piper fallback.
-- Loopback WebSocket backend plus Tkinter and Unity presentation clients.
+- Loopback WebSocket backend with Unity as the production frontend; the Tkinter
+  client is legacy/debug-only.
 - Global/unfocused and focused PTT routed through the backend, with immediate interruption of active speech.
-- Unity direct VRM rendering, full-screen backgrounds, Avatar View framing, managed model/background libraries, display controls, and companion-mode background execution.
+- Unity direct VRM rendering, including metadata-valid VRM `.glb` containers
+  alongside `.vrm` files (generic GLB is rejected), full-screen backgrounds,
+  Avatar View framing, managed libraries, and companion-mode execution.
 - Optional floating hidden-UI subtitles with deterministic page ownership, plus typed dialogue emphasis/emote formatting without changing canonical assistant text.
 - Fixed-height masked multiline chat input and a first semantic Humanoid gesture backbone.
 
 ## Architecture at a glance
 
 ```text
-Tkinter GUI --in process--> AssistantService --> Conversation / Memory V1 / LLM / Voice
-Unity companion --WebSocket--> backend_host.py --> same AssistantService
+Unity production frontend --WebSocket--> backend_host.py --> AssistantService
+Tkinter legacy/debug client --in process-----------------------------> same boundary
 
 direct background -> direct-rendered VRM -> Screen Space Overlay UI
 ```
@@ -38,10 +42,10 @@ The direct VRM path is the default because it keeps close views sharp. The old R
 
 ## Current focus
 
-The immediate work is friend-build validation and final frontend QA, followed by
-licensed animation-source evaluation/gesture polish, facial expressions and
-response metadata, then Character Management. Hidden-subtitle correctness is
-currently stable, although aesthetic timing may receive later polish. See
+The immediate work is memory correctness: V2 remains a shadow/evaluation system
+while the project evaluates reliable lifetime episodic and temporal recall.
+Unity character management, compatible VRM GLB import, and presentation
+foundation work exist, but they are not the current release blocker. See
 [PROJECT.md](PROJECT.md) for the roadmap, [ARCHITECTURE.md](ARCHITECTURE.md)
 for ownership boundaries, and [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)
 for setup, build, and validation workflows.

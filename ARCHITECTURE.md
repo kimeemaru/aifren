@@ -3,8 +3,8 @@
 ## System boundary
 
 ```text
-Tkinter GUI --in process--> AssistantService --> Conversation / Memory / LLM / Voice
-Unity companion --local WebSocket--> backend_host.py --> same AssistantService
+Unity production frontend --local WebSocket--> backend_host.py --> AssistantService
+Tkinter legacy/debug client --in process----------------------------> same service boundary
 ```
 
 `AssistantService` is the frontend-neutral boundary. It serializes turns,
@@ -12,6 +12,9 @@ persists canonical messages, builds context, generates replies, coordinates
 TTS/PTT, processes Memory V1, maintains summaries, and emits events.
 `backend_host.py` adapts one service to one loopback frontend; Unity and Tkinter
 are presentation clients, not alternate backends.
+
+Unity is the canonical product frontend. New product settings, character
+management, and memory UX belong in Unity; Tkinter remains legacy/debug-only.
 
 ## Ownership
 
@@ -24,6 +27,20 @@ are presentation clients, not alternate backends.
 | Turn, STT, TTS, PTT | Python backend | Frontends request/display supported state. |
 | Display/theme/avatar UI | Unity local preferences | Presentation-only. |
 | Managed avatar/backgrounds | Unity asset library | Reusable visual assets. |
+
+Character identity uses stable IDs and is distinct from avatar/voice assets.
+Character-scoped personality, history, and memory may be safely switched
+without treating a visual asset as identity.
+
+## Memory V2 boundary
+
+Memory V1 remains authoritative and prompt-facing. V2 is local,
+non-authoritative shadow/evaluation infrastructure with character-scoped events,
+claims, evidence/provenance, lifecycle history, and rebuildable FTS/embedding/
+ANN indexes. Superseded claims do not surface as ordinary current truth;
+historical handling is separate. V2 failure must not change the live
+conversation path. Its lifecycle/factual foundation is being evaluated, while
+lifetime vague episodic and temporal recall remain unresolved.
 
 ## Presentation
 
