@@ -197,6 +197,7 @@ namespace AIFren.UnityPoc.UI
         private Button consoleCopyButton;
         private bool consoleUnlocked;
         private string consoleUnlockBuffer = string.Empty;
+        private string avatarQaUnlockBuffer = string.Empty;
         private readonly List<string> consoleLines = new List<string>();
         private TMP_Text displayConfirmLabel;
         private float displayConfirmDeadline;
@@ -485,7 +486,7 @@ namespace AIFren.UnityPoc.UI
 
         private void HandlePresentationInput()
         {
-            HandleConsoleUnlockSequence();
+            HandleHiddenDeveloperSequences();
             if (displayConfirmActive)
             {
                 if (Input.GetKeyDown(KeyCode.Escape))
@@ -573,34 +574,33 @@ namespace AIFren.UnityPoc.UI
             }
         }
 
-        private void HandleConsoleUnlockSequence()
+        private void HandleHiddenDeveloperSequences()
         {
             if (messageInput != null && messageInput.isFocused) return;
             string input = Input.inputString;
             if (string.IsNullOrEmpty(input)) return;
             foreach (char character in input)
             {
-                if (character != '8')
-                {
-                    consoleUnlockBuffer = string.Empty;
-                    continue;
-                }
-                // Retain the complete eight-character unlock sequence and
-                // discard only characters older than that window.
-                consoleUnlockBuffer += character;
-                if (consoleUnlockBuffer.Length > 8)
-                {
-                    consoleUnlockBuffer = consoleUnlockBuffer.Substring(consoleUnlockBuffer.Length - 8);
-                }
-                if (consoleUnlockBuffer == "88888888")
+                AdvanceHiddenSequence(ref consoleUnlockBuffer, character, '8', 8, () =>
                 {
                     consoleUnlocked = true;
                     PlayerPrefs.SetInt("AIFren.ConsoleUnlocked", 1);
                     PlayerPrefs.Save();
                     RefreshDeveloperControlVisibility();
-                    consoleUnlockBuffer = string.Empty;
-                }
+                    ToggleConsolePanel();
+                });
+                AdvanceHiddenSequence(ref avatarQaUnlockBuffer, character, '7', 7, ToggleAvatarQaPanel);
             }
+        }
+
+        private static void AdvanceHiddenSequence(ref string buffer, char input, char expected, int length, Action matched)
+        {
+            if (input != expected) { buffer = string.Empty; return; }
+            buffer += input;
+            if (buffer.Length > length) buffer = buffer.Substring(buffer.Length - length);
+            if (buffer.Length != length) return;
+            buffer = string.Empty;
+            matched?.Invoke();
         }
 
         private void UpdateHiddenInterfaceReveal()
@@ -1516,6 +1516,15 @@ namespace AIFren.UnityPoc.UI
             if (modalScrim != null) modalScrim.SetActive(false);
             SetTopControlLabel(consoleCopyButton, "Copy All");
             RefreshDeveloperControlVisibility();
+        }
+
+        private void ToggleAvatarQaPanel()
+        {
+            if (avatarViewPanel == null || avatarViewGrid == null) return;
+            bool show = !avatarViewPanel.activeSelf;
+            avatarViewPanel.SetActive(show);
+            avatarViewGrid.SetActive(show);
+            if (show) avatarViewPanel.transform.SetAsLastSibling();
         }
 
         private void ToggleSettingsPanel()
