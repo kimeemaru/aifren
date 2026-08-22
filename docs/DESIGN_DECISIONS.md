@@ -724,6 +724,14 @@ A brief gesture can finish while the facial expression or mood presentation rema
 
 Deliberate gestures are temporary presentation events: they return to baseline presentation after completion. Each assistant response has zero or one deliberate semantic gesture by default; multiple deliberate gestures are not queued within one response unless a later explicit design decision changes that rule.
 
+### Implemented / current — avatar expression capability layer
+
+Unity now enumerates the expression capabilities exposed by the active compatible VRM, including preset and custom expressions, and can apply a concrete expression at a continuous weight. This remains a presentation-layer capability: backend and dialogue code do not select blendshape indices, raw morph names, or asset-specific expression identifiers.
+
+Expression capabilities retain their VRM categories. Mouth/vowel and blink presets are available avatar capabilities but are not treated as semantic emotions; arbitrary custom names are likewise model capabilities rather than LLM vocabulary. The procedural look-direction presets are driven by UniVRM's separate LookAt runtime, not by persistent-expression weight selection. UniVRM's expression override rules continue to arbitrate blink, mouth, and look-at behavior, allowing a persistent facial expression to coexist with those channels unless the active VRM expression explicitly overrides one.
+
+A selected visible expression blends between weights and remains until it is explicitly changed or cleared. It is not timed like an emote, and body-gesture completion does not reset it. Switching models safely clears the previous model's concrete expression and enumerates the new model instead.
+
 ### Planned / decided — initial semantic expression vocabulary
 
 A useful initial semantic expression vocabulary is expected to include concepts such as:
@@ -737,7 +745,7 @@ A useful initial semantic expression vocabulary is expected to include concepts 
 - concerned,
 - thinking.
 
-These expressions are **not yet an implemented authoritative system**. The semantic vocabulary should map onto whatever each avatar can actually express.
+These expressions are **not yet an implemented authoritative semantic system**. The semantic vocabulary should map onto whatever each avatar can actually express; a future dialogue presentation metadata layer will resolve semantic emotion and intensity through the Unity capability layer rather than addressing concrete morphs directly.
 
 ### Exploratory / parked
 
@@ -805,7 +813,7 @@ Personality influences **how strongly and how easily** a character reacts. Mood 
 
 ### Implemented / current
 
-There is no complete authoritative mood/emotion system. Existing minimal expressions/idle reactions are presentation groundwork only.
+There is no complete authoritative mood/emotion or dialogue-metadata system. The manual avatar expression capability layer is presentation groundwork only; persistent mood and LLM-driven semantic expression selection remain future work.
 
 ### Undecided
 
