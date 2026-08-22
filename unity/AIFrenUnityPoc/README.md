@@ -16,9 +16,10 @@ full-body baseline; Avatar View applies independent portrait/landscape X/Y/scale
 through direct camera controls. UI overlays the full viewport, and hide/show
 must never change avatar position, framing, or size.
 
-UniVRM supports VRM 1.0 and VRM 0.x through the shared loader. Generic GLB is
-not implemented. Runtime model swaps leave character identity, personality,
-memory, voice, and history untouched.
+UniVRM supports VRM 1.0 and VRM 0.x through the shared loader when a `.vrm` or
+`.glb` container embeds VRM metadata. Plain generic GLB is not implemented.
+Runtime model swaps leave character identity, personality, memory, voice, and
+history untouched.
 
 ## Appearance libraries
 

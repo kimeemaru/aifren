@@ -33,9 +33,12 @@ direct camera controls around a stable full-body baseline. The old RenderTexture
 path is rollback/debug-only. UI visibility is overlay-only and never changes
 the avatar viewport, saved framing, camera fit, or background cover behavior.
 
-UniVRM loads VRM 1.0 and VRM 0.x through the avatar-loading layer. Generic GLB
-is not supported. Model swaps preserve visual viewer state and do not alter
-character data.
+UniVRM loads VRM 1.0 and VRM 0.x through the avatar-loading layer when a
+`.vrm` or `.glb` container embeds VRM metadata. Plain generic GLB is not
+supported. Model swaps preserve visual viewer state and do not alter character
+data. Avatar lighting is shared presentation state, not per-character data or
+an imported-model customization; the default rig should remain neutral and
+preserve material detail across compatible models and 2D backgrounds.
 
 ## Managed asset safety
 

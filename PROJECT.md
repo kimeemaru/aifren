@@ -36,8 +36,11 @@ viewer background -> direct-rendered VRM -> Screen Space Overlay UI
 The previous RenderTexture avatar path is rollback/debug-only. Direct rendering
 avoids raster magnification/crop blur at close Avatar View zoom. Avatar View
 stores independent portrait and landscape X/Y/scale values; hiding UI does not
-resize or reposition the avatar viewport. UniVRM supports VRM 1.0 and VRM 0.x;
-generic GLB loading is not implemented.
+resize or reposition the avatar viewport. UniVRM supports VRM 1.0 and VRM 0.x
+in `.vrm` or `.glb` containers when embedded VRM metadata is present; plain
+generic GLB loading is not implemented. Avatar lighting is global presentation
+state rather than character/model identity: a restrained, model-agnostic
+baseline should preserve material and white-clothing detail across backgrounds.
 
 ## Managed visual assets
 

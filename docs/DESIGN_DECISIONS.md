@@ -704,6 +704,14 @@ Initially, use at most **one deliberate gesture per response by default**. Not e
 
 The same semantic gesture set should work across compatible humanoid VRMs where practical. Missing capabilities should degrade gracefully.
 
+Avatar compatibility is determined from embedded glTF metadata, not a filename extension alone. A `.vrm` or `.glb` container with top-level `VRM` (VRM 0.x) or `VRMC_vrm` (VRM 1.0) metadata is a valid VRM avatar input and follows the shared VRM loader. A plain generic GLB remains unsupported; AIFren does not infer a humanoid rig or construct one for arbitrary GLB content.
+
+Avatar lighting is global presentation state, not character identity or an
+imported-model property. A neutral default lighting baseline should remain
+model-agnostic, preserve texture/material and white-clothing detail, and keep
+the avatar readable over different 2D backgrounds. Per-model lighting fixes
+are not the default compatibility strategy.
+
 ### Planned / decided — layered presentation model
 
 The intended expression/animation model has three conceptual layers:
