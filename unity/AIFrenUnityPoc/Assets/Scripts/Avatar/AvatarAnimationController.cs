@@ -18,7 +18,6 @@ namespace AIFren.UnityPoc.Avatar
         // swapped or unavailable.
         private Component vrmInstance;
         private Animator humanoidAnimator;
-        private AvatarVrmaGesturePlayer vrmaGesturePlayer;
         private AvatarExpressionController expressionPresentation;
         private object runtimeExpression;
         private MethodInfo setWeightMethod;
@@ -72,8 +71,6 @@ namespace AIFren.UnityPoc.Avatar
 
             vrmInstance = FindVrmInstance(avatar);
             expressionPresentation = GetComponent<AvatarExpressionController>();
-            vrmaGesturePlayer = GetComponent<AvatarVrmaGesturePlayer>() ?? gameObject.AddComponent<AvatarVrmaGesturePlayer>();
-            vrmaGesturePlayer.Configure(avatar);
             humanoidAnimator = avatar.GetComponentInChildren<Animator>();
             if (humanoidAnimator != null && humanoidAnimator.avatar != null && humanoidAnimator.avatar.isHuman)
             {
@@ -110,7 +107,6 @@ namespace AIFren.UnityPoc.Avatar
         public void ClearAvatar()
         {
             StopSpeech();
-            vrmaGesturePlayer?.ClearAvatar();
             ResetGestureBones();
             if (runtimeExpression != null)
             {
@@ -121,7 +117,6 @@ namespace AIFren.UnityPoc.Avatar
             }
             vrmInstance = null;
             humanoidAnimator = null;
-            vrmaGesturePlayer = null;
             expressionPresentation = null;
             runtimeExpression = null;
             setWeightMethod = null;
@@ -143,7 +138,6 @@ namespace AIFren.UnityPoc.Avatar
         {
             if (sleeping && !sleepingPresentation)
             {
-                if (vrmaGesturePlayer != null && vrmaGesturePlayer.IsActive) vrmaGesturePlayer.Stop();
                 ResetGestureBones();
                 activeGesture = AvatarGestureIntent.None;
             }
@@ -232,21 +226,8 @@ namespace AIFren.UnityPoc.Avatar
             nextGestureAt = 0f;
             activeGesture = AvatarGestureIntent.None;
 
-            if (vrmaGesturePlayer != null && vrmaGesturePlayer.IsActive)
-            {
-                // Preserve the validated VRMA exit path rather than detaching
-                // its provider or changing retarget behavior mid-pose.
-                vrmaGesturePlayer.Stop();
-                return;
-            }
-
             ResetGestureBones();
         }
-
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-        public void SelectPreviousAnimationQaVrma() => vrmaGesturePlayer?.SelectPreviousQaVrma();
-        public void SelectNextAnimationQaVrma() => vrmaGesturePlayer?.SelectNextQaVrma();
-#endif
 
         public void PlayAttentiveReaction()
         {
@@ -275,19 +256,6 @@ namespace AIFren.UnityPoc.Avatar
                 Debug.Log("[AvatarGesture] ignored " + intent + " due to cooldown.");
                 return false;
             }
-            if (intent == AvatarGestureIntent.Wave && vrmaGesturePlayer != null && vrmaGesturePlayer.TryPlay(intent))
-            {
-                StartGesture(intent, now, vrmaGesturePlayer.Duration);
-                Debug.Log("[AvatarGesture] started native VRMA " + intent + ".");
-                return true;
-            }
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-            if (intent == AvatarGestureIntent.Wave)
-            {
-                Debug.LogWarning("[AvatarGesture] no QA VRMA is ready; Wave was not played.");
-                return false;
-            }
-#endif
             if (!CanPlay(intent))
             {
                 Debug.LogWarning("[AvatarGesture] cannot start " + intent + "; required Humanoid bones are unavailable.");
@@ -309,21 +277,6 @@ namespace AIFren.UnityPoc.Avatar
 
         private void Update()
         {
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-            if (AvatarQaVisibility.Visible)
-            {
-                if (Input.GetKeyDown(KeyCode.F1)) PlayGesture(AvatarGestureIntent.Wave);
-                if (Input.GetKeyDown(KeyCode.F2)) PlayGesture(AvatarGestureIntent.Nod);
-                if (Input.GetKeyDown(KeyCode.F3)) PlayGesture(AvatarGestureIntent.HeadShake);
-                if (Input.GetKeyDown(KeyCode.F4)) PlayGesture(AvatarGestureIntent.HeadTilt);
-                if (Input.GetKeyDown(KeyCode.F5)) PlayGesture(AvatarGestureIntent.Shrug);
-                if (Input.GetKeyDown(KeyCode.F6)) PlayGesture(AvatarGestureIntent.Thinking);
-                if (Input.GetKeyDown(KeyCode.F7)) SelectPreviousAnimationQaVrma();
-                // F8 remains available as an explicit PTT binding. F9 avoids
-                // claiming that production-configurable control.
-                if (Input.GetKeyDown(KeyCode.F9)) SelectNextAnimationQaVrma();
-            }
-#endif
             if (runtimeExpression != null)
             {
                 UpdateMouth();
@@ -335,12 +288,6 @@ namespace AIFren.UnityPoc.Avatar
         private void LateUpdate()
         {
             float time = Time.unscaledTime;
-            if (vrmaGesturePlayer != null && vrmaGesturePlayer.IsActive)
-            {
-                vrmaGesturePlayer.Tick();
-                if (!vrmaGesturePlayer.IsActive) activeGesture = AvatarGestureIntent.None;
-                return;
-            }
             // Tiny unscripted head life; it deliberately does not mouse-track
             // or replace UniVRM's optional look-at setup.
             float yaw = Mathf.Sin(time * .37f) * .7f;

@@ -131,7 +131,6 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 .tox/
-benchmarks/**/_results/
 
 # Ignored local presentation source assets used by local development builds.
 /icons/

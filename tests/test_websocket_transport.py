@@ -58,7 +58,6 @@ class FakeService:
         self.release_turn = threading.Event()
         self.block_turns = False
         self.switch_busy = False
-        self.development_qa_calls = []
         self.truth_scope = {"kind": "real_world", "label": ""}
         self.continuity = {
             "scope": dict(self.truth_scope), "activity": None,
@@ -97,10 +96,6 @@ class FakeService:
         self.emit("assistant_response", content="Reply")
         self.emit("status", state="ready", message="Ready")
         return TurnResult(user_message=text, reply="Reply")
-
-    def run_development_presentation_qa(self, response):
-        self.development_qa_calls.append(response)
-        return True
 
     def stop_speaking(self):
         self.stop_calls += 1
@@ -287,12 +282,12 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.service.provider_active = False
         self.service._active_turn_cancel = threading.Event()
         idle = self.host._flight_recorder_state()
-        self.assertFalse(idle["qwen_generating"])
+        self.assertFalse(idle["model_generating"])
         self.assertEqual(0, idle["provider_streams"])
 
         self.service.provider_active = True
         generating = self.host._flight_recorder_state()
-        self.assertTrue(generating["qwen_generating"])
+        self.assertTrue(generating["model_generating"])
         self.assertEqual(1, generating["provider_streams"])
 
     async def test_snapshot_contains_frontend_state(self):
@@ -465,21 +460,6 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.service.submitted, ["Hello"])
         self.assertEqual(message["event"]["data"]["content"], "Reply")
-
-    async def test_development_presentation_qa_is_gated_and_uses_fixed_synthetic_text(self):
-        await self.client.send(json.dumps({"command": "development_presentation_qa", "scenario": "cold"}))
-        disabled = await self.receive_until(lambda item: item.get("type") == "command_error")
-        self.assertEqual("development_qa_disabled", disabled["error"]["code"])
-        self.assertEqual([], self.service.development_qa_calls)
-
-        with patch("backend_host._DEVELOPMENT_QA_ENABLED", True):
-            await self.client.send(json.dumps({"command": "development_presentation_qa", "scenario": "cold"}))
-            for _ in range(20):
-                if self.service.development_qa_calls:
-                    break
-                await asyncio.sleep(.01)
-        self.assertEqual(1, len(self.service.development_qa_calls))
-        self.assertIn("first portrait test", self.service.development_qa_calls[0])
 
     async def test_optional_presentation_metadata_is_forwarded_without_breaking_old_events(self):
         self.service.emit("assistant_response", content="New reply")

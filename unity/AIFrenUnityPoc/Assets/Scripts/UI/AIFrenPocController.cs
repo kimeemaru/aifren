@@ -291,7 +291,6 @@ namespace AIFren.UnityPoc.UI
         private Button consoleCopyButton;
         private bool consoleUnlocked;
         private string consoleUnlockBuffer = string.Empty;
-        private string avatarQaUnlockBuffer = string.Empty;
         private readonly List<string> consoleLines = new List<string>();
         private TMP_Text displayConfirmLabel;
         private float displayConfirmDeadline;
@@ -378,22 +377,14 @@ namespace AIFren.UnityPoc.UI
         private float subtitleResponseReceivedAt;
         private bool activeTurnIsProactive;
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
-        private DevelopmentFrameProfiler developmentFrameProfiler;
         private DevelopmentFlightRecorder developmentFlightRecorder;
         private string flightRecorderDumpBuffer = string.Empty;
         private int flightRecorderTurnId;
         private bool flightRecorderFirstDeltaSeen;
-        private bool developmentProfileQa;
         private bool verboseSubtitleDiagnostics;
-        private bool developmentProfileQaStarted;
-        private int developmentProfileScenarioIndex = -1;
-        private int developmentProfileDeltaCount;
-        private bool developmentProfileAdvancePending;
-        private bool developmentLongPeekScheduled;
         private bool dialogueCanonicalFinalReceived;
         private bool dialogueMidRevealRecorded;
         private bool dialogueManualBottomRecorded;
-        private readonly string[] developmentProfileScenarios = { "cold", "warm", "long" };
 #endif
 
         private const float TtsVolumeSendIntervalSeconds = .12f;
@@ -454,10 +445,7 @@ namespace AIFren.UnityPoc.UI
         {
             string[] commandLine = Environment.GetCommandLineArgs();
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
-            developmentProfileQa = commandLine.Contains("-aifren-profile-qa");
             verboseSubtitleDiagnostics = commandLine.Contains("-aifren-verbose-subtitles");
-            if (developmentProfileQa)
-                developmentFrameProfiler = gameObject.AddComponent<DevelopmentFrameProfiler>();
 #endif
             useDirectAvatarPresentation = !commandLine.Contains("-aifren-avatar-rt") || commandLine.Contains("-aifren-avatar-direct");
             avatarLoader?.SetDirectPresentation(useDirectAvatarPresentation);
@@ -529,21 +517,6 @@ namespace AIFren.UnityPoc.UI
             // resolution/mode happens to match the launch monitor. This uses
             // the same authoritative Apply path as an interactive change.
             ApplyDisplaySettings(currentDisplaySettings, false, true);
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-            if (developmentProfileQa)
-            {
-                // The acceptance harness is deliberately portrait and local
-                // to Development builds. It does not persist display or UI
-                // settings into the ordinary product configuration.
-                Screen.SetResolution(900, 1600, FullScreenMode.Windowed);
-                showDialogueWhenHidden = true;
-                interfaceHidden = true;
-                inputRequested = false;
-                inputVisibilityTarget = 0f;
-                RefreshPresentationVisibility();
-            }
-#endif
-
             if (avatarLoader != null)
             {
                 avatarLoader.SetPreviewSurface(avatarSurface);
@@ -587,7 +560,7 @@ namespace AIFren.UnityPoc.UI
 
             UpdateDisplayConfirmation();
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
-            if (!developmentProfileQa) UpdateHiddenInterfaceReveal();
+            UpdateHiddenInterfaceReveal();
 #else
             UpdateHiddenInterfaceReveal();
 #endif
@@ -776,11 +749,6 @@ namespace AIFren.UnityPoc.UI
                     RefreshDeveloperControlVisibility();
                 });
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
-                AdvanceHiddenSequence(ref avatarQaUnlockBuffer, character, '7', 7, () =>
-                {
-                    AvatarQaVisibility.Toggle();
-                    Debug.Log("[AIFren QA] avatar frames visible=" + AvatarQaVisibility.Visible + ".");
-                });
                 AdvanceHiddenSequence(ref flightRecorderDumpBuffer, character, '6', 7, () =>
                 {
                     developmentFlightRecorder?.ManualDump();
@@ -1063,13 +1031,6 @@ namespace AIFren.UnityPoc.UI
             if (message.type == "snapshot")
             {
                 ApplySnapshot(message.data);
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-                if (developmentProfileQa && !developmentProfileQaStarted)
-                {
-                    developmentProfileQaStarted = true;
-                    StartCoroutine(BeginDevelopmentProfileQa());
-                }
-#endif
                 return;
             }
 
@@ -1138,8 +1099,6 @@ namespace AIFren.UnityPoc.UI
                 if (!activeTurnIsProactive)
                     developmentFlightRecorder?.ArmForUserTurn();
                 developmentFlightRecorder?.Mark("turn_started", flightRecorderTurnId);
-                developmentProfileDeltaCount = 0;
-                developmentFrameProfiler?.Mark("turn_started:" + DevelopmentProfileScenarioName());
 #endif
                 // turn_started is the backend acknowledgement that this input
                 // really entered arbitration. Release only this transport gate
@@ -1213,7 +1172,6 @@ namespace AIFren.UnityPoc.UI
             {
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
                 developmentFlightRecorder?.Mark("assistant_final", data.turn_id);
-                developmentFrameProfiler?.Mark("assistant_response_begin:" + DevelopmentProfileScenarioName());
 #endif
                 // This is presentation-only. Its later canonical
                 // conversation_message event appends history exactly once.
@@ -1260,10 +1218,6 @@ namespace AIFren.UnityPoc.UI
                     pendingAssistantReveal = true;
                     TryBeginPendingAssistantReveal();
                 }
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-                developmentFrameProfiler?.Mark("assistant_response_end:canonical_exact=" +
-                    string.Equals(data.content, currentAssistantPresentationText, StringComparison.Ordinal));
-#endif
             }
             else if (backendEvent.type == "assistant_delta" && data != null)
             {
@@ -1284,29 +1238,6 @@ namespace AIFren.UnityPoc.UI
                 // token-rate stream into bounded presentation updates. TTS and
                 // canonical persistence continue to consume every delta.
                 if (firstDelta) RefreshStreamedAssistantDialogue(true);
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-                if (developmentProfileQa)
-                {
-                    developmentProfileDeltaCount++;
-                    if (developmentProfileDeltaCount == 1)
-                        developmentFrameProfiler?.Mark("first_dialogue_delta:" + DevelopmentProfileScenarioName());
-                    if (developmentProfileScenarioIndex == 1 && developmentProfileDeltaCount == 3)
-                    {
-                        instantTextToggle.SetIsOnWithoutNotify(true);
-                        SetInstantText(true);
-                        developmentFrameProfiler?.Mark("instant_on_midstream:visible_equals_received=" +
-                            string.Equals(wordReveal.VisibleText, pendingAssistantContent, StringComparison.Ordinal));
-                    }
-                    else if (developmentProfileScenarioIndex == 1 && developmentProfileDeltaCount == 7)
-                    {
-                        string before = wordReveal.VisibleText;
-                        instantTextToggle.SetIsOnWithoutNotify(false);
-                        SetInstantText(false);
-                        developmentFrameProfiler?.Mark("instant_off_midstream:visible_preserved=" +
-                            string.Equals(before, wordReveal.VisibleText, StringComparison.Ordinal));
-                    }
-                }
-#endif
             }
             else if (backendEvent.type == "local_models" && data != null)
             {
@@ -1345,10 +1276,6 @@ namespace AIFren.UnityPoc.UI
                 }
                 else if (data.state == "playback_started")
                 {
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-                    developmentFrameProfiler?.Mark("playback_started_begin:" + DevelopmentProfileScenarioName());
-#endif
-                    var playbackStartHandlerTimer = System.Diagnostics.Stopwatch.StartNew();
                     if (data.streamed && streamedSubtitleTurnId > 0 && data.turn_id > 0 &&
                         data.turn_id != streamedSubtitleTurnId)
                     {
@@ -1373,18 +1300,12 @@ namespace AIFren.UnityPoc.UI
                     pendingSpeechReady = true;
                     pendingSpeechDuration = data.duration_seconds;
                     subtitleSpeechDuration = data.duration_seconds;
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-                    developmentFrameProfiler?.Mark("lip_sync_begin");
-#endif
                     AvatarPresentationResolver speechResolver = avatarLoader != null
                         ? avatarLoader.GetComponent<AvatarPresentationResolver>() : null;
                     if (speechResolver == null || speechResolver.AllowsLipSync)
                         avatarAnimation?.BeginSpeech(data.duration_seconds, data.lip_sync_envelope);
                     else
                         avatarAnimation?.StopSpeech();
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-                    developmentFrameProfiler?.Mark("lip_sync_ready");
-#endif
                     subtitleSpeechActive = true;
                     subtitleAwaitingPlayback = false;
                     subtitlePlaybackGeneration = subtitleGeneration;
@@ -1397,18 +1318,6 @@ namespace AIFren.UnityPoc.UI
                         new List<float>(subtitleWordSchedule), Time.unscaledTime);
                     TryBeginPendingAssistantReveal();
                     ApplyStatus("speaking", data.message);
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-                    if (developmentProfileQa && developmentProfileScenarioIndex == 2 && !developmentLongPeekScheduled)
-                    {
-                        developmentLongPeekScheduled = true;
-                        StartCoroutine(RunDevelopmentTemporaryPeek("mid_response", 2f));
-                    }
-                    playbackStartHandlerTimer.Stop();
-                    Debug.Log("[AIFren Timing] Unity playback_started handler=" +
-                        playbackStartHandlerTimer.Elapsed.TotalMilliseconds.ToString("F2") + "ms.");
-                    developmentFrameProfiler?.Mark("playback_started_end:handler_ms=" +
-                        playbackStartHandlerTimer.Elapsed.TotalMilliseconds.ToString("F3"));
-#endif
                 }
                 else if (data.state == "failed" || data.state == "not_started" || data.state == "stopped")
                 {
@@ -1439,17 +1348,6 @@ namespace AIFren.UnityPoc.UI
                     // playback; failed/disabled TTS uses the text-duration
                     // fallback scheduled when the response arrived.
                     if (!data.streamed && !data.interrupted) ApplyStatus("ready", data.message);
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-                    if (developmentProfileQa && data.state == "stopped" && !data.interrupted)
-                    {
-                        developmentFrameProfiler?.Mark("playback_stopped:" + DevelopmentProfileScenarioName());
-                        if (!developmentProfileAdvancePending)
-                        {
-                            developmentProfileAdvancePending = true;
-                            StartCoroutine(AdvanceDevelopmentProfileQa());
-                        }
-                    }
-#endif
                 }
                 else
                 {
@@ -1686,24 +1584,19 @@ namespace AIFren.UnityPoc.UI
 
         private void ResetCharacterScopedAvatarPresentation()
         {
-            // Persistent emotion and manual QA gaze belong to the current
-            // character identity independently from its selected avatar asset.
-            // Do not retain a concrete morph or LookAt target when the
-            // backend has selected a different character.  Ordinary snapshot
+            // Persistent emotion belongs to the current character identity
+            // independently from its selected avatar asset. Do not retain a
+            // concrete morph when the backend selects a different character.
+            // Ordinary snapshot
             // refreshes deliberately bypass this method.
             AvatarExpressionController expressions = avatarLoader != null
                 ? avatarLoader.GetComponent<AvatarExpressionController>()
                 : null;
             expressions?.ClearExpression();
 
-            AvatarGazeController gaze = avatarLoader != null
-                ? avatarLoader.GetComponent<AvatarGazeController>()
-                : null;
-            gaze?.CenterGaze();
-
             // The resolver has no gesture queue or durable semantic state.
             // Clear any active one-shot/reaction without rebinding the shared
-            // avatar selection or altering VRMA retargeting behavior.
+            // avatar selection.
             avatarAnimation?.ClearTransientPresentationForCharacterChange();
         }
 
@@ -3705,12 +3598,10 @@ namespace AIFren.UnityPoc.UI
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             hiddenSubtitlePresenter.PageActivated += page =>
             {
-                developmentFrameProfiler?.Mark("subtitle_page_activated:" + page);
                 developmentFlightRecorder?.SetSubtitlePage(page);
             };
             hiddenSubtitlePresenter.WordPresented += word =>
             {
-                developmentFrameProfiler?.Mark("subtitle_word_presented:" + word);
                 developmentFlightRecorder?.SetSubtitleWord(word);
             };
 #endif
@@ -5890,9 +5781,6 @@ namespace AIFren.UnityPoc.UI
 
         private void BeginSubtitleResponse(string rawResponse, PreparedSubtitlePlan prepared = null)
         {
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-            developmentFrameProfiler?.Mark("subtitle_begin_prepare");
-#endif
             subtitleGeneration++;
             PreparedSubtitlePlan plan = prepared ?? BuildSubtitlePlan(rawResponse);
             if (plan == null)
@@ -5936,92 +5824,7 @@ namespace AIFren.UnityPoc.UI
                 if (temporarilyRevealed) SuppressHiddenSubtitleForUiReveal();
                 else HideHiddenSubtitleImmediately();
             }
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-            developmentFrameProfiler?.Mark("subtitle_ready:pages=" + subtitlePages.Count);
-#endif
         }
-
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-        private IEnumerator BeginDevelopmentProfileQa()
-        {
-            // A fixed launch delay previously let the first QA response race
-            // the avatar's asynchronous import/final-layout collections. Wait
-            // for the actual production-ready boundary so those costs remain
-            // separately attributable from first speech presentation.
-            float avatarDeadline = Time.realtimeSinceStartup + 20f;
-            while ((avatarAnimation == null || avatarPresentationInitialization != null) &&
-                   Time.realtimeSinceStartup < avatarDeadline)
-                yield return null;
-            yield return new WaitForSecondsRealtime(.5f);
-            interfaceHidden = true;
-            showDialogueWhenHidden = true;
-            inputRequested = false;
-            RefreshPresentationVisibility();
-            yield return new WaitForSecondsRealtime(.35f);
-            developmentFrameProfiler?.Begin("portrait_hidden_ui_avatar_subtitles_kokoro");
-            developmentFrameProfiler?.Mark("portrait_hidden_ready");
-            developmentProfileScenarioIndex = 0;
-            instantTextToggle.SetIsOnWithoutNotify(true);
-            SetInstantText(true);
-            developmentFrameProfiler?.Mark("instant_on_before_response");
-            _ = client.RunDevelopmentPresentationQaAsync(DevelopmentProfileScenarioName());
-        }
-
-        private IEnumerator AdvanceDevelopmentProfileQa()
-        {
-            yield return new WaitForSecondsRealtime(.75f);
-            developmentProfileAdvancePending = false;
-            if (developmentProfileScenarioIndex == 0)
-            {
-                // Exact regression: response one retires, a temporary peek
-                // completes with no active subtitle session, then response two
-                // must begin renderable without another transition.
-                yield return RunDevelopmentTemporaryPeek("between_responses", 0f);
-            }
-            developmentProfileScenarioIndex++;
-            if (developmentProfileScenarioIndex >= developmentProfileScenarios.Length)
-            {
-                yield return new WaitForSecondsRealtime(1f);
-                developmentFrameProfiler?.Finish();
-                yield break;
-            }
-            // Warm and long runs start paced. The warm stream toggles Instant
-            // Text on and back off through the actual controller binding.
-            instantTextToggle.SetIsOnWithoutNotify(false);
-            SetInstantText(false);
-            developmentFrameProfiler?.Mark("scenario_request:" + DevelopmentProfileScenarioName());
-            _ = client.RunDevelopmentPresentationQaAsync(DevelopmentProfileScenarioName());
-        }
-
-        private IEnumerator RunDevelopmentTemporaryPeek(string label, float delaySeconds)
-        {
-            if (delaySeconds > 0f) yield return new WaitForSecondsRealtime(delaySeconds);
-            developmentFrameProfiler?.Mark("temporary_peek_begin:" + label +
-                ":active=" + (hiddenSubtitlePresenter != null && hiddenSubtitlePresenter.IsActive));
-            interfaceHidden = false;
-            edgeRevealActive = true;
-            temporarilyRevealed = true;
-            RefreshPresentationVisibility();
-            yield return new WaitForSecondsRealtime(.55f);
-            interfaceHidden = true;
-            edgeRevealActive = false;
-            temporarilyRevealed = false;
-            RefreshPresentationVisibility();
-            yield return new WaitForSecondsRealtime(.35f);
-            bool presenterActive = hiddenSubtitlePresenter != null && hiddenSubtitlePresenter.IsActive;
-            bool presenterSuppressed = hiddenSubtitlePresenter != null && hiddenSubtitlePresenter.IsSuppressed;
-            bool renderable = hiddenDialogueText != null && hiddenDialogueText.enabled;
-            developmentFrameProfiler?.Mark("temporary_peek_end:" + label +
-                ":active=" + presenterActive + ":suppressed=" + presenterSuppressed +
-                ":renderable=" + renderable);
-        }
-
-        private string DevelopmentProfileScenarioName()
-        {
-            return developmentProfileScenarioIndex >= 0 && developmentProfileScenarioIndex < developmentProfileScenarios.Length
-                ? developmentProfileScenarios[developmentProfileScenarioIndex] : "none";
-        }
-#endif
 
         private bool HiddenSubtitlePageFits(string page)
         {

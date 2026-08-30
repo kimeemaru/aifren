@@ -4,7 +4,7 @@ import unittest
 import uuid
 
 from assistant_service import AssistantService
-from benchmarks.active_state.harness import BASE_TIME, SyntheticSession
+from tests.active_state_support import BASE_TIME, SyntheticSession
 from capability_policy import (
     normalize_constrained_caption,
     preview_capability_effects,

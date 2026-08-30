@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import re
 from typing import Iterable
 
-from benchmarks.memory_v2.models import RetrievalOutcome, RetrievalQuery, RetrievalTrace, TypedMemory
+from .retrieval_models import RetrievalOutcome, RetrievalQuery, RetrievalTrace, TypedMemory
 
 from .store import MemoryV2Store, parse_timestamp_us, utc_now_us
 
@@ -68,7 +68,7 @@ class _RetrievalIntent:
 
 
 def _infer_intent(text: str, tokens: tuple[str, ...]) -> _RetrievalIntent:
-    """Conservative, replaceable intent rules for the isolated V2 engine."""
+    """Conservative, replaceable intent rules for bounded V2 retrieval."""
     lower = text.lower().strip()
     if any(re.search(pattern, lower) for pattern in _OPINION_PATTERNS):
         return _RetrievalIntent("assistant_opinion")
@@ -154,7 +154,7 @@ def _typed_label(row, historical: bool) -> str:
 
 
 class SemanticRetrievalV2:
-    """Derived-index, deterministic candidate retrieval for synthetic V2 stores."""
+    """Derived-index, deterministic candidate retrieval for V2 stores."""
 
     def __init__(self, store: MemoryV2Store, limits: RetrievalLimits | None = None, embedding_provider=None, *, allow_legacy_unverified: bool = False, ann_ef: int = 4096, ann_candidate_multiplier: int = 16):
         self.store = store

@@ -57,9 +57,6 @@ namespace AIFren.UnityPoc.Avatar
         private bool savedRenderSettings;
         private AvatarAnimationController animationController;
         private AvatarExpressionController expressionController;
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-        private AvatarGazeController gazeController;
-#endif
         private Vector2Int lastLoggedPresentationTextureSize;
         private bool directPresentation = true;
         private AvatarPresentationValues directPresentationValues = new AvatarPresentationValues { scale = 1f };
@@ -202,11 +199,8 @@ namespace AIFren.UnityPoc.Avatar
             activeConfiguration = configuration;
             idleBasePosition = ActiveAvatar.transform.position;
 
-            // UniVRM constructs its runtime ControlRig lazily. Its reference
-            // rotations must come from the VRM's imported T-pose, not from
-            // AIFren's presentation-only relaxed idle pose below. Otherwise
-            // portable VRMA rotations are retargeted against arms-down
-            // reference axes and produce a globally malformed body pose.
+            // UniVRM constructs its runtime ControlRig lazily. Initialize it
+            // before applying AIFren's presentation-only relaxed idle pose.
             Vrm10Instance vrm10 = ActiveAvatar.GetComponentInChildren<Vrm10Instance>();
             EnsurePresentationControlRig(vrm10);
             if (vrm10 != null) _ = vrm10.Runtime;
@@ -216,10 +210,6 @@ namespace AIFren.UnityPoc.Avatar
             idleBaseRotation = ActiveAvatar.transform.rotation;
             expressionController = gameObject.GetComponent<AvatarExpressionController>() ?? gameObject.AddComponent<AvatarExpressionController>();
             expressionController.Configure(ActiveAvatar);
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-            gazeController = gameObject.GetComponent<AvatarGazeController>() ?? gameObject.AddComponent<AvatarGazeController>();
-            gazeController.Configure(ActiveAvatar);
-#endif
             animationController = gameObject.GetComponent<AvatarAnimationController>() ?? gameObject.AddComponent<AvatarAnimationController>();
             animationController.Configure(ActiveAvatar);
             AvatarPresentationResolver presentationResolver = gameObject.GetComponent<AvatarPresentationResolver>() ?? gameObject.AddComponent<AvatarPresentationResolver>();
@@ -233,8 +223,8 @@ namespace AIFren.UnityPoc.Avatar
 
         /// <summary>
         /// Runtime-loaded avatars ask UniVRM to create a ControlRig, while a
-        /// Resources-instantiated imported VRM defaults to no ControlRig. VRMA
-        /// needs the same normalized rig in both cases. Set the UniVRM 0.130.x
+        /// Resources-instantiated imported VRM defaults to no ControlRig. Use
+        /// the same normalized rig in both cases. Set the UniVRM 0.130.x
         /// importer option before Runtime is constructed; never rebuild an
         /// already-live runtime around a presentation pose.
         /// </summary>
@@ -737,7 +727,6 @@ namespace AIFren.UnityPoc.Avatar
             hasRelaxedPose = false;
             expressionController?.ClearAvatar();
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
-            gazeController?.ClearAvatar();
 #endif
             animationController?.ClearAvatar();
             humanPoseHandler?.Dispose();

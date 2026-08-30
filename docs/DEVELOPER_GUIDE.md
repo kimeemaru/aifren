@@ -293,8 +293,8 @@ changes, and same-topic exchanges with different answers remain verbatim.
 Development flight-recorder `context_hygiene` events contain only candidate,
 suppression, echo/redundancy/run, message, character, and approximate-token
 counts, including separate assistant-only and exchange-pair suppression totals.
-Exact local prompt tokens remain available from the existing
-`qwen_prompt_eval_end` marker. No dialogue, n-grams, or embeddings are logged.
+Exact local prompt-token counts remain available from the generic model timing
+marker. No dialogue, n-grams, or embeddings are logged.
 
 ## TTS baseline
 
@@ -322,7 +322,7 @@ projection must remain byte-equivalent after semantic cleanup. A recognized
 Whisper accelerator failure retries the same WAV once on CPU/int8 and leaves
 STT on CPU for the runtime.
 
-`AIFREN_KOKORO_EARLY_SPEECH` is an optional QA override, not required by the
+`AIFREN_KOKORO_EARLY_SPEECH` is an optional developer override, not required by the
 launcher. When set, it overrides the effective value while preserving the saved
 user preference; leave it unset for normal Development use. Earlier incremental
 attempts must not be restored from history: only the current separate semantic
@@ -379,20 +379,18 @@ For dialogue/presentation changes, include focused tests for
 Performance acceptance is an ordinary Development-player conversation using a
 synthetic/test character through Unity input, loopback transport, real context
 assembly, managed model, canonicalization, TTS/playback, presentation, and
-persistence. Synthetic/model-only benchmarks are diagnostic support, not proof
-that the daily-driver loop is healthy. Never use protected/private character or
-voice data for automated or manual diagnostics.
+persistence. Unit tests are reproducible evidence, not proof that the
+daily-driver loop is healthy. Never use protected/private character or voice
+data for automated or manual diagnostics.
 
 For Active State, layer validation deliberately. Parser fixtures prove only
 proposal behavior. Also exercise production-shaped wording through
 `AssistantService`, post-mutation response requirements, transport artifacts,
 Unity reducers/EditMode fixtures, accumulated-state restart sessions, direct
-queries, constrained responses, and bounded real-model runs. Randomized
-invariants, long-context gaps, scope torture, transient-subject scaling, and
-crash/rollback injection protect store semantics. A real Development-player
-smoke remains the product acceptance gate, and every reproducible manual failure
-should become a permanent production-path regression. Safe fallback is not
-equivalent to immersive success.
+queries, constrained responses, and deterministic temporary-store sequences.
+A real Development-player smoke remains the product acceptance gate, and every
+reproducible manual failure should become a permanent regression. Safe fallback
+is not equivalent to immersive success.
 
 ## Guardrails
 
@@ -452,9 +450,9 @@ equivalent to immersive success.
   Lower episodes additionally extract at most six source-grounded continuity
   anchors, verify their preservation, permit one deterministic refinement, and
   use a bounded source-grounded fallback if necessary. Anchor metadata remains
-  derived and non-authoritative. The historical matched-seed harness under
-  `benchmarks/context_regression/` is the acceptance gate for prompt selection:
-  prompt savings do not excuse continuity or topic-reversion regressions.
+  derived and non-authoritative. Purpose-built temporary-store regressions
+  protect prompt selection: prompt savings do not excuse continuity or
+  topic-reversion regressions.
 - Active State is sparse, mention-driven current-scene data—not a world
   simulator. Preserve unaffected facts; do not infer unseen objects, physics,
   expiry, or time-driven changes. Contextual extractors may only submit bounded

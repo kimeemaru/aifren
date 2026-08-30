@@ -212,12 +212,10 @@ foundation/backfill tooling; eventual ordinary migration should schedule
 bounded background rebuilds and atomically publish them rather than blocking
 application startup.
 
-The historical context-regression harness reconstructs an authorized public
-test fixture, builds legacy/lower/consolidated contexts, and runs matched
-sampling seeds without persistence or speech. A broad era that loses
-distinctive continuity is rejected; zero selectable eras is valid. Older
-episode selection remains bounded, source-grounded, and subordinate to recent
-raw dialogue; it is not broader V2 authority.
+Purpose-built temporary-store regressions verify that broad era accounts lose
+admission when distinctive continuity is missing. Zero selectable eras is
+valid. Older episode selection remains bounded, source-grounded, and
+subordinate to recent raw dialogue; it is not broader V2 authority.
 
 The governed durable lane extends the original `identity.name` reference to a
 closed set of explicit real-world profile, residence, occupation/school,
@@ -583,8 +581,8 @@ private paths. Automatic hitch/resource triggers and the `6666666` manual dump
 write incident bundles under `/tmp/aifren-flight-recorder-<timestamp>/`; normal
 rolling capture performs no high-frequency file I/O.
 
-Synthetic microbenchmarks are supporting diagnostic evidence. Performance is
-accepted only after ordinary Linux Development-player interaction with a
+Automated tests provide reproducible structural and lifecycle coverage.
+Performance is accepted only after ordinary Linux Development-player interaction with a
 synthetic/test character through transport, context assembly, model,
 canonicalization, speech, playback, Unity presentation, and persistence.
 

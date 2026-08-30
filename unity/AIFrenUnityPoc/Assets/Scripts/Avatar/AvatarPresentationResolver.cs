@@ -15,7 +15,6 @@ namespace AIFren.UnityPoc.Avatar
 
         private AvatarExpressionController expressions;
         private AvatarAnimationController animation;
-        private AvatarGazeController gaze;
         private string handsMode = "free";
         private string locomotionMode = "walking";
         private string postureMode = string.Empty;
@@ -33,7 +32,6 @@ namespace AIFren.UnityPoc.Avatar
         {
             expressions = GetComponent<AvatarExpressionController>();
             animation = GetComponent<AvatarAnimationController>();
-            gaze = GetComponent<AvatarGazeController>();
         }
 
         public void Apply(PresentationMetadata presentation)
@@ -59,13 +57,6 @@ namespace AIFren.UnityPoc.Avatar
             else if (awake) awarenessMode = "normal";
             bool sleeping = explicitSleeping || awarenessMode == "asleep";
             if (sleeping || awake) animation?.SetSleepingPresentation(sleeping);
-            if (visionMode != "available" || sleeping
-                || string.Equals(presentation.gaze_mode, "suppressed", System.StringComparison.OrdinalIgnoreCase))
-                gaze?.SetPresentationSuppressed(true);
-            else if (string.Equals(presentation.gaze_mode, "normal", System.StringComparison.OrdinalIgnoreCase)
-                || string.Equals(presentation.vision_mode, "available", System.StringComparison.OrdinalIgnoreCase)
-                || string.Equals(presentation.awareness_mode, "normal", System.StringComparison.OrdinalIgnoreCase))
-                gaze?.SetPresentationSuppressed(false);
             animation?.SetMobilityPresentation(locomotionMode);
             animation?.SetPosturePresentation(postureMode);
             animation?.PlayStateReaction(presentation.reaction, sleeping);
@@ -116,8 +107,8 @@ namespace AIFren.UnityPoc.Avatar
             if (string.IsNullOrWhiteSpace(semanticGesture)) return false;
             switch (semanticGesture.Trim().ToLowerInvariant())
             {
-                // Use only stable procedural capabilities. Wave is deliberately
-                // excluded: its portable authored source remains development QA.
+                // Use only stable procedural capabilities exposed by the
+                // current semantic resolver.
                 case "greeting":
                 case "agreement":
                 case "encouragement": intent = AvatarGestureIntent.Nod; return true;

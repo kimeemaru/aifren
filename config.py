@@ -8,8 +8,6 @@ LLM_PROVIDER = "online"
 ONLINE_PROVIDER = "gemini"
 ONLINE_MODEL = "gemini-3.5-flash-lite"
 ONLINE_BASE_URL = ""
-# Compatibility import for benchmark fixtures; never a primary settings label.
-GEMINI_MODEL = ONLINE_MODEL
 LOCAL_LLM_ENDPOINT = "http://127.0.0.1:8000/v1"
 LOCAL_LLM_MODEL = ""
 # Managed GGUF discovery is intentionally generic.  The directory is ignored
@@ -44,24 +42,10 @@ KOKORO_EARLY_SPEECH_OVERRIDE = (
     None if _KOKORO_EARLY_SPEECH_ENV is None
     else _KOKORO_EARLY_SPEECH_ENV.strip().lower() in {"1", "true", "yes", "on"}
 )
-# Development-only, non-authoritative Memory V2 comparison.  When false, no
-# V2 shadow database is opened and normal AIFren behavior is unchanged.
-MEMORY_V2_SHADOW_ENABLED = True
 # Best-effort mutation mirroring into a separate V2 SQLite store. V1 JSON
 # remains canonical for general memory; a separately verified, narrow V2
 # durable-fact path may supply background context when explicitly admitted.
 MEMORY_V2_SHADOW_WRITE_ENABLED = True
-
-# Disabled-by-default, validation-only contextual Active State observation.
-# This must name an explicitly approved local extractor before the default
-# service installs one; Gemini is never selected implicitly for private turns.
-ACTIVE_STATE_CONTEXTUAL_SHADOW_ENABLED = False
-ACTIVE_STATE_CONTEXTUAL_SHADOW_PROVIDER = "none"
-
-# Open Thread contextual observation follows the same explicit local-provider
-# policy. It is validation/trace only and never selected implicitly.
-OPEN_THREAD_CONTEXTUAL_SHADOW_ENABLED = False
-OPEN_THREAD_CONTEXTUAL_SHADOW_PROVIDER = "none"
 
 # Provider-neutral prompt assembly defaults.  These are character budgets, not
 # tokenizer estimates: provider/model profiles may override them later without

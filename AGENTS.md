@@ -16,7 +16,7 @@ Read [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](ARCHITECTURE.md), and
 - AIFren-owned `llama_cpp.server` processes must explicitly use
   `--logits_all false`. AIFren chat does not consume per-prompt-token logits,
   and retaining them can allocate multiple GiB on large-vocabulary models.
-- Synthetic benchmarks support diagnosis; ordinary Linux Development-player
+- Synthetic tests support diagnosis; ordinary Linux Development-player
   use with a synthetic/test character is the final performance acceptance
   gate. Keep the Development flight recorder privacy-safe and available for
   intermittent real-user failures.

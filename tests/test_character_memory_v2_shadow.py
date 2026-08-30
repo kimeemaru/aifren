@@ -7,7 +7,6 @@ import unittest
 from character_registry import CharacterRegistry
 from conversation.conversation import Conversation
 from memory.memory import EMBEDDING_DIMENSIONS, Memory
-from memory_v2_evaluation import run_synthetic_evaluation, shadow_health
 from memory_v2_shadow_writer import MemoryV2ShadowWriter
 from memory_v2_store import MemoryV2Repository
 from memory_v2_telemetry import retrieval_report
@@ -192,23 +191,13 @@ class MemoryV2ShadowWriterTests(unittest.TestCase):
         finally:
             catchup.close()
 
-    def test_shadow_health_and_synthetic_ground_truth_invariants(self):
+    def test_retrieval_comparison_records_privacy_safe_parity(self):
         self.memory.add_memory("preference", "The user likes tea.", 5)
-        report = shadow_health(self.writer.store, self.root, character_id=self.character.character_id)
-        self.assertEqual(1, report["v1_valid_records"])
-        self.assertEqual(0, report["unshadowed_v1_records"])
-        self.assertEqual("ok", report["sqlite_quick_check"])
-        self.assertTrue(report["foreign_keys_ok"])
         parity = self.writer.compare("tea", [{"id": "1", "category": "preference", "rank": 1}])
         self.assertEqual(1, parity["v1_mapped_count"])
         self.assertEqual(1, len(parity["overlap_claim_ids"]))
         self.assertTrue(parity["v2_retrieval_strategy"].startswith("adaptive_"))
         self.assertEqual(1, retrieval_report(self.writer.store)["total_compared"])
-        evaluation = run_synthetic_evaluation(scale=100)
-        self.assertEqual(1.0, evaluation.topk_recall)
-        self.assertEqual(0, evaluation.superseded_leak_count)
-        self.assertEqual(0, evaluation.archived_leak_count)
-        self.assertEqual(0, evaluation.character_scope_leak_count)
 
     def test_two_characters_with_the_same_avatar_identifier_cannot_share_memories(self):
         second = self.registry.create("Second")

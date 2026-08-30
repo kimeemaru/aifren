@@ -28,32 +28,6 @@ from local_model_runtime import LocalModelRuntime
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 PROACTIVE_STARTUP_GRACE_SECONDS = 60.0
-_DEVELOPMENT_QA_ENABLED = os.environ.get("AIFREN_ENABLE_DEVELOPMENT_QA", "").strip().lower() in {
-    "1", "true", "yes", "on",
-}
-
-_DEVELOPMENT_QA_RESPONSES = {
-    "cold": (
-        "*smiles and settles into the conversation* The first portrait test begins with a calm, readable line. "
-        "This **important phrase** should remain emphasized while the voice continues without an artificial break. "
-        "A final sentence gives the subtitle presenter enough material to cross its first page boundary naturally."
-    ),
-    "warm": (
-        "*nods once* The second equivalent response checks the warmed presentation and speech path. "
-        "Every received word should remain exact, *very clear*, and paced according to the active Instant Text setting. "
-        "The same avatar, subtitle material, lip sync, and audio lifecycle are exercised again."
-    ),
-    "long": (
-        "*takes a quiet breath and looks toward the window* This deliberately long synthetic response exercises portrait subtitles over many pages. "
-        "The opening thought establishes a steady conversational rhythm while **key words remain emphasized** for readability. "
-        "A second idea follows without asking the speech engine to stop at an arbitrary clause, allowing Kokoro to preserve natural prosody. "
-        "The background and avatar remain visible while the main interface stays hidden, which is the primary daily-driver presentation. "
-        "Another sentence supplies enough spoken words for repeated page transitions, timestamp advancement, lip movement, and normal reveal pacing. "
-        "Nothing in this scenario belongs to a real character, conversation, memory, or voice profile; it is intentionally synthetic QA material. "
-        "The final section checks that later pages retain the same pink face, clean dark outline, italic emphasis, and exact canonical wording. "
-        "When playback completes, the subtitle session should retire once, without a flash, blank page, stale callback, or resumed cancelled speech."
-    ),
-}
 
 
 class AIFrenWebSocketHost:
@@ -424,28 +398,6 @@ class AIFrenWebSocketHost:
         if command == "get_console_log":
             self._log("Console diagnostics requested.")
             await self._send_json(websocket, {"type": "event", "event": {"type": "console_log", "data": {"lines": list(self._console_lines)}}})
-            return
-
-        if command == "development_presentation_qa":
-            if not _DEVELOPMENT_QA_ENABLED:
-                await self._send_command_error(
-                    websocket, "development_qa_disabled",
-                    "Development presentation QA is not enabled for this backend.",
-                )
-                return
-            scenario = command_data.get("scenario")
-            response = _DEVELOPMENT_QA_RESPONSES.get(scenario)
-            if response is None:
-                await self._send_command_error(
-                    websocket, "invalid_development_qa_scenario",
-                    "Unknown development presentation QA scenario.",
-                )
-                return
-            task = asyncio.create_task(asyncio.to_thread(
-                self.service.run_development_presentation_qa, response
-            ))
-            self._turn_tasks.add(task)
-            task.add_done_callback(self._turn_tasks.discard)
             return
 
         if command == "submit_text":
@@ -962,7 +914,7 @@ class AIFrenWebSocketHost:
             "tts_active_jobs": 1 if tts_state.get("synthesizing") is not None else 0,
             "tts_pending_jobs": 0,
             "audio_queue_depth": 1 if tts_state.get("playing") is not None else 0,
-            "qwen_generating": provider_active,
+            "model_generating": provider_active,
             "kokoro_synthesizing": tts_state.get("synthesizing") is not None,
             "portaudio_playing": tts_state.get("playing") is not None,
             "whisper_loaded": getattr(stt, "model", None) is not None,

@@ -1,7 +1,7 @@
-"""Replaceable, local embedding lifecycle for the isolated Memory V2 store.
+"""Replaceable local embedding lifecycle for bounded Memory V2 retrieval.
 
-Vectors are derived/local and safe to delete and rebuild.  They may support
-non-authoritative shadow retrieval diagnostics, never V1 prompt retrieval.
+Vectors are derived/local and safe to delete and rebuild. They never replace
+canonical source records or Memory V1 authority.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import hashlib
 import platform
 from typing import Protocol, Sequence
 
-from benchmarks.memory_v2.models import EmbeddingIdentity
+from .retrieval_models import EmbeddingIdentity
 
 from .store import MemoryV2Store
 

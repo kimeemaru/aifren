@@ -611,7 +611,7 @@ class CurrentContinuityV2Tests(unittest.TestCase):
             if item.truth_scope_id == scenario_id
         ))
 
-    def test_development_snapshot_exposes_bounded_actor_and_scene_qa_details(self):
+    def test_development_snapshot_exposes_bounded_actor_and_scene_details(self):
         service, _memory = self._service()
         for text in (
             "I'm going to bed.", "Go make dinner.", "*I put on my white hoodie*",

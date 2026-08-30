@@ -69,31 +69,5 @@ namespace AIFren.UnityPoc.Tests.EditMode
             Assert.IsFalse(AvatarPresentationResolver.SpeechAllowsLipSync("unavailable"));
         }
 
-        [Test]
-        public void ExplicitAvailableSnapshotRestoresGazeAndClearsPosture()
-        {
-            GameObject root = new GameObject("presentation-restoration-test");
-            try
-            {
-                AvatarGazeController gaze = root.AddComponent<AvatarGazeController>();
-                AvatarPresentationResolver resolver = root.AddComponent<AvatarPresentationResolver>();
-                resolver.Configure();
-                resolver.Apply(new AIFren.UnityPoc.Protocol.PresentationMetadata {
-                    gaze_mode = "suppressed", vision_mode = "unavailable", posture_mode = "lying"
-                });
-                Assert.IsTrue(gaze.PresentationSuppressed);
-                Assert.AreEqual("lying", resolver.PostureMode);
-
-                resolver.Apply(new AIFren.UnityPoc.Protocol.PresentationMetadata {
-                    vision_mode = "available", awareness_mode = "normal", posture_mode = ""
-                });
-                Assert.IsFalse(gaze.PresentationSuppressed);
-                Assert.AreEqual(string.Empty, resolver.PostureMode);
-            }
-            finally
-            {
-                Object.DestroyImmediate(root);
-            }
-        }
     }
 }

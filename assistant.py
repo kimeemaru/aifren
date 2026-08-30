@@ -7,7 +7,6 @@ from memory.memory import Memory
 from conversation.conversation import Conversation
 from stt.voice import VoiceInput
 from tts.tts import TextToSpeech
-from ui_sound import UISound
 from voice.ptt import PushToTalk
 from presentation_metadata import response_contract_prompt
 
@@ -166,8 +165,6 @@ def initialize():
         )
     )
     
-    ui_sound = None
-
     return (
         llm,
         memory,
@@ -175,8 +172,7 @@ def initialize():
         voice,
         character,
         character_prompt,
-        tts,
-        ui_sound
+        tts
     )
 
 
@@ -366,8 +362,7 @@ import time
 # ============================================================
 
 def typewriter_response(
-    text,
-    ui_sound
+    text
 ):
 
     print(
@@ -385,8 +380,7 @@ def process_user_turn(
     conversation,
     user_message,
     character_prompt,
-    tts,
-    ui_sound
+    tts
 ):
 
     # --------------------------------------------------------
@@ -420,8 +414,7 @@ def process_user_turn(
     )
 
     typewriter_response(
-        reply,
-        ui_sound
+        reply
     )
 
     # --------------------------------------------------------
@@ -479,8 +472,7 @@ def run():
         voice,
         character,
         character_prompt,
-        tts,
-        ui_sound
+        tts
     ) = initialize()
     processing_lock = threading.Lock()
 
@@ -514,8 +506,7 @@ def run():
                 conversation,
                 text,
                 character_prompt,
-                tts,
-                ui_sound
+                tts
             )
     
         finally:
@@ -596,10 +587,6 @@ def run():
                 
                 ptt.stop()
                 
-                if ui_sound:
-                    ui_sound.close()
-                
-
                 print(
                     "Conversation saved."
                 )
@@ -633,8 +620,7 @@ def run():
                         conversation,
                         user_input,
                         character_prompt,
-                        tts,
-                        ui_sound
+                        tts
                     )
             
                 finally:
@@ -656,9 +642,6 @@ def run():
             
             ptt.stop()
             
-            if ui_sound:
-                ui_sound.close()
-
             print(
                 "\nConversation saved."
             )

@@ -2,9 +2,8 @@ import os
 import tempfile
 import unittest
 
-from benchmarks.memory_v2.fixtures import build_core_fixture
 from memory_v2_store import EmbeddingLifecycle, MemoryV2Store, RetrievalLimits, SemanticRetrievalV2
-from memory_v2_store.importer import import_fixture
+from tests.memory_v2_test_data import build_retrieval_fixture, import_retrieval_fixture
 
 
 class ToyEmbeddingProvider:
@@ -39,9 +38,9 @@ class FailingProvider(ToyEmbeddingProvider):
 
 class EmbeddingLifecycleTests(unittest.TestCase):
     def setUp(self):
-        self.fixture = build_core_fixture()
+        self.fixture = build_retrieval_fixture()
         self.store = MemoryV2Store()
-        self.characters = import_fixture(self.store, self.fixture)
+        self.characters = import_retrieval_fixture(self.store, self.fixture)
         self.provider = ToyEmbeddingProvider()
         self.lifecycle = EmbeddingLifecycle(self.store, self.provider)
 
@@ -50,24 +49,24 @@ class EmbeddingLifecycleTests(unittest.TestCase):
 
     def test_creation_dimensions_normalization_and_duplicate_rebuild(self):
         result = self.lifecycle.rebuild_all()
-        self.assertEqual(result["embedded"], 24)
-        self.assertEqual(result["current"], 24)
+        self.assertEqual(result["embedded"], len(self.fixture.claims))
+        self.assertEqual(result["current"], len(self.fixture.claims))
         row = self.store.connection.execute("SELECT * FROM claim_embeddings LIMIT 1").fetchone()
         self.assertEqual(row["dimensions"], 3)
         self.assertEqual(row["normalized"], 1)
         self.assertEqual(len(row["vector_blob"]), 12)
         second = self.lifecycle.rebuild_stale_or_missing()
         self.assertEqual(second["embedded"], 0)
-        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM claim_embeddings").fetchone()[0], 24)
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM claim_embeddings").fetchone()[0], len(self.fixture.claims))
 
     def test_content_change_and_model_change_never_use_old_vector(self):
         self.lifecycle.rebuild_all()
-        self.store.connection.execute("UPDATE claims SET content='changed synthetic content' WHERE claim_id='serval-walnut-allergy'")
+        self.store.connection.execute("UPDATE claims SET content='changed synthetic content' WHERE claim_id='alpha-walnut-allergy'")
         health = self.lifecycle.health()
         self.assertGreaterEqual(health["stale"], 1)
-        character = self.characters["serval"]
+        character = self.characters["alpha"]
         results = self.store.semantic_candidates(character, self.provider, [1.0, 0.0, 0.0], 10)
-        self.assertNotIn("serval-walnut-allergy", [claim_id for claim_id, _ in results])
+        self.assertNotIn("alpha-walnut-allergy", [claim_id for claim_id, _ in results])
         changed = ToyEmbeddingProvider()
         changed.model_version = "2"
         self.assertGreater(self.store.mark_incompatible_embeddings_stale(changed), 0)
@@ -78,19 +77,19 @@ class EmbeddingLifecycleTests(unittest.TestCase):
 
     def test_failed_vectors_are_retryable_and_not_retrieved(self):
         failed = EmbeddingLifecycle(self.store, FailingProvider()).rebuild_all()
-        self.assertEqual(failed["failed"], 24)
+        self.assertEqual(failed["failed"], len(self.fixture.claims))
         self.assertEqual(failed["current"], 0)
-        character = self.characters["serval"]
+        character = self.characters["alpha"]
         self.assertEqual(self.store.semantic_candidates(character, FailingProvider(), [1.0, 0.0, 0.0], 5), [])
 
     def test_semantic_lane_is_character_scoped_and_stale_status_is_not_used(self):
         self.lifecycle.rebuild_all()
-        serval = self.characters["serval"]
-        mira = self.characters["mira"]
-        self.assertIn("serval-walnut-allergy", [item[0] for item in self.store.semantic_candidates(serval, self.provider, [1.0, 0.0, 0.0], 5)])
-        self.assertNotIn("serval-walnut-allergy", [item[0] for item in self.store.semantic_candidates(mira, self.provider, [1.0, 0.0, 0.0], 5)])
-        self.store.connection.execute("UPDATE claim_embeddings SET state='stale' WHERE claim_id='serval-walnut-allergy'")
-        self.assertNotIn("serval-walnut-allergy", [item[0] for item in self.store.semantic_candidates(serval, self.provider, [1.0, 0.0, 0.0], 5)])
+        alpha = self.characters["alpha"]
+        beta = self.characters["beta"]
+        self.assertIn("alpha-walnut-allergy", [item[0] for item in self.store.semantic_candidates(alpha, self.provider, [1.0, 0.0, 0.0], 5)])
+        self.assertNotIn("alpha-walnut-allergy", [item[0] for item in self.store.semantic_candidates(beta, self.provider, [1.0, 0.0, 0.0], 5)])
+        self.store.connection.execute("UPDATE claim_embeddings SET state='stale' WHERE claim_id='alpha-walnut-allergy'")
+        self.assertNotIn("alpha-walnut-allergy", [item[0] for item in self.store.semantic_candidates(alpha, self.provider, [1.0, 0.0, 0.0], 5)])
 
     def test_reopen_persistence_and_semantic_paraphrase(self):
         with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as file:
@@ -98,16 +97,16 @@ class EmbeddingLifecycleTests(unittest.TestCase):
         self.store.close()
         try:
             self.store = MemoryV2Store(path)
-            self.characters = import_fixture(self.store, self.fixture)
+            self.characters = import_retrieval_fixture(self.store, self.fixture)
             EmbeddingLifecycle(self.store, self.provider).rebuild_all()
             self.store.close()
             self.store = MemoryV2Store(path)
-            character = self.characters["serval"]
+            character = self.characters["alpha"]
             query = next(case for case in self.fixture.retrieval_cases if case.case_id == "paraphrase-semantic").retrieval_query
             query = type(query)(character, query.current_user_text, query.at, query.mode, query.recent_user_turns)
             outcome = SemanticRetrievalV2(self.store, RetrievalLimits(semantic_candidates=4), self.provider).retrieve(query)
-            self.assertIn("serval-walnut-allergy", outcome.claim_ids)
-            trace = next(item for item in outcome.traces if item.claim_id == "serval-walnut-allergy")
+            self.assertIn("alpha-walnut-allergy", outcome.claim_ids)
+            trace = next(item for item in outcome.traces if item.claim_id == "alpha-walnut-allergy")
             self.assertIn("semantic", trace.candidate_channels)
         finally:
             self.store.close()

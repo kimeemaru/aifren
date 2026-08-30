@@ -330,10 +330,9 @@ provenance seeds while live Local dialogue uses fresh system-random seeds.
 
 Optional contiguous-era accounts must pass a separate retention verifier
 against every covered lower account. Any missing/uncertain detail rejects the
-era and keeps the lower summaries; zero selected eras is valid. The public
-matched-seed historical harness is the regression gate for continuity, topic
-adherence/reversion, poison recurrence, coherence, and prompt cost. Fixture
-results do not make derived summaries canonical facts.
+era and keeps the lower summaries; zero selected eras is valid. Purpose-built
+synthetic regressions cover retention, topic adherence, and source ranges.
+Test results do not make derived summaries canonical facts.
 
 ### 5.4 Active State / current companion scene
 
@@ -910,21 +909,6 @@ The first supported deliberate gesture per assistant response may be selected fr
 
 The controller uses standard Humanoid bone mappings where practical, preserves blink/lip-sync as separate presentation layers, restores captured base rotations, applies eased procedural motion, and uses cooldown/suppression rules to reduce repetitive gestures.
 
-### Implemented / current — manual quality status
-
-The semantic architecture works, but the current procedural motions are not considered finished animation quality.
-
-Current manual QA status:
-
-- Nod triggers and is acceptable;
-- HeadShake triggers but remains somewhat choppy;
-- HeadTilt triggers;
-- Shrug triggers but looks robotic;
-- Thinking triggers but looks robotic;
-- Wave still needs trigger/visibility reliability work.
-
-This distinction matters: the **gesture abstraction is implemented**, while the visual quality of several gesture implementations remains unfinished.
-
 ### Planned / decided — preserve semantic intent when animation sources change
 
 Future animation improvements should keep `AvatarGestureIntent` as the stable semantic boundary. The actual implementation behind an intent may later be:
@@ -936,30 +920,13 @@ Future animation improvements should keep `AvatarGestureIntent` as the stable se
 
 The LLM should not need to know Unity clip filenames or model-specific bone names.
 
-### Current direction — authored animation evaluation
+### Planned / decided — authored animation
 
-AIFren prefers authored **VRMA** animation where practical for portable VRM humanoid body animation. Native VRMA is a presentation format, not a new semantic API: `AvatarGestureIntent` remains the behavior boundary and a VRMA filename/path must never reach backend or LLM behavior.
-
-Procedural gestures remain useful fallback, debug, and micro-motion mechanisms even if VRMA becomes the preferred polished authored format. Standard/default mappings should be reusable across compatible VRMs; optional per-character overrides are a future extension, not a requirement to maintain complete animation libraries per character.
-
-Gesture VRMAs should normally be body-focused. Body gesture, facial expression, lip sync, blink, and gaze are separately arbitrated channels so a deliberate gesture can coexist with AIFren-controlled face/speech presentation.
-
-Successful VRMA loading is not, by itself, proof of portable visual compatibility. Before shipping an authored animation, validate its normalized Humanoid/rest-pose behavior on multiple compatible target VRMs and prefer assets with predictable, portable pose data.
-
-Conversational authored gestures should normally be in-place: preserve the avatar's world/root placement unless an animation is explicitly classified as locomotion or another intentional full-body repositioning action.
-
-For UniVRM runtime VRMA playback, create the runtime ControlRig while the imported VRM is still in its reference pose, before applying AIFren's presentation-only relaxed pose. Conversational FullBodyInPlace playback uses one captured AIFren presentation hips baseline for entry, playback, and exit. Source reference placement must not reposition the character, while authored hips motion remains relative to the VRMA reference pose; this permits a gesture that intentionally starts crouched to preserve that crouch. Authored body gestures should transition into and out of that persistent baseline gracefully; these body transitions must remain separate from face, lip sync, blink, and gaze ownership.
-
-The next animation-quality step is to investigate **free/permissively licensed authored animation assets** that can legally be redistributed in a future public/commercial release.
-
-Before integrating a source, verify:
-
-- redistribution rights,
-- commercial-use rights where relevant,
-- attribution requirements,
-- compatibility with the intended Unity/VRM Humanoid pipeline.
-
-No specific authored-animation source is selected yet.
+Procedural Humanoid gestures are the current portable baseline. A future
+authored-animation source may replace an implementation behind
+`AvatarGestureIntent`, but filenames and model-specific details must remain
+inside Unity. Any redistributed source requires compatible licensing and
+cross-avatar validation; no authored-animation package is selected today.
 
 ### Planned / decided — restraint and cross-avatar behavior
 
@@ -1124,8 +1091,7 @@ lifecycle. Experimental voice runtimes and protected voice material are not
 part of the public repository. Any further speech
 scheduling change must preserve exact canonical whitespace, wait for complete
 semantic action/emote spans, retain spoken emphasis and interruption identity,
-and pass the full ordinary Development-player path rather than only synthetic
-benchmarks.
+and pass the full ordinary Development-player path as well as automated tests.
 
 The current Kokoro configuration does not depend on runtime pitch post-processing to force a character voice.
 
@@ -1255,7 +1221,7 @@ Temporary input reveal should not necessarily change the user's committed hide/s
 ### Implemented / current
 
 Proactive behavior is deliberately conservative and user-configurable through a
-closed interval set from Off and short QA intervals through six hours. The
+closed interval set from Off and short intervals through six hours. The
 selected interval is a minimum opportunity, not a promise that a message will
 be sent.
 
@@ -1665,7 +1631,9 @@ These items are intentionally not the current development focus:
 
 "Parked" does not mean rejected; it means intentionally outside current scope.
 
-Authored animation evaluation is **not parked**: it is part of the current gesture-quality priority. Character Management is likewise a near-term planned system rather than a parked idea.
+Authored animation quality remains later presentation work. Character
+Management expansion is likewise a near-term planned system rather than a
+parked idea.
 
 ---
 
@@ -1807,12 +1775,12 @@ portable Linux friend archive is already a completed testing milestone.
   from Active State, Open Threads, or ignored proactive messages.
 - Keep owned llama launch on `--logits_all false`; do not trade away the
   intentional 16k context to conceal that corrected server configuration bug.
-- Treat synthetic benchmarks as diagnostic support. Ordinary Development-player
+- Treat automated tests as reproducible diagnostic support. Ordinary Development-player
   interaction with a synthetic/test character is the performance acceptance
   gate, and the privacy-safe flight recorder is the preferred intermittent
   incident record.
 - Keep Kokoro early speech bounded and provider-specific; retain the persisted
-  `whole_response` fallback even though grouped streaming has passed human QA.
+  `whole_response` fallback while grouped streaming remains enabled.
 - Keep Context Hygiene at its conservative lexical limit. Broader semantic
   concentration belongs in bounded episode selection/retrieval, not looser
   deletion-like heuristics.

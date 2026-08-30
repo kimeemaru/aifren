@@ -1,6 +1,6 @@
 """Bounded, non-authoritative V2 dual-read retrieval policy.
 
-This module is deliberately used only by shadow telemetry.  It must never
+This module is deliberately used only by privacy-safe retrieval telemetry. It must never
 change V1 prompt construction or persistence.
 """
 from __future__ import annotations
@@ -10,7 +10,7 @@ import re
 import time
 from typing import Iterable
 
-from benchmarks.memory_v2.models import RetrievalQuery
+from memory_v2_store.retrieval_models import RetrievalQuery
 from memory_v2_store import SemanticRetrievalV2
 
 

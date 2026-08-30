@@ -1,10 +1,9 @@
-"""Isolated SQLite shadow-store foundation for future AIFren memory work.
-
-This package has no runtime wiring and never reads the current JSON archive.
-"""
+"""Character-scoped structured continuity storage and retrieval."""
 
 from .store import MemoryV2Store, StoreError
 from .retrieval import RetrievalLimits, SemanticRetrievalV2
+from .retrieval_models import (EmbeddingIdentity, RetrievalOutcome,
+                               RetrievalQuery, RetrievalTrace, TypedMemory)
 from .embeddings import EmbeddingLifecycle, MiniLMEmbeddingProvider
 from .ann import HnswClaimIndex
 from .repository import (ActiveSceneRelationRecord, ActiveSceneSubjectRecord, ActiveStateLookup, ActiveStateRecord, DurableCoreLookup, DurableCoreRecord, MemoryRecord,
@@ -40,6 +39,7 @@ from .production_import import (ProductionImportResult, default_legacy_character
                                 import_v1_memories, shadow_v1_mutation, v1_import_scope)
 
 __all__ = ("MemoryV2Store", "RetrievalLimits", "SemanticRetrievalV2", "StoreError",
+           "EmbeddingIdentity", "RetrievalOutcome", "RetrievalQuery", "RetrievalTrace", "TypedMemory",
            "EmbeddingLifecycle", "MiniLMEmbeddingProvider", "HnswClaimIndex", "MemoryRecord", "MemoryV2Repository",
            "ActiveSceneRelationRecord", "ActiveSceneSubjectRecord", "ActiveStateLookup", "ActiveStateRecord", "DurableCoreLookup", "DurableCoreRecord", "OpenThreadLookup", "OpenThreadRecord", "TruthScopeRecord", "ACTIVE_STATE", "DURABLE_CORE_FACT", "OPEN_THREAD", "REAL_WORLD_SCOPE", "SCENARIO_SCOPE", "STABLE_USER_FACT", "SHARED_EPISODE", "ProductionImportResult",
            "ACTIVE_STATE_REGISTRY", "ACTIVE_STATE_ACTORS", "ACTIVE_STATE_ACTOR_ATTRIBUTES", "ACTIVE_STATE_SCENE_ATTRIBUTES", "ActiveStateSlot", "ActiveSceneSubjectIntroduction", "ActiveSceneSubjectRetirement", "ActiveSceneSubjectReactivation", "ActiveStateCorrectionProposal", "ActiveStateProposal", "ActiveStateProposalUpdate",

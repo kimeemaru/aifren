@@ -14,7 +14,7 @@ class DevelopmentFlightRecorderTests(unittest.TestCase):
     def setUp(self):
         self.recorder = DevelopmentFlightRecorder(sample_hz=5)
         self.recorder.start(unity_pid=999999, state_provider=lambda: {
-            "turn_tasks": 1, "qwen_generating": True, "llama_pid": 0,
+            "turn_tasks": 1, "model_generating": True, "llama_pid": 0,
         })
 
     def tearDown(self):

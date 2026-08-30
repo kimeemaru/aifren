@@ -1,4 +1,4 @@
-"""Transactional, synthetic-safe SQLite storage for the Memory V2 shadow store."""
+"""Transactional SQLite storage for character-scoped Memory V2 continuity."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ DISTINCT_DORMANT_RETIRE_AFTER_US = 180 * 24 * 60 * 60 * 1_000_000
 
 
 class StoreError(ValueError):
-    """Raised when a shadow-store operation would violate its data contract."""
+    """Raised when a store operation would violate its data contract."""
 
 
 def utc_now_us() -> int:
@@ -84,7 +84,7 @@ def _require_uuid(value: str) -> str:
 
 
 class MemoryV2Store:
-    """Repository for an isolated, append-oriented SQLite shadow database."""
+    """Repository for an append-oriented character-scoped SQLite database."""
 
     def __init__(self, path: str = ":memory:") -> None:
         self.path = path
@@ -113,7 +113,7 @@ class MemoryV2Store:
         self.connection.execute("PRAGMA busy_timeout = 5000")
         self.connection.execute("PRAGMA synchronous = FULL")
         # SQLite uses an in-memory journal for :memory: databases; file-backed
-        # shadow stores use WAL as the intended operational mode.
+        # File stores use WAL as the intended operational mode.
         if self.path != ":memory:":
             self.connection.execute("PRAGMA journal_mode = WAL")
 
@@ -293,7 +293,7 @@ class MemoryV2Store:
                     "CREATE VIRTUAL TABLE IF NOT EXISTS claims_fts USING fts5(character_id UNINDEXED, claim_id UNINDEXED, searchable_text)"
                 )
             except sqlite3.OperationalError as error:
-                raise StoreError("SQLite FTS5 is required for the isolated Memory V2 retrieval engine.") from error
+                raise StoreError("SQLite FTS5 is required for the Memory V2 retrieval engine.") from error
             with self.transaction():
                 self.connection.execute("INSERT INTO schema_migrations(version, applied_at_us) VALUES (?, ?)", (3, utc_now_us()))
                 self.connection.execute("UPDATE database_meta SET value = ? WHERE key = 'schema_version'", ("3",))

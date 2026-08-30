@@ -1,16 +1,15 @@
 import unittest
 import uuid
 
-from benchmarks.memory_v2.fixtures import build_core_fixture
 from memory_v2_store import MemoryV2Store, RetrievalLimits, SemanticRetrievalV2
-from memory_v2_store.importer import import_fixture
+from tests.memory_v2_test_data import build_retrieval_fixture, import_retrieval_fixture
 
 
 class SemanticRetrievalV2Tests(unittest.TestCase):
     def setUp(self):
-        self.fixture = build_core_fixture()
+        self.fixture = build_retrieval_fixture()
         self.store = MemoryV2Store()
-        self.character_map = import_fixture(self.store, self.fixture)
+        self.character_map = import_retrieval_fixture(self.store, self.fixture)
         self.retriever = SemanticRetrievalV2(self.store)
 
     def tearDown(self):
@@ -38,43 +37,43 @@ class SemanticRetrievalV2Tests(unittest.TestCase):
         self.assertFalse(self.store.fts_is_current())
         self.assertGreater(self.store.ensure_fts(), 0)
         self.assertTrue(self.store.fts_is_current())
-        self.store.connection.execute("UPDATE claims SET content = content || ' drift' WHERE claim_id = 'serval-n64'")
+        self.store.connection.execute("UPDATE claims SET content = content || ' drift' WHERE claim_id = 'alpha-n64'")
         self.assertFalse(self.store.fts_is_current())
 
     def test_fts_parser_safety_and_exact_identifier_lane(self):
         outcome = self.retrieve("identifier")
-        self.assertEqual(outcome.claim_ids[0], "serval-n64-serial")
+        self.assertEqual(outcome.claim_ids[0], "alpha-n64-serial")
         safe = self.retrieve("fts-punctuation-safety")
         self.assertIsInstance(safe.claim_ids, tuple)
-        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM claims").fetchone()[0], 24)
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM claims").fetchone()[0], len(self.fixture.claims))
 
     def test_unambiguous_alias_and_case_collision_remain_conservative(self):
-        self.assertEqual(self.retrieve("alias").claim_ids[0], "serval-n64")
+        self.assertEqual(self.retrieve("alias").claim_ids[0], "alpha-n64")
         person = self.retrieve("case-collision-person")
-        self.assertEqual(person.claim_ids, ("serval-rose-person",))
+        self.assertEqual(person.claim_ids, ("alpha-rose-person",))
 
     def test_character_status_and_historical_filtering(self):
-        self.assertEqual(self.retrieve("mira-location-isolation").claim_ids, ("mira-skyhaven",))
-        self.assertEqual(self.retrieve("current-tea").claim_ids, ("serval-tea-green",))
-        self.assertEqual(self.retrieve("historical-tea").claim_ids, ("serval-tea-red",))
-        self.assertEqual(self.retrieve("cancelled-plan").claim_ids, ("serval-hike-cancelled",))
+        self.assertEqual(self.retrieve("beta-location-isolation").claim_ids, ("beta-skyhaven",))
+        self.assertEqual(self.retrieve("current-tea").claim_ids, ("alpha-tea-green",))
+        self.assertEqual(self.retrieve("historical-tea").claim_ids, ("alpha-tea-red",))
+        self.assertEqual(self.retrieve("cancelled-plan").claim_ids, ("alpha-hike-cancelled",))
 
     def test_abstention_and_irrelevant_high_importance(self):
         unrelated = self.retrieve("unrelated-guitar")
         self.assertEqual(unrelated.claim_ids, ())
         self.assertIsNotNone(unrelated.abstention_reason)
         tea = self.retrieve("irrelevant-high-importance")
-        self.assertIn("serval-tea-green", tea.claim_ids)
-        self.assertNotIn("serval-passport-manual", tea.claim_ids)
+        self.assertIn("alpha-tea-green", tea.claim_ids)
+        self.assertNotIn("alpha-passport-manual", tea.claim_ids)
 
     def test_visible_and_recent_suppression_with_explicit_repeat_override(self):
         self.assertEqual(self.retrieve("recent-visible-duplicate").claim_ids, ())
         normal_case, normal_query = self.query("explicit-repeat-override")
         normal_query = type(normal_query)(normal_query.character_id, normal_query.current_user_text, normal_query.at, "ordinary", normal_query.recent_user_turns)
-        normal = self.retriever.retrieve(normal_query, recently_used_claim_ids=("serval-pizza-joke",))
+        normal = self.retriever.retrieve(normal_query, recently_used_claim_ids=("alpha-pizza-joke",))
         self.assertEqual(normal.claim_ids, ())
         explicit = self.retrieve("explicit-repeat-override")
-        self.assertIn("serval-pizza-joke", explicit.claim_ids)
+        self.assertIn("alpha-pizza-joke", explicit.claim_ids)
 
     def test_hard_caps_dedup_typed_output_and_trace_completeness(self):
         case, query = self.query("channel-dominance")

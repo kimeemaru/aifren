@@ -77,7 +77,7 @@ class DurablePromptIntegrationTests(unittest.TestCase):
             memory_v2_shadow_writer=self.writer,
             character_id=self.character_id,
         )
-        # Prompt admission is the target here; V2 shadow evaluation is not.
+        # Prompt admission is the target here; retrieval telemetry is not.
         self.service._run_memory_v2_shadow = lambda query: None
 
     def tearDown(self):

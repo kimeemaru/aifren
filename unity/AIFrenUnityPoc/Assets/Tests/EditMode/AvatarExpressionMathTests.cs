@@ -43,47 +43,6 @@ namespace AIFren.UnityPoc.Tests.EditMode
             Assert.AreEqual(expected, AvatarExpressionMath.IsPersistentExpressionPreset(preset));
         }
 
-        [TestCase(-12f, 0f, "Left")]
-        [TestCase(12f, 0f, "Right")]
-        [TestCase(0f, 10f, "Up")]
-        [TestCase(0f, -10f, "Down")]
-        [TestCase(0f, 0f, "Center")]
-        public void GazeQaLabelsFollowUniVrmYawPitchSigns(float yaw, float pitch, string expected)
-        {
-            Assert.AreEqual(expected, AvatarGazeMath.LabelFor(yaw, pitch));
-        }
-
-        [Test]
-        public void GazeTransitionMovesContinuouslyAndReachesItsTarget()
-        {
-            Vector2 center = Vector2.zero;
-            Vector2 right = new Vector2(25f, 0f);
-            float speed = AvatarGazeMath.TransitionSpeed(center, right, .20f);
-
-            AssertVector(new Vector2(12.5f, 0f), AvatarGazeMath.MoveToward(center, right, speed, .10f));
-            AssertVector(right, AvatarGazeMath.MoveToward(center, right, speed, .20f));
-            AssertVector(right, AvatarGazeMath.MoveToward(right, right, speed, 10f));
-        }
-
-        [Test]
-        public void GazeTransitionRetargetsFromItsCurrentInterpolatedPosition()
-        {
-            Vector2 current = new Vector2(12.5f, 0f);
-            Vector2 up = new Vector2(0f, 18f);
-            float speed = AvatarGazeMath.TransitionSpeed(current, up, .20f);
-
-            Vector2 halfway = AvatarGazeMath.MoveToward(current, up, speed, .10f);
-
-            AssertVector(new Vector2(6.25f, 9f), halfway);
-            AssertVector(up, AvatarGazeMath.MoveToward(current, up, speed, .20f));
-        }
-
-        private static void AssertVector(Vector2 expected, Vector2 actual)
-        {
-            Assert.AreEqual(expected.x, actual.x, .0001f);
-            Assert.AreEqual(expected.y, actual.y, .0001f);
-        }
-
         [Test]
         public void BundledStyleVrmRequestsControlRigBeforeRuntimeCreation()
         {

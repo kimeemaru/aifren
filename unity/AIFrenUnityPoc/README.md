@@ -132,10 +132,9 @@ Unity deduplicates by identity rather than text.
 `AvatarGestureMapper` converts the first supported emote in a response into an
 `AvatarGestureIntent`; `AvatarAnimationController` maps it through standard
 Humanoid bones. Current procedural intents are Nod, HeadShake, Wave, Shrug,
-HeadTilt, and Thinking. Blink/lip-sync remain separate. This is experimental:
-Nod is acceptable, while HeadShake is still choppy, other motions can feel
-robotic, and Wave needs further QA. Future work may use appropriately licensed
-authored Humanoid clips without changing the semantic API.
+HeadTilt, and Thinking. Blink/lip-sync remain separate. Procedural motion
+quality varies by avatar; future work may use appropriately licensed authored
+Humanoid clips without changing the semantic API.
 
 Backend posture authority currently supports standing, sitting, and lying via
 explicit evidence or bounded companion actions. That state is distinct from an
@@ -159,8 +158,9 @@ nothing during normal rolling capture, automatically dumps serious incidents
 under `/tmp/aifren-flight-recorder-<timestamp>/`, and accepts `6666666` as a
 manual dump shortcut when chat is not focused. Captures contain structural
 timings/counts/resources, never dialogue, prompt, subtitle, memory, credentials,
-or private paths. Use ordinary synthetic/test-character player interaction—not
-only isolated benchmarks—as the performance acceptance gate.
+or private paths. Automated tests provide reproducible coverage, while ordinary
+synthetic/test-character player interaction remains the performance acceptance
+gate.
 
 Audio Settings includes **Speak while response is generating**. It is enabled
 by default and persisted by the backend settings protocol. With Kokoro it

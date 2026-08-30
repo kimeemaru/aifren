@@ -46,7 +46,7 @@ inventory, anatomy, pathfinding, or general world simulator.
   detailed Scene inspection, and an optional lightweight Current Scene overlay.
 - Replaceable online/local LLM, TTS, STT, and embedding implementations;
   managed llama.cpp, Kokoro resource failover, and authoritative PTT.
-- Privacy-safe Development flight recording and headless production-path QA.
+- Privacy-safe Development flight recording and reproducible automated regression coverage.
 
 ## Architecture at a glance
 

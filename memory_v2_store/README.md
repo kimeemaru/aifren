@@ -43,7 +43,7 @@ uncertain retention check keeps lower/raw context. The explicit
 `scripts/rebuild_episode_compaction.py` command rebuilds only this derived lane
 for an authorized character and never runs automatically at startup.
 
-`retrieval.py`, `embeddings.py`, and `ann.py` provide isolated bounded candidate
+`retrieval.py`, `embeddings.py`, and `ann.py` provide bounded candidate
 lanes. ANN candidates are always rechecked through SQLite character,
 provenance, scope, and lifecycle filters. Zero retrieval is valid.
 
@@ -70,12 +70,10 @@ not sufficient identity.
 
 ## Import and maintenance
 
-`v1_import.py` is an explicitly invoked strict reader for disposable V1 shadow
-imports. `production_import.py` is a tolerant, idempotent importer that leaves
-`memories.json` untouched. `repository.py` is the bounded production boundary,
-and `cli.py` exposes explicit `status`, `migrate-v1`, `export`, and
-`integrity-check` operations.
+`production_import.py` is a tolerant, idempotent importer that leaves
+`memories.json` untouched. `repository.py` is the bounded runtime boundary,
+and `cli.py` exposes explicit `status`, `migrate-v1`, `export`,
+`integrity-check`, and privacy-safe `retrieval-report` operations.
 
-`importer.py` imports only versioned synthetic benchmark fixtures. Normal tests
-and benchmarks must use temporary/generated stores and must never commit
-SQLite, WAL/SHM, ANN/index, cache, or diagnostic artifacts.
+Tests use purpose-built neutral data in temporary/generated stores. SQLite,
+WAL/SHM, ANN/index, cache, and diagnostic artifacts are never committed.

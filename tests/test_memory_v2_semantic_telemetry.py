@@ -1,7 +1,6 @@
 import tempfile
 import unittest
 
-from memory_v2_semantic_evaluation import run_semantic_evaluation
 from memory_v2_store import MemoryV2Repository, MemoryV2Store
 from memory_v2_telemetry import MAX_TELEMETRY_ROWS, record_dual_read, retrieval_report
 
@@ -39,18 +38,6 @@ class MemoryV2SemanticTelemetryTests(unittest.TestCase):
         self.assertEqual(MAX_TELEMETRY_ROWS, report["total_compared"])
         self.assertEqual(1.0, report["overlap_rate"])
         self.assertEqual(0.0, report["v2_error_rate"])
-
-    def test_semantic_fixture_enforces_lifecycle_scope_and_abstention(self):
-        report = run_semantic_evaluation(scale=8)
-        semantic = report.semantic_v2
-        self.assertEqual(0, report.character_scope_leaks)
-        self.assertEqual(0, report.duplicate_active_claims)
-        self.assertEqual(0, report.lifecycle["superseded"])
-        self.assertEqual(0, report.lifecycle["archived"])
-        self.assertEqual(0.0, semantic["abstention"].abstention_false_positive_rate)
-        self.assertEqual(1.0, semantic["corrections"].top5_recall)
-        self.assertEqual(1.0, semantic["character_isolation"].top5_recall)
-
 
 if __name__ == "__main__":
     unittest.main()

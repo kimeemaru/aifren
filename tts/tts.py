@@ -586,8 +586,8 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
             from tts.kokoro_assets import REPOSITORY_ID, require_local_assets
         except ImportError as error:
             raise RuntimeError(
-                "Kokoro is not installed. Create an isolated environment with "
-                "requirements-kokoro.txt before selecting it."
+                "Kokoro is not installed. Run scripts/setup_aifren_runtime_linux.sh "
+                "before selecting it."
             ) from error
 
         self._torch = torch

@@ -3,27 +3,25 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stdout
 from dataclasses import asdict
 import json
 from pathlib import Path
-import sys
 
 from .production_import import export_v2_json, import_v1_memories
 from .store import MemoryV2Store
-from memory_v2_evaluation import run_synthetic_evaluation, scale_sanity, shadow_health
-from memory_v2_semantic_evaluation import run_semantic_evaluation
 from memory_v2_telemetry import retrieval_report
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Memory V2 production-foundation maintenance helper.")
-    parser.add_argument("command", choices=("status", "migrate-v1", "export", "integrity-check", "shadow-health", "synthetic-eval", "semantic-eval", "retrieval-report"))
+    parser = argparse.ArgumentParser(description="Memory V2 maintenance helper.")
+    parser.add_argument(
+        "command",
+        choices=("status", "migrate-v1", "export", "integrity-check", "retrieval-report"),
+    )
     parser.add_argument("--database", required=True)
     parser.add_argument("--source-dir", default=".")
     parser.add_argument("--destination")
     parser.add_argument("--character-id")
-    parser.add_argument("--scale", type=int, default=1000)
     args = parser.parse_args()
     store = MemoryV2Store(str(Path(args.database).resolve()))
     try:
@@ -35,19 +33,6 @@ def main() -> None:
             print(export_v2_json(store, args.destination, character_id=args.character_id))
         elif args.command == "integrity-check":
             print(json.dumps({"quick_check": store.integrity_check(), "foreign_keys": store.connection.execute("PRAGMA foreign_key_check").fetchall() == []}, sort_keys=True))
-        elif args.command == "shadow-health":
-            if not args.character_id:
-                raise SystemExit("--character-id is required for shadow-health")
-            print(json.dumps({"health": shadow_health(store, args.source_dir, character_id=args.character_id),
-                              "synthetic": run_synthetic_evaluation(scale=args.scale).to_dict()}, indent=2, sort_keys=True))
-        elif args.command == "synthetic-eval":
-            print(json.dumps(scale_sanity(scale=args.scale), indent=2, sort_keys=True))
-        elif args.command == "semantic-eval":
-            # The existing local embedding adapter prints model-load progress.
-            # Preserve machine-readable maintenance output on stdout.
-            with redirect_stdout(sys.stderr):
-                report = run_semantic_evaluation(scale=args.scale).to_dict()
-            print(json.dumps(report, indent=2, sort_keys=True))
         elif args.command == "retrieval-report":
             print(json.dumps(retrieval_report(store), indent=2, sort_keys=True))
         else:

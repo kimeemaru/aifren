@@ -195,10 +195,7 @@ class AssistantService:
         tts: Any,
         response_generator: Optional[ResponseGenerator] = None,
         ptt_factory: Optional[Callable[..., Any]] = None,
-        memory_v2_shadow: Any = None,
         memory_v2_shadow_writer: Any = None,
-        active_state_contextual_shadow: Any = None,
-        open_thread_contextual_shadow: Any = None,
         character_id: str | None = None,
         memory_v2_unsubscribe: Callable[[], None] | None = None,
     ) -> None:
@@ -226,11 +223,8 @@ class AssistantService:
         self._active_provider_requests = 0
         self._ptt = None
         self._ptt_binding = "F8"
-        self._memory_v2_shadow = memory_v2_shadow
         self._memory_v2_shadow_writer = memory_v2_shadow_writer
         self._memory_v2_unsubscribe = memory_v2_unsubscribe
-        self._active_state_contextual_shadow = active_state_contextual_shadow
-        self._open_thread_contextual_shadow = open_thread_contextual_shadow
         self._last_durable_context_admission = None
         self._last_active_state_context_admission = None
         self._last_current_continuity_admission = None
@@ -457,17 +451,10 @@ class AssistantService:
             character,
             character_prompt,
             tts,
-            _,
         ) = initialize()
 
-        shadow = None
         shadow_writer = None
         shadow_unsubscribe = None
-        from config import MEMORY_V2_SHADOW_ENABLED
-        if MEMORY_V2_SHADOW_ENABLED:
-            from memory_v2_shadow import MemoryV2ShadowComparator
-            shadow = MemoryV2ShadowComparator(".")
-
         from config import MEMORY_V2_SHADOW_WRITE_ENABLED
         if MEMORY_V2_SHADOW_WRITE_ENABLED:
             from memory_v2_shadow_writer import MemoryV2ShadowWriter
@@ -513,22 +500,6 @@ class AssistantService:
             if callable(subscribe):
                 shadow_unsubscribe = subscribe(shadow_writer.observe)
 
-        # No external extractor is installed here.  The optional seam is
-        # reserved for an explicitly approved local provider and remains
-        # disabled unless a future factory supplies one deliberately.
-        from config import (ACTIVE_STATE_CONTEXTUAL_SHADOW_ENABLED, ACTIVE_STATE_CONTEXTUAL_SHADOW_PROVIDER,
-                            OPEN_THREAD_CONTEXTUAL_SHADOW_ENABLED, OPEN_THREAD_CONTEXTUAL_SHADOW_PROVIDER)
-        if ACTIVE_STATE_CONTEXTUAL_SHADOW_ENABLED:
-            print(
-                "[Active State shadow] no approved local extractor is installed "
-                f"for provider={ACTIVE_STATE_CONTEXTUAL_SHADOW_PROVIDER!r}; observation remains disabled"
-            )
-        if OPEN_THREAD_CONTEXTUAL_SHADOW_ENABLED:
-            print(
-                "[Open Thread shadow] no approved local extractor is installed "
-                f"for provider={OPEN_THREAD_CONTEXTUAL_SHADOW_PROVIDER!r}; observation remains disabled"
-            )
-
         return cls(
             llm=llm,
             memory=memory,
@@ -537,10 +508,7 @@ class AssistantService:
             character=character,
             character_prompt=character_prompt,
             tts=tts,
-            memory_v2_shadow=shadow,
             memory_v2_shadow_writer=shadow_writer,
-            active_state_contextual_shadow=None,
-            open_thread_contextual_shadow=None,
             character_id=character["_character_id"],
             memory_v2_unsubscribe=shadow_unsubscribe,
         )
@@ -700,8 +668,6 @@ class AssistantService:
         self.character_prompt = character_prompt
         self._memory_v2_shadow_writer = shadow_writer
         self._memory_v2_unsubscribe = shadow_unsubscribe
-        self._active_state_contextual_shadow = None
-        self._open_thread_contextual_shadow = None
         self._last_durable_context_admission = None
         self._last_active_state_context_admission = None
         self._last_current_continuity_admission = None
@@ -1827,7 +1793,7 @@ class AssistantService:
                     _timing_log(f"first provider delta t={elapsed:.3f}s")
                     self._mark_turn_timing("first_raw_delta", first_token_at)
                     development_flight_recorder().mark(
-                        "first_raw_qwen_delta", turn_id=int(self._active_turn_id or 0)
+                        "first_raw_model_delta", turn_id=int(self._active_turn_id or 0)
                     )
                 accept_canonical_output(canonicalizer.feed(text))
         finally:
@@ -2161,7 +2127,7 @@ class AssistantService:
                 if canonical_user_index >= 0 else None
             )
 
-            if self._memory_v2_shadow is not None or self._memory_v2_shadow_writer is not None:
+            if self._memory_v2_shadow_writer is not None:
                 setattr(self.conversation, "_capture_v1_retrieval_diagnostics", True)
                 setattr(self.conversation, "_last_v1_retrieval_diagnostics", ())
                 setattr(self.conversation, "_last_v1_retrieval_latency_ms", None)
@@ -2505,7 +2471,7 @@ class AssistantService:
                     )
                 reply = parsed_response.dialogue
             finally:
-                if self._memory_v2_shadow is not None or self._memory_v2_shadow_writer is not None:
+                if self._memory_v2_shadow_writer is not None:
                     setattr(self.conversation, "_capture_v1_retrieval_diagnostics", False)
 
             # Generation is complete but remains private. Persist the canonical
@@ -2672,10 +2638,6 @@ class AssistantService:
                 continuity_result = self._observe_current_continuity(
                     canonical_user_message, canonical_user_index,
                 )
-            if semantic_admitted and _scene_event is None and self._active_state_contextual_shadow is not None:
-                self._observe_contextual_active_state_shadow(canonical_user_message, canonical_user_index)
-            if semantic_admitted and _scene_event is None and self._open_thread_contextual_shadow is not None:
-                self._observe_contextual_open_thread_shadow(canonical_user_message, canonical_user_index)
             if semantic_admitted and _scene_event is None:
                 self._observe_durable_identity_name(canonical_user_message, canonical_user_index)
                 self._observe_active_headwear(canonical_user_message, canonical_user_index)
@@ -2755,63 +2717,6 @@ class AssistantService:
             )
             return TurnResult(user_message=user_message, error=message)
 
-        finally:
-            self._current_turn_started_at = None
-            self._finish_turn(turn_id, cancel_event)
-            self._turn_lock.release()
-
-    def run_development_presentation_qa(self, response: str, *, delta_characters: int = 24) -> bool:
-        """Exercise the real Unity/TTS event path without canonical persistence.
-
-        The loopback host exposes this only behind an explicit development
-        environment gate. Synthetic text never enters conversation, memory, or
-        character data, but synthesis, playback IDs, interruption, alignment,
-        lip sync, subtitles, and frontend transport remain the production path.
-        """
-        response = str(response or "").strip()
-        if not response:
-            return False
-        turn_id, cancel_event, replaced_turn = self._claim_replacement_turn()
-        with self._tts_state_lock:
-            playback_active = self._active_tts_playback_id != 0
-        if replaced_turn or playback_active or self._streaming_speech_queue is not None:
-            self.stop_speaking(interrupted=True)
-        self._turn_lock.acquire()
-        try:
-            if not self._turn_is_current(turn_id, cancel_event):
-                return False
-            started_at = time.monotonic()
-            self._current_turn_started_at = started_at
-            self._emit("turn_started", user_message="Development presentation QA", turn_id=turn_id)
-            self._emit("status", state="thinking", message="Development presentation QA")
-            width = max(8, int(delta_characters))
-            for offset in range(0, len(response), width):
-                if not self._turn_is_current(turn_id, cancel_event):
-                    self._emit("turn_cancelled", turn_id=turn_id)
-                    return False
-                self._emit("assistant_delta", content=response[offset:offset + width], turn_id=turn_id)
-                time.sleep(.025)
-            self._emit("assistant_response", content=response, turn_id=turn_id, has_presentation=False)
-            spoken = self.clean_text_for_tts(response)
-            if not spoken:
-                self._emit("tts_state", state="not_started")
-                return True
-            with self._speech_generation_lock:
-                speech_generation = self._speech_generation
-            self._emit("status", state="speaking", message="Speaking...")
-            self._emit("tts_state", state="starting", streamed=False, turn_id=turn_id)
-            with self._speech_generation_lock:
-                if speech_generation != self._speech_generation:
-                    return False
-                started = self.tts.speak(spoken)
-            if started is False:
-                self._emit("tts_state", state="failed", turn_id=turn_id)
-                return False
-            if not self._tts_reports_playback_start:
-                self._emit("tts_state", state="playback_started", streamed=False, turn_id=turn_id)
-            self._emit("tts_state", state="speaking", streamed=False, turn_id=turn_id)
-            self._emit("status", state="ready", message="Ready")
-            return True
         finally:
             self._current_turn_started_at = None
             self._finish_turn(turn_id, cancel_event)
@@ -3124,27 +3029,7 @@ class AssistantService:
         return self._turn_lock.locked() or speaking
 
     def _run_memory_v2_shadow(self, user_message: str) -> None:
-        """Observe a completed V1 context build without changing the reply."""
-        if self._memory_v2_shadow is not None:
-            try:
-                freshness_reader = getattr(self._memory_v2_shadow, "freshness", None)
-                freshness = (
-                    freshness_reader() if callable(freshness_reader)
-                    else {"character_id": str(self.character_id)}
-                )
-                # The disposable legacy comparator can exist alongside
-                # multi-character production state, but must never compare
-                # one character's V1 context against another character's
-                # cached shadow mapping.
-                if freshness.get("character_id") == str(self.character_id):
-                    v1_selected = getattr(self.conversation, "_last_v1_retrieval_diagnostics", ())
-                    comparison = self._memory_v2_shadow.compare(
-                        user_message, getattr(self.conversation, "messages", ()), v1_selected,
-                    )
-                    self._emit("memory_shadow", **comparison)
-            except Exception as error:
-                # Diagnostics are strictly fail-open for the user turn.
-                self._emit("memory_shadow", shadow={"state": "invalid"}, error={"source": "memory_v2_shadow", "kind": type(error).__name__})
+        """Compare bounded V2 retrieval after a completed V1 context build."""
         if self._memory_v2_shadow_writer is not None:
             try:
                 selected = getattr(self.conversation, "_last_v1_retrieval_diagnostics", ())
@@ -3728,39 +3613,6 @@ class AssistantService:
         except Exception:
             return True
 
-    def _observe_contextual_active_state_shadow(self, canonical_user_message: object, canonical_user_index: int) -> None:
-        """Run optional non-authoritative extraction only after canonical save."""
-        observer = self._active_state_contextual_shadow
-        callback = getattr(observer, "observe_canonical_user_turn", None)
-        if not callable(callback):
-            return
-        try:
-            result = callback(
-                canonical_user_message, conversation_index=canonical_user_index,
-                conversation_file=getattr(self.conversation, "conversation_file", "conversation.json"),
-            )
-            # Disabled observation remains entirely invisible to normal turns.
-            if isinstance(result, dict) and result.get("state") != "disabled":
-                public = {key: value for key, value in result.items() if key != "proposal"}
-                self._emit("active_state_contextual_shadow", **public)
-        except Exception as error:
-            # Extraction, validation, and diagnostics are all strictly
-            # fail-open for the canonical turn and generated response.
-            self._emit("active_state_contextual_shadow", state="failed", reason=type(error).__name__)
-
-    def _observe_contextual_open_thread_shadow(self, canonical_user_message: object, canonical_user_index: int) -> None:
-        """Run optional non-authoritative Open Thread extraction after save."""
-        callback = getattr(self._open_thread_contextual_shadow, "observe_canonical_user_turn", None)
-        if not callable(callback):
-            return
-        try:
-            result = callback(canonical_user_message, conversation_index=canonical_user_index,
-                              conversation_file=getattr(self.conversation, "conversation_file", "conversation.json"))
-            if isinstance(result, dict) and result.get("state") != "disabled":
-                self._emit("open_thread_contextual_shadow", **{key: value for key, value in result.items() if key != "proposal"})
-        except Exception as error:
-            self._emit("open_thread_contextual_shadow", state="failed", reason=type(error).__name__)
-
     def stop_speaking(self, *, interrupted: bool = False) -> None:
         """Immediately invalidate local speech; presentation observes only."""
         started_at = time.monotonic()
@@ -3970,7 +3822,5 @@ class AssistantService:
         if self._memory_v2_unsubscribe is not None:
             self._memory_v2_unsubscribe()
             self._memory_v2_unsubscribe = None
-        if self._memory_v2_shadow is not None:
-            self._memory_v2_shadow.close()
         if self._memory_v2_shadow_writer is not None:
             self._memory_v2_shadow_writer.close()

@@ -254,8 +254,8 @@ playback identities prevent stale work from resuming.
 ## Current status and next work
 
 Active State's generic relation/capability architecture, lifecycle, response
-authority, production-path harnesses, Unity inspection surfaces, and current
-integration seams are substantially implemented and adversarially hardened.
+authority, automated regressions, Unity inspection surfaces, and current
+integration seams are substantially implemented and conservatively validated.
 Before a release, the foundation still requires an ordinary manual Linux
 Development-player acceptance cycle. Future Active State changes should begin
 with a concrete reproducible real-use failure and become permanent production
@@ -271,9 +271,9 @@ Current priorities after manual acceptance:
 1. Fix only demonstrated release-blocking regressions in the frozen foundation.
 2. Build the non-destructive, bounded Memory Viewer/Editor as the next major
    product-facing memory tranche.
-3. Continue conservative episode/retrieval evaluation without promoting generic
+3. Maintain conservative episode/retrieval behavior without promoting generic
    V2 retrieval to universal authority.
-4. Continue bounded Unity polish, packaging, voice/animation evaluation, and
+4. Continue bounded Unity polish, packaging, voice/animation validation, and
    platform work without displacing continuity correctness.
 5. Keep Relationship State deferred until separately designed and authorized.
 

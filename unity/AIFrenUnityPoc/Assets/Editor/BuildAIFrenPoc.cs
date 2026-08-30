@@ -19,7 +19,7 @@ namespace AIFren.UnityPoc.Editor
             BuildStandalone(BuildTarget.StandaloneLinux64, "Linux", "AIFrenPoc.x86_64");
         }
 
-        /// <summary>Local QA build with Unity's DEVELOPMENT_BUILD define enabled.</summary>
+        /// <summary>Local diagnostic build with Unity's DEVELOPMENT_BUILD define enabled.</summary>
         public static void BuildLinuxDevelopment()
         {
             BuildStandalone(

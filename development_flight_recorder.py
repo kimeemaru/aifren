@@ -234,10 +234,10 @@ class DevelopmentFlightRecorder:
         text = str(message)
         prompt = re.search(r"prompt eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+) tokens", text, re.I)
         if prompt:
-            self.mark("qwen_prompt_eval_end", duration_ms=float(prompt.group(1)), prompt_tokens=int(prompt.group(2)))
+            self.mark("model_prompt_eval_end", duration_ms=float(prompt.group(1)), prompt_tokens=int(prompt.group(2)))
         generated = re.search(r"eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+) runs.*?([\d.]+) tokens per second", text, re.I)
         if generated:
-            self.mark("qwen_generation_end", duration_ms=float(generated.group(1)), generated_tokens=int(generated.group(2)), tok_s=float(generated.group(3)))
+            self.mark("model_generation_end", duration_ms=float(generated.group(1)), generated_tokens=int(generated.group(2)), tok_s=float(generated.group(3)))
 
     def trigger(self, capture_id: str, reason: str) -> bool:
         if not self.enabled or not valid_capture_id(capture_id):
@@ -325,7 +325,7 @@ class DevelopmentFlightRecorder:
             sample["tts_cancellations_total"] = self._tts_cancellations
         for key in (
             "turn_tasks", "event_tasks", "provider_streams", "tts_active_jobs", "tts_pending_jobs",
-            "audio_queue_depth", "stale_tts_results", "qwen_generating", "kokoro_synthesizing",
+            "audio_queue_depth", "stale_tts_results", "model_generating", "kokoro_synthesizing",
             "portaudio_playing", "whisper_loaded", "whisper_active", "ptt_worker_alive",
             "ptt_worker_age_seconds", "ptt_stage_age_seconds", "ptt_post_release_age_seconds",
             "ptt_recording", "ptt_listening", "ptt_transcribing", "ptt_post_release",

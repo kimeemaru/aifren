@@ -8,7 +8,6 @@ shows its output; that shell script remains the owner of Unity/backend lifecycle
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
 import queue
@@ -16,7 +15,7 @@ import subprocess
 import tempfile
 import threading
 import tkinter as tk
-from tkinter import filedialog, scrolledtext
+from tkinter import scrolledtext
 
 
 def build_launch_arguments(launch_script: Path, action: str, development: bool, *, reset_console: bool = False, reset_ui: bool = False) -> list[str]:
@@ -40,7 +39,6 @@ class AIFrenDevLauncher(tk.Tk):
         super().__init__()
         self.repository_root = repository_root
         self.launch_script = repository_root / "scripts" / "aifren_dev_linux.sh"
-        self.preferences_path = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "aifren" / "dev-launcher.json"
         self.process: subprocess.Popen[str] | None = None
         self.stop_request_file: Path | None = None
         self.output: queue.Queue[str] = queue.Queue()
@@ -59,19 +57,12 @@ class AIFrenDevLauncher(tk.Tk):
         tk.Checkbutton(controls, text="Reset Console unlock", variable=self.reset_console).pack(side=tk.LEFT)
         tk.Checkbutton(controls, text="Reset UI/display settings", variable=self.reset_ui).pack(side=tk.LEFT, padx=(14, 0))
 
-        self.vrma_qa_folder = tk.StringVar(value=self.load_vrma_qa_folder())
         actions = tk.Frame(self, padx=12)
         actions.pack(fill=tk.X)
         self.add_start_button(actions, "Start Current Build", "current", development=False)
         self.add_start_button(actions, "Rebuild + Start", "rebuild", development=False)
         self.add_start_button(actions, "Start Development Build", "current", development=True)
         self.add_start_button(actions, "Rebuild Development + Start", "rebuild", development=True)
-        qa_button = tk.Menubutton(actions, text="VRMA QA…", relief=tk.RAISED)
-        qa_menu = tk.Menu(qa_button, tearoff=False)
-        qa_menu.add_command(label="Change QA folder…", command=self.choose_vrma_qa_folder)
-        qa_menu.add_command(label="Clear remembered QA folder", command=self.clear_vrma_qa_folder)
-        qa_button.configure(menu=qa_menu)
-        qa_button.pack(side=tk.LEFT, padx=(8, 0))
         self.stop_button = tk.Button(actions, text="Stop AIFren", command=self.stop, state=tk.DISABLED)
         self.stop_button.pack(side=tk.LEFT, padx=(8, 0))
 
@@ -108,11 +99,6 @@ class AIFrenDevLauncher(tk.Tk):
         self.stop_request_file.unlink()
         environment = os.environ.copy()
         environment["AIFREN_STOP_REQUEST_FILE"] = str(self.stop_request_file)
-        qa_folder = self.vrma_qa_folder.get().strip()
-        if development and Path(qa_folder).is_dir():
-            environment["AIFREN_VRMA_QA_DIR"] = qa_folder
-        else:
-            environment.pop("AIFREN_VRMA_QA_DIR", None)
         self.process = subprocess.Popen(arguments, cwd=self.repository_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True, env=environment)
         threading.Thread(target=self.read_output, daemon=True).start()
         for button in self.launch_buttons:
@@ -171,36 +157,6 @@ class AIFrenDevLauncher(tk.Tk):
             return
         self.closing = True
         self.stop()
-
-    def load_vrma_qa_folder(self) -> str:
-        try:
-            value = json.loads(self.preferences_path.read_text(encoding="utf-8")).get("vrma_qa_folder", "")
-            return str(Path(value).expanduser()) if value and Path(value).expanduser().is_dir() else ""
-        except (OSError, ValueError, TypeError):
-            return ""
-
-    def save_vrma_qa_folder(self, folder: str) -> None:
-        try:
-            self.preferences_path.parent.mkdir(parents=True, exist_ok=True)
-            self.preferences_path.write_text(json.dumps({"vrma_qa_folder": folder}) + "\n", encoding="utf-8")
-        except OSError as error:
-            self.status.set(f"Could not save VRMA QA folder: {error}")
-
-    def choose_vrma_qa_folder(self) -> None:
-        folder = filedialog.askdirectory(title="Choose local VRMA QA folder", initialdir=self.vrma_qa_folder.get().strip() or str(Path.home()))
-        if not folder:
-            return
-        selected = Path(folder).expanduser()
-        if not selected.is_dir():
-            self.status.set("Selected VRMA QA folder is unavailable.")
-            return
-        self.vrma_qa_folder.set(str(selected))
-        self.save_vrma_qa_folder(str(selected))
-
-    def clear_vrma_qa_folder(self) -> None:
-        self.vrma_qa_folder.set("")
-        self.save_vrma_qa_folder("")
-
 
 def main() -> int:
     parser = argparse.ArgumentParser()

@@ -73,15 +73,6 @@ namespace AIFren.UnityPoc.Protocol
             await SendCommandAsync(new ClientCommand { command = "get_console_log" });
         }
 
-        public async Task RunDevelopmentPresentationQaAsync(string scenario)
-        {
-            await SendCommandAsync(new ClientCommand
-            {
-                command = "development_presentation_qa",
-                scenario = scenario ?? string.Empty,
-            });
-        }
-
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
         public async Task StartDevelopmentFlightRecorderAsync(int unityPid)
         {

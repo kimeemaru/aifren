@@ -5,9 +5,6 @@ import threading
 import unittest
 import uuid
 
-from benchmarks.memory_v2.adapters import MemoryV2StructuralAdapter
-from benchmarks.memory_v2.fixtures import build_core_fixture, structural_baseline_cases
-from benchmarks.memory_v2.harness import run_retrieval_benchmark
 from memory_v2_store import MemoryV2Store, StoreError
 
 
@@ -144,19 +141,6 @@ class MemoryV2StoreTests(unittest.TestCase):
             # The WebSocket lifecycle thread owns retirement after a safe
             # character swap; it need not be the factory worker.
             store.close()
-
-    def test_v2_structural_adapter_meets_fixture_integrity_gates(self):
-        fixture = build_core_fixture()
-        report, _ = run_retrieval_benchmark(
-            fixture, MemoryV2StructuralAdapter(fixture),
-            cases=structural_baseline_cases(fixture),
-        )
-        self.assertEqual(report.character_isolation_violation_rate, 0.0)
-        self.assertEqual(report.provenance_completeness, 1.0)
-        self.assertEqual(report.temporal_correctness, 1.0)
-        self.assertEqual(report.forbidden_retrieval_rate, 0.0)
-        self.assertEqual(report.negative_false_positive_rate, 0.0)
-
 
 if __name__ == "__main__":
     unittest.main()

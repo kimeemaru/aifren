@@ -16,7 +16,7 @@ import time
 from typing import Any
 import uuid
 
-from benchmarks.memory_v2.models import RetrievalQuery
+from memory_v2_store.retrieval_models import RetrievalQuery
 from memory_v2_store import (EmbeddingLifecycle, MemoryV2Store,
                              MemoryV2Repository,
                              ActiveStateProposal,

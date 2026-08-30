@@ -1,8 +1,7 @@
-"""Tolerant, repeatable V1 JSON import for the future production V2 store.
+"""Tolerant, repeatable V1 JSON import for the structured continuity store.
 
-Unlike the strict disposable shadow importer, this importer preserves valid
-legacy records while reporting malformed ones. It never alters V1 files and
-does not change runtime authority.
+The importer preserves valid legacy records while reporting malformed ones. It
+never alters V1 files or changes their authority.
 """
 
 from __future__ import annotations
@@ -14,10 +13,12 @@ import json
 from pathlib import Path
 import uuid
 
-from character_identity import default_legacy_character_id as _default_legacy_character_id
+from character_identity import (
+    LEGACY_CHARACTER_NAMESPACE,
+    default_legacy_character_id as _default_legacy_character_id,
+)
 from .repository import MemoryV2Repository, normalize_memory_type
 from .store import MemoryV2Store, utc_now_us
-from .v1_import import LEGACY_CHARACTER_NAMESPACE
 
 
 IMPORT_SCOPE = "memory_v1_json"
