@@ -43,6 +43,36 @@ namespace AIFren.UnityPoc.Tests.EditMode
         }
 
         [Test]
+        public void FinalExclusiveEndEqualToTotalWordsIsValidAfterSpokenProjection()
+        {
+            const int totalWords = 3;
+            List<string> pages = new List<string> { "one *waves* two", "three" };
+            List<SubtitlePageWordRange> ranges = SubtitleTimingPlan.BuildPageWordRanges(
+                pages, DialoguePresentationParser.SpokenText);
+
+            Assert.AreEqual(totalWords, ranges[ranges.Count - 1].LastWordIndex + 1);
+            Assert.IsTrue(SubtitleTimingPlan.TryValidatePagesMatchCanonicalText(
+                "one two three", pages, ranges, DialoguePresentationParser.SpokenText, out string error), error);
+        }
+
+        [Test]
+        public void PageOwnershipStillRejectsOverrunsGapsOverlapsAndReversedRanges()
+        {
+            string[] pages = { "one two", "three" };
+
+            Assert.IsFalse(SubtitleTimingPlan.TryValidatePageDefinitions(pages,
+                new[] { new SubtitlePageWordRange(0, 1), new SubtitlePageWordRange(2, 3) }, 3, out _));
+            Assert.IsFalse(SubtitleTimingPlan.TryValidatePageDefinitions(pages,
+                new[] { new SubtitlePageWordRange(0, 1), new SubtitlePageWordRange(3, 3) }, 3, out _));
+            Assert.IsFalse(SubtitleTimingPlan.TryValidatePageDefinitions(pages,
+                new[] { new SubtitlePageWordRange(0, 1), new SubtitlePageWordRange(1, 1) }, 3, out _));
+            Assert.IsFalse(SubtitleTimingPlan.TryValidatePageDefinitions(new[] { "one" },
+                new[] { new SubtitlePageWordRange(0, -1) }, 1, out _));
+            Assert.IsFalse(SubtitleTimingPlan.TryValidatePageDefinitions(new[] { "one" },
+                new[] { new SubtitlePageWordRange(-1, 0) }, 1, out _));
+        }
+
+        [Test]
         public void PageCannotAdvanceBeforeItsFinalWordTimestamp()
         {
             SubtitlePageWordRange page = new SubtitlePageWordRange(2, 4);
@@ -127,6 +157,36 @@ namespace AIFren.UnityPoc.Tests.EditMode
                 spoken, pages, ranges, DialoguePresentationParser.SpokenText, out string error), error);
             CollectionAssert.AreEqual(SubtitleTimingPlan.TokenizeWords(spoken),
                 SubtitleTimingPlan.TokenizeWords(string.Join(" ", pages.Select(DialoguePresentationParser.SpokenText))));
+        }
+
+        [Test]
+        public void MultiwordEmphasisCanCrossPagesWithoutMalformedMarkers()
+        {
+            const string raw = "Before **these deliberately emphasized words span pages safely** after.";
+            string spoken = DialoguePresentationParser.SpokenText(raw);
+            List<string> pages = SubtitlePagination.Split(DialoguePresentationParser.SubtitleSourceText(raw), 3);
+
+            Assert.Greater(pages.Count, 1);
+            foreach (string page in pages)
+            {
+                int markers = page.Split(new[] { "**" }, System.StringSplitOptions.None).Length - 1;
+                Assert.AreEqual(0, markers % 2, page);
+            }
+            CollectionAssert.AreEqual(SubtitleTimingPlan.TokenizeWords(spoken),
+                SubtitleTimingPlan.TokenizeWords(string.Join(" ", pages.Select(DialoguePresentationParser.SpokenText))));
+        }
+
+        [Test]
+        public void LayoutFitPredicateReducesPagesAndNeverReabsorbsAnOverflowingOrphan()
+        {
+            const string spoken = "one two three four five six seven eight nine ten eleven";
+            List<string> pages = SubtitlePagination.Split(spoken, 8,
+                page => SubtitleTimingPlan.TokenizeWords(page).Count <= 4);
+
+            Assert.Greater(pages.Count, 1);
+            Assert.IsTrue(pages.All(page => SubtitleTimingPlan.TokenizeWords(page).Count <= 4));
+            CollectionAssert.AreEqual(SubtitleTimingPlan.TokenizeWords(spoken),
+                SubtitleTimingPlan.TokenizeWords(string.Join(" ", pages)));
         }
     }
 }

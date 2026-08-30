@@ -58,8 +58,11 @@ a structural baseline only, not a MiniLM or live-LLM quality measurement.
 
 `v2` imports only the synthetic fixture into an isolated SQLite store. It
 applies character, provenance, state, temporal, and explicit recent-use filters
-before deterministic lexical ranking; it is not wired into AIFren or its JSON
-persistence.
+before deterministic lexical ranking. This benchmark adapter is not the
+runtime authority path and never touches AIFren's canonical JSON. The same
+store package also supports separately governed production lanes such as
+Active State, Open Threads, durable facts, truth scopes, and source-ranged
+episode context; benchmark scores do not promote generic retrieval authority.
 
 `semantic-v2` uses the first isolated FTS5/exact/structural deterministic
 retriever. It emits typed selections and privacy-safe traces. It is expected to

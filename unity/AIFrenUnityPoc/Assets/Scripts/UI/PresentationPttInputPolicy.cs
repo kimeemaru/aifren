@@ -1,16 +1,16 @@
 namespace AIFren.UnityPoc.UI
 {
-    /// <summary>Small, platform-neutral safeguards for focused PTT input.</summary>
+    /// <summary>Small, platform-neutral safeguards for Unity-delivered PTT input.</summary>
     public static class PresentationPttInputPolicy
     {
-        public static bool ShouldStart(bool applicationFocused, bool keyDown)
+        public static bool ShouldStart(bool keyDown)
         {
-            return applicationFocused && keyDown;
+            return keyDown;
         }
 
-        public static bool ShouldRelease(bool pttPressed, bool applicationFocused, bool keyHeld)
+        public static bool ShouldRelease(bool pttPressed, bool keyHeld)
         {
-            return pttPressed && (!applicationFocused || !keyHeld);
+            return pttPressed && !keyHeld;
         }
     }
 }

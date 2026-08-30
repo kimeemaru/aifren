@@ -1,4 +1,5 @@
 import unittest
+import uuid
 
 from benchmarks.memory_v2.fixtures import build_core_fixture
 from memory_v2_store import MemoryV2Store, RetrievalLimits, SemanticRetrievalV2
@@ -98,6 +99,21 @@ class SemanticRetrievalV2Tests(unittest.TestCase):
         first = self.retrieve("exact-phrase")
         second = self.retrieve("exact-phrase")
         self.assertEqual(first, second)
+
+    def test_canonical_shared_episode_uses_structural_route_and_typed_label(self):
+        character = str(uuid.uuid4())
+        self.store.create_character(character, "Episode routing")
+        self.store.add_event(character, "episode-event", 1, content_text="We repaired the microphone.")
+        self.store.add_claim(character, "canonical-shared-episode", claim_type="shared_episode",
+                             assertion_scope="shared_episode", content="We repaired the microphone together.",
+                             provenance_state="complete")
+        self.store.attach_evidence(character, "canonical-shared-episode", "episode-event")
+        outcome = SemanticRetrievalV2(self.store).retrieve(
+            type(self.query("alias")[1])(character, "Do you remember the microphone repair?", "2032-01-01T00:00:00+00:00", "ordinary", ())
+        )
+        self.assertIn("canonical-shared-episode", outcome.claim_ids)
+        selected = next(item for item in outcome.selected_memories if item.claim_id == "canonical-shared-episode")
+        self.assertEqual("SHARED EPISODE", selected.label)
 
 
 if __name__ == "__main__":

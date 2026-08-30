@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Text;
 using AIFren.UnityPoc.Avatar;
 using NUnit.Framework;
 using UnityEngine;
@@ -95,6 +96,92 @@ namespace AIFren.UnityPoc.Tests.EditMode
 
             Assert.IsFalse(PlayerPrefs.HasKey(AvatarLoader.CustomModelPathPreference));
             Assert.AreEqual(0, library.Records(ManagedAssetLibrary.ModelKind).Count);
+        }
+
+        [Test]
+        public void BackgroundRenamePersistsOnlyImportedDisplayMetadata()
+        {
+            ManagedAssetRecord background = ImportBackground("original.png", 12);
+            string managedPath = background.path;
+            string thumbnailPath = background.thumbnailPath;
+
+            Assert.IsTrue(library.TryRename(ManagedAssetLibrary.BackgroundKind, background.id, "  Evening room  ", out string error), error);
+            ManagedAssetRecord renamed = library.Assets(ManagedAssetLibrary.BackgroundKind).Find(item => item.id == background.id);
+
+            Assert.AreEqual("Evening room", renamed.displayName);
+            Assert.AreEqual(managedPath, renamed.path);
+            Assert.AreEqual(thumbnailPath, renamed.thumbnailPath);
+            Assert.IsTrue(File.Exists(managedPath));
+
+            library = ManagedAssetLibrary.CreateForTesting(Path.Combine(root, "AssetLibrary"));
+            ManagedAssetRecord reloaded = library.Assets(ManagedAssetLibrary.BackgroundKind).Find(item => item.id == background.id);
+            Assert.AreEqual("Evening room", reloaded.displayName);
+            Assert.AreEqual(managedPath, reloaded.path);
+            Assert.AreEqual(thumbnailPath, reloaded.thumbnailPath);
+        }
+
+        [Test]
+        public void ModelRenamePersistsWithoutChangingHashPathOrThumbnail()
+        {
+            ManagedAssetRecord model = ImportModel("original.vrm", 14);
+            string managedPath = model.path;
+            string thumbnailPath = model.thumbnailPath;
+
+            Assert.IsTrue(library.TryRename(ManagedAssetLibrary.ModelKind, model.id, "Ran Casual", out string error), error);
+            library = ManagedAssetLibrary.CreateForTesting(Path.Combine(root, "AssetLibrary"));
+            ManagedAssetRecord reloaded = library.Assets(ManagedAssetLibrary.ModelKind).Find(item => item.id == model.id);
+
+            Assert.AreEqual("Ran Casual", ManagedAssetLibrary.DisplayName(reloaded, "Imported model"));
+            Assert.AreEqual(managedPath, reloaded.path);
+            Assert.AreEqual(thumbnailPath, reloaded.thumbnailPath);
+        }
+
+        [Test]
+        public void LegacyMissingDisplayNameUsesFallbackWithoutMutatingMetadata()
+        {
+            ManagedAssetRecord model = ImportModel("legacy.vrm", 15);
+            LoadTampered(new ManagedAssetRecord { id = model.id, kind = model.kind, path = model.path, thumbnailPath = model.thumbnailPath });
+
+            ManagedAssetRecord legacy = library.Assets(ManagedAssetLibrary.ModelKind).Find(item => item.id == model.id);
+            Assert.AreEqual("Imported model", ManagedAssetLibrary.DisplayName(legacy, "Imported model"));
+            Assert.IsTrue(string.IsNullOrWhiteSpace(legacy.displayName));
+        }
+
+        [Test]
+        public void CustomBackgroundNameIsNeverRegeneratedFromTheSourceName()
+        {
+            ManagedAssetRecord background = ImportBackground("source-name.png", 16);
+            Assert.IsTrue(library.TryRename(ManagedAssetLibrary.BackgroundKind, background.id, "custom-hash-like-name", out string error), error);
+
+            library = ManagedAssetLibrary.CreateForTesting(Path.Combine(root, "AssetLibrary"));
+            ManagedAssetRecord reloaded = library.Assets(ManagedAssetLibrary.BackgroundKind).Find(item => item.id == background.id);
+            Assert.AreEqual("custom-hash-like-name", reloaded.displayName);
+            Assert.IsTrue(reloaded.userNamed);
+        }
+
+        [Test]
+        public void LongUnicodeBackgroundNamePersistsAsDisplayMetadata()
+        {
+            ManagedAssetRecord background = ImportBackground("unicode.png", 17);
+            const string displayName = "夜の庭園 — мягкий свет — very long background name";
+            Assert.IsTrue(library.TryRename(ManagedAssetLibrary.BackgroundKind, background.id, displayName, out string error), error);
+
+            library = ManagedAssetLibrary.CreateForTesting(Path.Combine(root, "AssetLibrary"));
+            ManagedAssetRecord reloaded = library.Assets(ManagedAssetLibrary.BackgroundKind).Find(item => item.id == background.id);
+            Assert.AreEqual(displayName, ManagedAssetLibrary.DisplayName(reloaded, "Imported background"));
+            Assert.AreEqual(background.path, reloaded.path);
+            Assert.AreEqual(background.thumbnailPath, reloaded.thumbnailPath);
+        }
+
+        [Test]
+        public void RenameRejectsWhitespaceWithoutChangingMetadata()
+        {
+            ManagedAssetRecord background = ImportBackground("original.png", 13);
+            string originalName = background.displayName;
+
+            Assert.IsFalse(library.TryRename(ManagedAssetLibrary.BackgroundKind, background.id, " \t ", out string error));
+            Assert.IsNotEmpty(error);
+            Assert.AreEqual(originalName, library.Assets(ManagedAssetLibrary.BackgroundKind).Find(item => item.id == background.id).displayName);
         }
 
         [Test]
@@ -228,11 +315,30 @@ namespace AIFren.UnityPoc.Tests.EditMode
             return model;
         }
 
+        private ManagedAssetRecord ImportBackground(string name, byte marker)
+        {
+            string source = WriteBytes(name, new[] { marker, (byte)(marker + 1), (byte)(marker + 2) });
+            Assert.IsTrue(library.TryImport(source, ManagedAssetLibrary.BackgroundKind, out ManagedAssetRecord background, out string error), error);
+            return background;
+        }
+
         private string WriteVrm(string name, byte marker)
         {
             string path = Path.Combine(root, name);
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            File.WriteAllBytes(path, new byte[] { 0x67, 0x6c, 0x54, 0x46, 2, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, marker });
+            byte[] json = Encoding.UTF8.GetBytes("{\"asset\":{\"version\":\"2.0\"},\"extensions\":{\"VRM\":{\"marker\":" + marker + "}}}");
+            int paddedJsonLength = (json.Length + 3) & ~3;
+            int originalJsonLength = json.Length;
+            Array.Resize(ref json, paddedJsonLength);
+            for (int index = originalJsonLength; index < paddedJsonLength; index++) json[index] = 0x20;
+            using (var stream = File.Create(path))
+            using (var writer = new BinaryWriter(stream))
+            {
+                writer.Write(0x46546C67u); writer.Write(2u);
+                writer.Write((uint)(12 + 8 + json.Length + 8 + 4));
+                writer.Write((uint)json.Length); writer.Write(0x4E4F534Au); writer.Write(json);
+                writer.Write(4u); writer.Write(0x004E4942u); writer.Write(new byte[4]);
+            }
             return path;
         }
 

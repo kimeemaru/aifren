@@ -1,31 +1,81 @@
-# Memory V2 SQLite shadow store
+# Memory V2 structured continuity store
 
-This is an isolated, built-in-`sqlite3` storage foundation. Its normal
-benchmark path never reads or writes `conversation.json`,
-`conversation_summary.json`, or `memories.json`. The optional
-`memory_v2_shadow.py` development helper explicitly imports a disposable,
-Git-ignored snapshot for observation only; it is never authoritative and never
-writes V1 data.
+`memory_v2_store` is AIFren's character-scoped SQLite continuity
+infrastructure. The current schema version is **17**. File databases use WAL,
+foreign keys, full synchronous writes, and a bounded busy timeout; tests may use
+isolated in-memory databases.
 
-Schema version 4 contains canonical character-scoped events and derived claims,
-evidence, relations, append-only status history, and source-ranged summaries.
-File databases enable WAL,
-foreign keys, full synchronous writes, and a five-second busy timeout. In-memory
-test databases use SQLite's in-memory journal because WAL is unavailable there.
+## Authority boundary
 
-`importer.py` imports only the versioned synthetic Memory V2 benchmark fixture.
+Canonical conversation remains the permanent source record. Memory V1 remains
+the broad/general prompt-facing memory authority. Memory V2 is neither a
+replacement for the raw archive nor one monolithic universally authoritative
+retriever.
 
-`v1_import.py` is an explicitly invoked, strict reader for a disposable V1
-JSON shadow import. It never runs at AIFren startup and never modifies source
-JSON. Rollback is deleting the generated SQLite database, manifest, and report.
+The store currently supports several deliberately separate lanes:
 
-`retrieval.py` is an isolated, non-production hybrid retrieval engine.
-Its FTS index is rebuildable derived state over eligible source-backed claims;
-it is never canonical authority and is rebuilt when simple count drift is found.
+- source-ranged, rebuildable episode accounts and bounded retrieval;
+- prospective truth-scope provenance and isolation;
+- closed-schema governed durable facts with evidence and supersession;
+- Open Threads for unresolved/waiting/planned continuity;
+- Active State scene subjects, attributes, relations, lifecycle, and
+  capability derivation;
+- rebuildable FTS, embeddings, ANN candidates, and privacy-safe structural
+  diagnostics.
 
-`embeddings.py` adds an explicit, lazy local MiniLM embedding provider and
-lifecycle operations. `claim_embeddings` is derived SQLite state keyed by
-character and claim, with model/dimension/normalization/preprocessing and
-source-content fingerprints. It is only built on an explicit synthetic-store
-operation, rejects stale/failed/incompatible rows, and can be deleted and
-rebuilt without changing canonical claims or source JSON.
+Only explicitly promoted governed lanes may supply authoritative structured
+truth. Generic V2 retrieval remains subordinate/background context and fails
+open when absent, stale, corrupt, or incompatible. Relationship State is a
+separate deferred subsystem.
+
+## Source and derived data
+
+Events and exact evidence ranges preserve provenance. Claims, lifecycle/status
+history, source-ranged summaries, semantic relations, and current-scene rows
+are character and truth-scope bound. FTS, embedding, ANN, episode, era, and
+capability projections are versioned/rebuildable derived data; deleting or
+rebuilding them never licenses editing canonical JSON.
+
+`memory_v2_episode_compaction.py` creates bounded lower episode accounts and
+optional conservative contiguous-era accounts. Each lower account carries
+source fingerprints and at most six verified continuity anchors. A failed or
+uncertain retention check keeps lower/raw context. The explicit
+`scripts/rebuild_episode_compaction.py` command rebuilds only this derived lane
+for an authorized character and never runs automatically at startup.
+
+`retrieval.py`, `embeddings.py`, and `ann.py` provide isolated bounded candidate
+lanes. ANN candidates are always rechecked through SQLite character,
+provenance, scope, and lifecycle filters. Zero retrieval is valid.
+
+## Active State
+
+Active State stores sparse interaction-relevant current reality, not an
+inventory or simulated world. Governed operations establish subjects, set
+attributes/relations, clear, replace, transfer, locate, correct, retire, and
+explicitly reactivate strongly identified subjects. Mutations are
+evidence-bound, actor-aware, scope-aware, atomic, and non-destructive to
+history.
+
+Semantic current relations are the primary authority for wearing, holding,
+attachments, obstructions, equipment use, and environmental consequences.
+Compatibility subject attributes are projections whose parity is checked in
+the mutation transaction. Derived capability effects compose all current
+causes across perception, communication, manipulation, locomotion, awareness,
+and posture.
+
+Subjects move non-destructively through current, dormant, and retired
+lifecycle states. Active relation/capability sources cannot retire. Generic
+historical objects reactivate conservatively; a lone old generic noun match is
+not sufficient identity.
+
+## Import and maintenance
+
+`v1_import.py` is an explicitly invoked strict reader for disposable V1 shadow
+imports. `production_import.py` is a tolerant, idempotent importer that leaves
+`memories.json` untouched. `repository.py` is the bounded production boundary,
+and `cli.py` exposes explicit `status`, `migrate-v1`, `export`, and
+`integrity-check` operations.
+
+`importer.py` imports only versioned synthetic benchmark fixtures. Normal tests
+and benchmarks must use temporary/generated stores and must never commit
+SQLite, WAL/SHM, ANN/index, cache, or diagnostic artifacts.

@@ -1,55 +1,110 @@
 # AIFren
 
-AIFren is a local-first, long-lived AI companion project. Its central goal is continuity: reopening the app returns to the same character, durable conversation history, and useful memories rather than a disposable chat.
+AIFren is a local-first, long-lived AI companion project. Its central goal is
+continuity: reopening the app returns to the same character, canonical history,
+memories, unresolved threads, and current situation rather than a disposable
+chat session.
 
-It currently consists of a Python application backend and a Unity companion presentation client. The project is an active development system, not a consumer release.
+The project currently consists of a frontend-neutral Python backend and a Unity
+companion client. It is an actively developed public technical baseline, not a
+finished consumer release.
+
+## Product principle
+
+**Persist the facts that matter; infer the experience.**
+
+**Context is for reasoning. Active State is for continuity.**
+
+AIFren provides **bounded improvisational world-awareness**. The backend keeps
+sparse, evidence-backed current facts, actors, relations, scopes, lifecycles,
+and capability constraints. The language model interprets those facts and
+reacts creatively inside the authoritative envelope. AIFren is not a physics,
+inventory, anatomy, pathfinding, or general world simulator.
 
 ## What works today
 
-- Canonical raw conversation archive, derived summaries, and authoritative Memory V1.
-- First-class character identities with persisted selection and isolated
-  personality/history/memory scope, separate from reusable visual assets.
-- Replaceable LLM/TTS/STT boundaries; the current response provider requires a user-supplied key, while Kokoro local TTS has a Piper fallback.
-- Loopback WebSocket backend with Unity as the production frontend; the Tkinter
-  client is legacy/debug-only.
-- Global/unfocused and focused PTT routed through the backend, with immediate interruption of active speech.
-- Unity direct VRM rendering, including metadata-valid VRM `.glb` containers
-  alongside `.vrm` files (generic GLB is rejected), full-screen backgrounds,
-  Avatar View framing, managed libraries, and companion-mode execution.
-- Optional floating hidden-UI subtitles with deterministic page ownership, plus typed dialogue emphasis/emote formatting without changing canonical assistant text.
-- Fixed-height masked multiline chat input and a first semantic Humanoid gesture backbone.
+- Canonical local conversation history plus derived summaries and Memory V1.
+- Persistent character creation/selection with isolated personality, history,
+  memory, continuity state, and per-character managed VRM selection.
+- Character-scoped Memory V2 continuity infrastructure: source-grounded
+  episodes, narrow governed durable facts, Truth Scope, Open Threads, and
+  Active State. Generic V2 retrieval remains non-authoritative.
+- A generic current-scene model with actor-aware subjects, attributes,
+  relations, corrections, transfers, replacements, locations, and
+  current/dormant/retired lifecycle.
+- Derived vision, hearing, smell, taste, touch, speech, manual, locomotion,
+  awareness, and posture capability effects with independent multiple causes.
+- Post-mutation response authority, deterministic direct-query requirements,
+  bounded companion-action proposals, and constrained reactions that preserve
+  the model's remaining expressive channels.
+- Persistent real-world and roleplay/scenario scopes without ordinary
+  cross-scope leakage.
+- Conservative proactive check-ins with a configurable opportunity interval,
+  startup grace, background publication boundary, and ignored-check-in
+  backoff.
+- Unity direct VRM presentation, scalable Year/Month/Day/paged History,
+  detailed Scene inspection, and an optional lightweight Current Scene overlay.
+- Replaceable online/local LLM, TTS, STT, and embedding implementations;
+  managed llama.cpp, Kokoro resource failover, and authoritative PTT.
+- Privacy-safe Development flight recording and headless production-path QA.
 
 ## Architecture at a glance
 
 ```text
-Unity production frontend --WebSocket--> backend_host.py --> AssistantService
-Tkinter legacy/debug client --in process-----------------------------> same boundary
-
-direct background -> direct-rendered VRM -> Screen Space Overlay UI
+Unity companion --loopback WebSocket--> backend_host.py --> AssistantService
+                                                        |-> canonical archive
+                                                        |-> Memory V1
+                                                        |-> Memory V2 continuity
+                                                        |-> LLM / TTS / STT
 ```
 
-Python is authoritative for turns, persistence, Memory V1, STT, TTS playback, and PTT. Unity owns visual presentation and local presentation preferences; it never writes canonical conversation or memory directly.
+Python owns turns, canonical persistence, memory processing, governed current
+state, provider lifecycle, TTS/STT, PTT, and backend events. Unity owns product
+presentation and local presentation preferences; it never writes canonical
+conversation or memory directly.
 
-The direct VRM path is the default because it keeps close views sharp. The old RenderTexture avatar path remains an internal rollback/debug option only. Portrait and landscape retain independent Avatar View/background state. Hiding UI does not resize or reposition the avatar viewport.
+The normal avatar path is direct VRM rendering. The RenderTexture path is
+rollback/debug-only. Portrait and landscape framing/background preferences are
+independent, and global UI hide does not resize the avatar.
 
-## Important invariants
+## Important boundaries
 
-- Raw conversation remains canonical. Summaries, embeddings, indexes, and derived memories never replace it.
-- Character identity/personality/memory are distinct from reusable global avatar and background assets.
-- A subsystem may delete only files it owns. Deleting an imported asset removes only AIFren's managed copy, never the original source file.
-- PTT/audio lifecycle is authoritative. Subtitle timing and playback metadata are presentation-only and must never delay audio startup, interruption, cancellation, or backend readiness.
-- Memory V1 is authoritative today. Memory V2 is experimental shadow/evaluation work until an explicitly approved promotion.
+- Raw conversation is canonical. Derived summaries, episodes, indexes, and
+  structured state never justify rewriting it.
+- Memory V1 remains broad prompt-facing memory authority. Memory V2 owns
+  validated structured continuity lanes and source-grounded derived context,
+  not universal memory truth.
+- Active State is current reality, not durable biography and not relationship
+  state. Relationship State is explicitly deferred.
+- Profile/default-scene facts are lower authority than explicit current
+  evidence and remain distinct from learned memory.
+- Capability effects are derived from current relation semantics; they are not
+  duplicated as ordinary memory facts.
+- Character identity/personality/history are separate from reusable visual and
+  audio assets. Managed avatars remain global assets while each character owns
+  only its stable selected-avatar reference.
+- A subsystem may delete only data it owns. Imported source files and canonical
+  evidence are never implicit deletion targets.
+- PTT/audio lifecycle is authoritative. Presentation timing cannot delay or
+  resurrect capture, synthesis, or playback.
 
-## Current focus
+## Current status
 
-The immediate work is memory correctness: V2 remains a shadow/evaluation system
-while the project evaluates reliable lifetime episodic and temporal recall.
-Unity character management, compatible VRM GLB import, and presentation
-foundation work exist, but they are not the current release blocker. See
-[PROJECT.md](PROJECT.md) for the roadmap, [ARCHITECTURE.md](ARCHITECTURE.md)
-for ownership boundaries, and [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)
-for setup, build, and validation workflows.
+The broad Active State architecture and its production seams are substantially
+implemented and hardened. An ordinary manual Linux Development-player
+acceptance cycle remains required before release. Further Active State work
+should be driven by concrete real-use regressions, not speculative semantic
+breadth.
+
+The next major product-facing memory tranche remains a non-destructive Memory
+Viewer/Editor. Relationship State remains deferred.
+
+See [PROJECT.md](PROJECT.md) for current direction,
+[ARCHITECTURE.md](ARCHITECTURE.md) for technical ownership,
+[docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md) for durable decisions, and
+[docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for setup and validation.
 
 ## License
 
-AIFren is licensed under the [AIFren Public Source License v1.0](LICENSE.md). Third-party components and assets retain their own licenses.
+AIFren is licensed under the [AIFren Public Source License v1.0](LICENSE.md).
+Third-party components and assets retain their own licenses.

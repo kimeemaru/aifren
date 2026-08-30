@@ -1,6 +1,9 @@
 import threading
+import time
 
 from pynput import keyboard, mouse
+
+from development_flight_recorder import development_flight_recorder
 
 
 # ============================================================
@@ -70,8 +73,72 @@ class PushToTalk:
         self.listener = None
         self.mouse_listener = None
         self.record_thread = None
+        self._ptt_worker_started_at = None
+        self._ptt_stage = "idle"
+        self._ptt_stage_started_at = time.monotonic()
+        self._ptt_released_at = None
+        self._next_capture_id = 0
+        self._active_capture_id = None
+
+        set_stage_observer = getattr(self.voice_input, "set_ptt_stage_observer", None)
+        if callable(set_stage_observer):
+            set_stage_observer(self._observe_ptt_stage)
 
         self.start()
+
+    def _observe_ptt_stage(self, stage, **metadata):
+        """Record structural Development telemetry without affecting PTT."""
+        now = time.monotonic()
+        capture_id = metadata.get("capture_id")
+        with self._state_lock:
+            authoritative = capture_id is None or capture_id == getattr(self, "_active_capture_id", None)
+            if authoritative:
+                self._ptt_stage = str(stage or "unknown")
+                self._ptt_stage_started_at = now
+                if stage == "ptt_record_thread_started" and getattr(self, "_ptt_worker_started_at", None) is None:
+                    self._ptt_worker_started_at = now
+                elif stage == "ptt_release_seen":
+                    self._ptt_released_at = now
+        try:
+            development_flight_recorder().mark(str(stage), **metadata)
+        except Exception:
+            # Development diagnostics must never affect PTT authority.
+            pass
+
+    def flight_recorder_state(self):
+        """Return privacy-safe, low-rate PTT worker diagnostics."""
+        now = time.monotonic()
+        with self._state_lock:
+            worker = self.record_thread
+            alive = bool(worker is not None and worker.is_alive())
+            stage = str(getattr(self, "_ptt_stage", "unknown") or "unknown")
+            worker_started = getattr(self, "_ptt_worker_started_at", None)
+            stage_started = getattr(self, "_ptt_stage_started_at", None)
+            released_at = getattr(self, "_ptt_released_at", None)
+            listening = bool(self._pressed)
+        recording_stages = {
+            "ptt_record_thread_pending", "ptt_record_thread_started", "mic_open_begin",
+            "mic_open_end", "mic_capture_started", "ptt_release_seen", "mic_close_begin",
+            "mic_stop_begin", "mic_stop_end", "mic_stream_close_begin",
+            "mic_stream_close_end", "mic_close_timeout", "mic_abort_begin",
+            "mic_abort_end", "mic_abort_error", "mic_close_end",
+        }
+        transcribing_stages = {
+            "captured_audio_ready", "wav_prepare_begin", "wav_prepare_end", "whisper_begin",
+            "whisper_end", "transcription_ready",
+        }
+        post_release = bool(alive and released_at is not None)
+        return {
+            "ptt_worker_alive": alive,
+            "ptt_worker_age_seconds": max(0.0, now - worker_started) if alive and worker_started else 0.0,
+            "ptt_stage": stage,
+            "ptt_stage_age_seconds": max(0.0, now - stage_started) if stage_started else 0.0,
+            "ptt_post_release": post_release,
+            "ptt_post_release_age_seconds": max(0.0, now - released_at) if post_release else 0.0,
+            "ptt_recording": bool(alive and stage in recording_stages),
+            "ptt_listening": listening,
+            "ptt_transcribing": bool(alive and stage in transcribing_stages),
+        }
 
     # ========================================================
     # State callback
@@ -105,6 +172,13 @@ class PushToTalk:
         with self._state_lock:
 
             return self._pressed
+
+    def _capture_is_pressed(self, capture_id):
+        with self._state_lock:
+            return bool(
+                self._pressed
+                and capture_id == getattr(self, "_active_capture_id", None)
+            )
 
     # ========================================================
     # Start
@@ -213,6 +287,13 @@ class PushToTalk:
                 return
 
             self._pressed = True
+            self._next_capture_id += 1
+            capture_id = self._next_capture_id
+            self._active_capture_id = capture_id
+            self._ptt_worker_started_at = time.monotonic()
+            self._ptt_released_at = None
+            self._ptt_stage = "ptt_record_thread_pending"
+            self._ptt_stage_started_at = self._ptt_worker_started_at
 
         print()
         print(f"PTT press ({source}) accepted.")
@@ -262,6 +343,8 @@ class PushToTalk:
 
         self.record_thread = threading.Thread(
             target=self._record,
+            args=(capture_id,),
+            name=f"AIFren PTT capture {capture_id}",
             daemon=True
         )
 
@@ -293,6 +376,7 @@ class PushToTalk:
         with self._state_lock:
             was_pressed = self._pressed
             self._pressed = False
+            capture_id = getattr(self, "_active_capture_id", None)
 
         # Ignore an unmatched release.  In particular, a reconnect or focus
         # transition must not manufacture a permanent "Transcribing" state.
@@ -307,14 +391,22 @@ class PushToTalk:
         self._state(
             "released"
         )
+        self._observe_ptt_stage("ptt_release_seen", capture_id=capture_id)
 
     # ========================================================
     # Record
     # ========================================================
 
     def _record(
-        self
+        self,
+        capture_id=None,
     ):
+
+        recording_thread = threading.current_thread()
+        if capture_id is None:
+            with self._state_lock:
+                capture_id = getattr(self, "_active_capture_id", None)
+        self._observe_ptt_stage("ptt_record_thread_started", capture_id=capture_id)
 
         try:
 
@@ -323,7 +415,8 @@ class PushToTalk:
             )
 
             text = self.voice_input.record_ptt(
-                self.is_pressed
+                lambda: self._capture_is_pressed(capture_id),
+                capture_id=capture_id,
             )
 
             print(
@@ -331,6 +424,31 @@ class PushToTalk:
             )
 
             if text:
+
+                # Recording ownership ends when microphone capture and STT
+                # finish, not when the (synchronous) transcription consumer
+                # finishes generating an assistant turn.  Keeping this thread
+                # registered through on_transcription made every later PTT
+                # press look like a duplicate for the entire LLM/TTS turn.
+                with self._state_lock:
+                    if (
+                        self.record_thread is recording_thread
+                        and getattr(self, "_active_capture_id", capture_id) == capture_id
+                    ):
+                        self.record_thread = None
+                        self._active_capture_id = None
+
+                # A timed-out/retired capture must never deliver a late
+                # transcription after a newer PTT session has taken authority.
+                with self._state_lock:
+                    authoritative = bool(
+                        self._active_capture_id is None
+                        and self.record_thread is None
+                        and getattr(self, "_next_capture_id", capture_id) == capture_id
+                    )
+                if not authoritative:
+                    self._observe_ptt_stage("ptt_capture_discarded", capture_id=capture_id)
+                    return
 
                 self.on_transcription(
                     text
@@ -343,6 +461,17 @@ class PushToTalk:
                 )
 
         except Exception as e:
+
+            discarded_capture = bool(getattr(e, "discard_capture", False))
+
+            self._observe_ptt_stage(
+                "ptt_record_thread_error",
+                capture_id=capture_id,
+                error_type=type(e).__name__,
+            )
+
+            if discarded_capture:
+                self._observe_ptt_stage("ptt_capture_discarded", capture_id=capture_id)
 
             print(
                 f"\nPTT error: {e}"
@@ -364,9 +493,23 @@ class PushToTalk:
                 "ready"
             )
 
+            if discarded_capture:
+                self._observe_ptt_stage("ptt_worker_recovered", capture_id=capture_id)
+
         finally:
 
-            self.record_thread = None
+            self._observe_ptt_stage("ptt_record_thread_exit", capture_id=capture_id)
+
+            # A new press may already have installed its own recorder while
+            # the old transcription callback was running.  Never clear that
+            # newer recording from the old thread's cleanup.
+            with self._state_lock:
+                if (
+                    self.record_thread is recording_thread
+                    and getattr(self, "_active_capture_id", capture_id) == capture_id
+                ):
+                    self.record_thread = None
+                    self._active_capture_id = None
 
     # ========================================================
     # Stop
@@ -380,6 +523,7 @@ class PushToTalk:
 
             self.running = False
             self._pressed = False
+            self._active_capture_id = None
 
         self._stop_listeners()
 

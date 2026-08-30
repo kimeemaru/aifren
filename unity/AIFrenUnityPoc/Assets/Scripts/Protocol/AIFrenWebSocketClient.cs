@@ -73,6 +73,45 @@ namespace AIFren.UnityPoc.Protocol
             await SendCommandAsync(new ClientCommand { command = "get_console_log" });
         }
 
+        public async Task RunDevelopmentPresentationQaAsync(string scenario)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "development_presentation_qa",
+                scenario = scenario ?? string.Empty,
+            });
+        }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        public async Task StartDevelopmentFlightRecorderAsync(int unityPid)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "development_flight_recorder_start",
+                unity_pid = unityPid,
+            });
+        }
+
+        public async Task TriggerDevelopmentFlightRecorderAsync(string captureId, string reason)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "development_flight_recorder_trigger",
+                capture_id = captureId ?? string.Empty,
+                reason = reason ?? string.Empty,
+            });
+        }
+
+        public async Task DumpDevelopmentFlightRecorderAsync(string captureId)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "development_flight_recorder_dump",
+                capture_id = captureId ?? string.Empty,
+            });
+        }
+#endif
+
         public async Task StopTtsAsync()
         {
             await SendCommandAsync(new ClientCommand { command = "stop_tts" });
@@ -110,9 +149,126 @@ namespace AIFren.UnityPoc.Protocol
             });
         }
 
-        public async Task SetGeminiApiKeyAsync(string apiKey)
+        public async Task SetKokoroEarlySpeechAsync(bool enabled)
         {
-            await SendCommandAsync(new ClientCommand { command = "set_gemini_api_key", api_key = apiKey ?? string.Empty });
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "set_kokoro_early_speech",
+                early_speech = enabled
+            });
+        }
+
+        public async Task SetProactiveBehaviorAsync(bool enabled)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "set_proactive_behavior",
+                proactive_behavior = enabled
+            });
+        }
+
+        public async Task SetProactiveIntervalAsync(int intervalSeconds)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "set_proactive_interval",
+                proactive_interval_seconds = intervalSeconds
+            });
+        }
+
+        public async Task SetModelSettingsAsync(string mode, string provider, string onlineModel,
+            string onlineBaseUrl, string localEndpoint, string localModel, string apiKey, string localApiKey = "")
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "set_model_settings", mode = mode ?? "online", provider = provider ?? "auto",
+                online_model = onlineModel ?? "", online_base_url = onlineBaseUrl ?? "",
+                local_endpoint = localEndpoint ?? "", local_model = localModel ?? "",
+                api_key = apiKey ?? "", local_api_key = localApiKey ?? "",
+            });
+        }
+
+        public async Task SetModelModeAsync(string mode)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "set_model_settings", mode = mode == "local" ? "local" : "online"
+            });
+        }
+
+        public async Task SetOnlineModelSettingsAsync(string apiKey)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "set_model_settings", mode = "online", api_key = apiKey ?? string.Empty,
+            });
+        }
+
+        public async Task SetLocalModelSettingsAsync(string endpoint, string model)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "set_model_settings", mode = "local",
+                local_endpoint = endpoint ?? string.Empty,
+                local_model = model ?? string.Empty,
+            });
+        }
+
+        public async Task DiscoverLocalModelsAsync(string endpoint, string localApiKey = "")
+        {
+            await SendCommandAsync(new ClientCommand { command = "discover_local_models", local_endpoint = endpoint ?? "", local_api_key = localApiKey ?? "" });
+        }
+
+        public async Task StartLocalModelAsync()
+        {
+            await SendCommandAsync(new ClientCommand { command = "start_local_model" });
+        }
+
+        public async Task StopLocalModelAsync()
+        {
+            await SendCommandAsync(new ClientCommand { command = "stop_local_model" });
+        }
+
+        public async Task ApplyContinuityControlAsync(string commandId, string action,
+            string expectedRevision, string actionToken = "")
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "continuity_control",
+                command_id = commandId ?? string.Empty,
+                action = action ?? string.Empty,
+                expected_revision = expectedRevision ?? string.Empty,
+                action_token = actionToken ?? string.Empty,
+            });
+        }
+
+        public async Task SetLocalAutoStartAsync(bool enabled)
+        {
+            await SendCommandAsync(new ClientCommand { command = "set_local_auto_start", local_auto_start = enabled });
+        }
+
+        public async Task ListCharactersAsync()
+        {
+            await SendCommandAsync(new ClientCommand { command = "list_characters" });
+        }
+
+        public async Task SelectCharacterAsync(string characterId)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "select_character",
+                character_id = characterId ?? string.Empty,
+            });
+        }
+
+        public async Task CreateCharacterAsync(string displayName, string personality)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "create_character",
+                display_name = displayName ?? string.Empty,
+                personality = personality ?? string.Empty,
+            });
         }
 
         public bool TryDequeue(out ServerMessage message)

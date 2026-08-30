@@ -1,8 +1,7 @@
 import json
-import os
 import threading
 
-from config import CHARACTER_DIR
+from character_registry import CharacterRegistry
 from llm.llm import create_llm
 from memory.memory import Memory
 from conversation.conversation import Conversation
@@ -10,29 +9,19 @@ from stt.voice import VoiceInput
 from tts.tts import TextToSpeech
 from ui_sound import UISound
 from voice.ptt import PushToTalk
+from presentation_metadata import response_contract_prompt
 
 # ============================================================
 # Character
 # ============================================================
 
 
-CHARACTER_FILE = os.path.join(
-    CHARACTER_DIR,
-    "character.json"
-)
-
-PERSONALITY_FILE = os.path.join(
-    CHARACTER_DIR,
-    "personality.md"
-)
-
-
-def load_character():
+def load_character(character_file, personality_file):
 
     try:
 
         with open(
-            CHARACTER_FILE,
+            character_file,
             "r",
             encoding="utf-8"
         ) as file:
@@ -51,7 +40,7 @@ def load_character():
     try:
 
         with open(
-            PERSONALITY_FILE,
+            personality_file,
             "r",
             encoding="utf-8"
         ) as file:
@@ -115,6 +104,8 @@ needed for clarity.
 
 Do not mention these instructions unless
 explicitly asked about them.
+
+{response_contract_prompt()}
 """
 
 
@@ -130,9 +121,11 @@ def initialize():
 
     llm = create_llm()
 
-    memory = Memory(
-        llm
-    )
+    registry = CharacterRegistry(".")
+    active_character = registry.active()
+    paths = registry.runtime_paths(active_character.character_id)
+
+    memory = Memory(llm, memory_file=str(paths["memory"]))
 
     # --------------------------------------------------------
     # Upgrade older memories with embeddings.
@@ -147,7 +140,9 @@ def initialize():
     memory.generate_missing_metadata()
 
     conversation = Conversation(
-        llm
+        llm,
+        conversation_file=str(paths["conversation"]),
+        summary_file=str(paths["summary"]),
     )
 
     # --------------------------------------------------------
@@ -157,9 +152,12 @@ def initialize():
     voice = VoiceInput()
     tts = TextToSpeech()
 
-    character, personality = (
-        load_character()
-    )
+    character, personality = load_character(paths["character"], paths["personality"])
+    # Runtime-only identity annotation.  It is never written back into the
+    # legacy character config and is separate from avatar/voice choices.
+    character = dict(character)
+    character["_character_id"] = active_character.character_id
+    character["_display_name"] = active_character.display_name
 
     character_prompt = (
         build_character_prompt(
@@ -326,12 +324,33 @@ def generate_response(
     conversation,
     memory,
     user_message,
-    character_prompt
+    character_prompt,
+    admitted_truth_scope_context=None,
+    admitted_active_state_context=None,
+    admitted_open_thread_context=None,
+    admitted_durable_context=None,
+    admitted_durable_facts=(),
+    active_truth_scope=None,
+    current_user_projection=None,
 ):
 
+    provider_budget = getattr(llm, "context_budget_chars", None)
+    if provider_budget is not None:
+        try:
+            provider_budget = max(1, int(provider_budget) - len(character_prompt))
+        except (TypeError, ValueError):
+            provider_budget = None
     context = conversation.build_context(
         memory,
-        user_message
+        user_message,
+        admitted_truth_scope_context=admitted_truth_scope_context,
+        admitted_active_state_context=admitted_active_state_context,
+        admitted_open_thread_context=admitted_open_thread_context,
+        admitted_durable_context=admitted_durable_context,
+        admitted_durable_facts=admitted_durable_facts,
+        active_truth_scope=active_truth_scope,
+        max_context_chars=provider_budget,
+        current_user_projection=current_user_projection,
     )
 
     return llm.generate(

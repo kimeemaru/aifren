@@ -62,13 +62,29 @@ def run_protocol_check(python: Path, checker: Path, *arguments: str) -> int:
     return subprocess.run([str(python), str(checker), *arguments], check=False).returncode
 
 
+def process_state(pid: int) -> str | None:
+    """Return Linux process state without treating a zombie as still running."""
+    try:
+        # stat's second field is parenthesized and may contain spaces, so split
+        # after its final delimiter before reading the state field.
+        payload = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    marker = payload.rfind(")")
+    fields = payload[marker + 1 :].split() if marker >= 0 else ()
+    return fields[0] if fields else None
+
+
 def wait_for_exit(pid: int, seconds: float) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        if not Path(f"/proc/{pid}").exists():
+        # A backend child can already be a zombie while its launcher parent is
+        # still unwinding. It has released its listener and cannot do work;
+        # waiting for /proc removal falsely reports a shutdown failure.
+        if process_state(pid) in (None, "Z"):
             return True
         time.sleep(0.2)
-    return not Path(f"/proc/{pid}").exists()
+    return process_state(pid) in (None, "Z")
 
 
 def stop_expected_backend(python: Path, checker: Path, pid: int, repository_root: Path) -> None:

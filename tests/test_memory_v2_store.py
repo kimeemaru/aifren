@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 import uuid
 
@@ -28,10 +29,41 @@ class MemoryV2StoreTests(unittest.TestCase):
         self.store.add_claim(character_id, claim_id, claim_type="fact", assertion_scope="user_fact", content="The user likes tea.", created_at_us=1_000, **kwargs)
 
     def test_schema_pragmas_version_and_integrity(self):
-        self.assertEqual(self.store.schema_version(), 4)
+        self.assertEqual(self.store.schema_version(), 17)
         self.assertEqual(self.store.pragma("foreign_keys"), 1)
         self.assertEqual(self.store.pragma("synchronous"), 2)
         self.assertEqual(self.store.integrity_check(), "ok")
+
+    def test_v7_telemetry_database_migrates_without_losing_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "v7.sqlite3")
+            connection = sqlite3.connect(path)
+            connection.executescript(
+                """
+                CREATE TABLE database_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at_us INTEGER NOT NULL);
+                CREATE TABLE retrieval_telemetry (
+                    telemetry_id INTEGER PRIMARY KEY, recorded_at_us INTEGER NOT NULL,
+                    character_id TEXT NOT NULL, query_sha256 TEXT NOT NULL,
+                    v1_ids_json TEXT NOT NULL, v2_ids_json TEXT NOT NULL,
+                    overlap_count INTEGER NOT NULL, v1_abstained INTEGER NOT NULL,
+                    v2_abstained INTEGER NOT NULL, v1_latency_ms REAL,
+                    v2_latency_ms REAL, error_kind TEXT
+                );
+                INSERT INTO database_meta VALUES ('schema_version', '7');
+                INSERT INTO schema_migrations VALUES (7, 1);
+                INSERT INTO retrieval_telemetry VALUES (1, 1, 'scope', 'digest', '[]', '[]', 0, 1, 1, NULL, NULL, NULL);
+                """
+            )
+            connection.commit()
+            connection.close()
+            migrated = MemoryV2Store(path)
+            try:
+                self.assertEqual(17, migrated.schema_version())
+                row = migrated.connection.execute("SELECT retrieval_strategy FROM retrieval_telemetry").fetchone()
+                self.assertEqual("unknown", row["retrieval_strategy"])
+            finally:
+                migrated.close()
 
     def test_append_events_and_duplicate_sequence_are_rejected(self):
         self.event(self.character_a)
@@ -74,7 +106,10 @@ class MemoryV2StoreTests(unittest.TestCase):
     def test_transaction_rolls_back_on_failure(self):
         with self.assertRaises(RuntimeError):
             with self.store.transaction():
-                self.store.connection.execute("INSERT INTO characters VALUES (?, ?, ?, NULL, NULL, '{}')", (str(uuid.uuid4()), "rolled back", 1))
+                self.store.connection.execute(
+                    "INSERT INTO characters(character_id, display_name, created_at_us, archived_at_us, legacy_config_key, metadata_json, active_truth_scope_id) VALUES (?, ?, ?, NULL, NULL, '{}', NULL)",
+                    (str(uuid.uuid4()), "rolled back", 1),
+                )
                 raise RuntimeError("stop")
         count = self.store.connection.execute("SELECT COUNT(*) FROM characters WHERE display_name = 'rolled back'").fetchone()[0]
         self.assertEqual(count, 0)
@@ -91,6 +126,24 @@ class MemoryV2StoreTests(unittest.TestCase):
             self.assertEqual(reopened.connection.execute("SELECT COUNT(*) FROM characters").fetchone()[0], 1)
             self.assertEqual(reopened.integrity_check(), "ok")
             reopened.close()
+
+    def test_service_lifecycle_may_close_a_worker_created_store(self):
+        """Character rebind creates services off-loop and retires them on-loop."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "shadow.sqlite3")
+            created = []
+
+            def create_on_service_worker():
+                created.append(MemoryV2Store(path))
+
+            worker = threading.Thread(target=create_on_service_worker)
+            worker.start()
+            worker.join()
+            store = created[0]
+            self.assertIsInstance(store, MemoryV2Store)
+            # The WebSocket lifecycle thread owns retirement after a safe
+            # character swap; it need not be the factory worker.
+            store.close()
 
     def test_v2_structural_adapter_meets_fixture_integrity_gates(self):
         fixture = build_core_fixture()

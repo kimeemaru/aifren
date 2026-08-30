@@ -1,53 +1,22 @@
-from openai import OpenAI
+"""Gemini transport adapter; it shares the normal compatible-provider contract."""
 
-from config import (
-    GEMINI_MODEL
-)
+from config import ONLINE_MODEL
+from model_settings import get_model_settings
+from llm.openai_compatible import OpenAICompatibleLLM
+from llm.unavailable import MODEL_CONFIGURATION_MESSAGE, ModelConfigurationError
 
-from local_settings import get_gemini_api_key
+
+GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
 
-class Gemini:
-
-    def __init__(self):
-
-        api_key, _ = get_gemini_api_key()
+class Gemini(OpenAICompatibleLLM):
+    def __init__(self) -> None:
+        settings = get_model_settings()
+        api_key = settings["api_key"]
         if not api_key:
-            raise RuntimeError("Gemini API key is not configured. Add one in Settings > Models.")
-        self.client = OpenAI(
+            raise ModelConfigurationError(MODEL_CONFIGURATION_MESSAGE)
+        super().__init__(
             api_key=api_key,
-            base_url=(
-                "https://generativelanguage.googleapis.com/v1beta/openai/"
-            )
-        )
-
-    def generate(
-        self,
-        messages,
-        character_prompt
-    ):
-
-        request_messages = [
-            {
-                "role": "user",
-                "content": character_prompt
-            }
-        ]
-
-        request_messages.extend(
-            messages
-        )
-
-        response = (
-            self.client.chat.completions.create(
-                model=GEMINI_MODEL,
-                messages=request_messages
-            )
-        )
-
-        return (
-            response
-            .choices[0]
-            .message
-            .content
+            base_url=settings["online_base_url"] or GEMINI_OPENAI_BASE_URL,
+            model=settings["online_model"] or ONLINE_MODEL,
         )

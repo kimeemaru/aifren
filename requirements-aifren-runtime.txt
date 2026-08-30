@@ -5,14 +5,19 @@
 # runtime and the existing local host API.
 websockets==16.1
 openai==2.53.0
+# Managed Local mode uses the same OpenAI-compatible transport through this
+# optional resident server. Linux setup builds a verified CUDA runtime with a
+# portable CPU baseline on a supported NVIDIA host and installs the normal CPU
+# package otherwise; do not install it from this generic requirements file or
+# pip will silently prefer a CPU build.
 sentence-transformers==5.7.0
+hnswlib==0.8.0
 faster-whisper==1.2.1
 pynput==1.8.2
-piper-tts==1.6.0
 sounddevice==0.5.5
 kokoro==0.9.4
-# PyTorch is installed separately by setup_aifren_runtime.bat from the
-# official CUDA wheel index.  Keeping it out of this file prevents this normal
+# PyTorch is installed separately by the platform setup scripts from the
+# official CUDA wheel index. Keeping it out of this file prevents this normal
 # dependency pass from replacing the CUDA-enabled runtime with a CPU wheel.
 # Kokoro's English G2P also needs en-core-web-sm 3.8.0.  The setup script
 # installs that official spaCy release only when it is missing, so repeat

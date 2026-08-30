@@ -23,14 +23,14 @@ namespace AIFren.UnityPoc.Tests.EditMode
         public void SnapshotAndConsoleDiagnosticPayloadsParseWithTheirLiveFields()
         {
             ServerMessage snapshot = AIFrenProtocol.ParseServerMessage(
-                "{\"type\":\"snapshot\",\"data\":{\"voice\":{\"state\":\"ready\"},\"tts\":{\"provider\":\"kokoro\",\"voice\":\"af_heart\",\"device\":\"cuda\"},\"models\":{\"gemini\":{\"configured\":true,\"source\":\"development_config\",\"model\":\"gemini-test\"}}}}"
+                "{\"type\":\"snapshot\",\"data\":{\"voice\":{\"state\":\"ready\"},\"tts\":{\"provider\":\"kokoro\",\"voice\":\"default\",\"device\":\"local\"},\"models\":{\"current\":{\"mode\":\"local\",\"provider\":\"openai_compatible\",\"configured\":true,\"model\":\"local-test\"}}}}"
             );
             ServerMessage console = AIFrenProtocol.ParseServerMessage(
                 "{\"type\":\"event\",\"event\":{\"type\":\"console_log\",\"data\":{\"lines\":[\"Backend listening\"]}}}"
             );
 
             Assert.AreEqual("kokoro", snapshot.data.tts.provider);
-            Assert.AreEqual("gemini-test", snapshot.data.models.gemini.model);
+            Assert.AreEqual("local-test", snapshot.data.models.current.model);
             Assert.AreEqual("ready", snapshot.data.voice.state);
             Assert.AreEqual("Backend listening", console.@event.data.lines[0]);
         }

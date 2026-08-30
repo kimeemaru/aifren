@@ -1,83 +1,59 @@
+import io
+import time
 import unittest
-from types import SimpleNamespace
-from pathlib import Path
-from tempfile import TemporaryDirectory
-from unittest.mock import MagicMock, patch
 import wave
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
 from assistant_service import AssistantService
 from tts import tts
-from tts.kokoro_assets import require_local_assets
+from tts.chunker import SpeechChunker
+from tts.streaming import StreamingSpeechQueue, TtsSynthesisResourceManager
 
 
 class ProviderSelectionTests(unittest.TestCase):
-    def test_configured_default_selects_kokoro(self):
-        provider = object()
-        with patch.object(tts, "TTS_PROVIDER", "kokoro"), patch.object(
-            tts, "KokoroTextToSpeech", return_value=provider
-        ):
-            self.assertIs(tts.create_tts_provider(), provider)
-
-    def test_piper_selection_keeps_the_existing_provider(self):
-        provider = object()
-        with patch.object(tts, "PiperTextToSpeech", return_value=provider):
-            self.assertIs(tts.create_tts_provider("piper"), provider)
-
-    def test_kokoro_failure_falls_back_to_piper(self):
-        fallback = object()
-        with patch.object(tts, "KokoroTextToSpeech", side_effect=RuntimeError("missing")), patch.object(tts, "PiperTextToSpeech", return_value=fallback):
-            self.assertIs(tts.create_tts_provider("kokoro"), fallback)
+    def test_kokoro_is_supported(self):
+        provider = MagicMock()
+        with patch.object(tts, "KokoroTextToSpeech", return_value=provider):
+            self.assertIs(provider, tts.create_tts_provider("kokoro"))
 
     def test_unknown_provider_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "Unsupported TTS_PROVIDER"):
-            tts.create_tts_provider("not-a-provider")
+        with self.assertRaisesRegex(ValueError, "kokoro"):
+            tts.create_tts_provider("unknown")
 
 
-class ProviderIndependentTtsBehaviorTests(unittest.TestCase):
-    def test_emote_filtering_is_independent_of_provider(self):
-        self.assertEqual(
-            AssistantService.clean_text_for_tts("*waves* Hello, *smiles* friend!"),
-            "Hello,  friend!",
-        )
 
-    def test_inline_asterisk_emphasis_is_preserved_for_tts(self):
-        self.assertEqual(
-            AssistantService.clean_text_for_tts("*nods* I *really* mean *that*?"),
-            "I really mean that?",
-        )
 
-    def test_stage_direction_vocabulary_is_not_spoken_as_emphasis(self):
-        self.assertEqual(AssistantService.clean_text_for_tts("*smiles* Fine."), "Fine.")
-        self.assertEqual(AssistantService.clean_text_for_tts("*blinks* Fine."), "Fine.")
-        self.assertEqual(AssistantService.clean_text_for_tts("*pauses* I suppose so."), "I suppose so.")
-        self.assertEqual(AssistantService.clean_text_for_tts("*smiling* Hello."), "Hello.")
-        self.assertEqual(AssistantService.clean_text_for_tts("*AIFren waves* Hello."), "Hello.")
+class ChunkerTests(unittest.TestCase):
+    def test_sentences_are_complete_and_ordered(self):
+        chunker = SpeechChunker(minimum_chars=8, preferred_max_chars=80, hard_max_chars=120)
+        self.assertEqual(("Hello there.",), chunker.feed("Hello there. Next"))
+        self.assertEqual(("Next sentence!",), chunker.feed(" sentence!"))
+        self.assertEqual((), chunker.finish())
 
-    def test_double_asterisk_emphasis_is_normalized_before_tts(self):
-        self.assertEqual(AssistantService.clean_text_for_tts("I *not* kidding."), "I not kidding.")
-        self.assertEqual(AssistantService.clean_text_for_tts("I **really** mean it."), "I really mean it.")
-        self.assertEqual(
-            AssistantService.clean_text_for_tts("*smiles* I **really** am *not* kidding. *nods*"),
-            "I really am not kidding.",
-        )
+    def test_long_sentence_uses_clause_guard_and_never_drops_tail(self):
+        chunker = SpeechChunker(minimum_chars=15, preferred_max_chars=25, hard_max_chars=35)
+        emitted = chunker.feed("This is a deliberately long sentence, with a useful clause, and a final tail")
+        emitted += chunker.finish()
+        self.assertEqual("This is a deliberately long sentence, with a useful clause, and a final tail", " ".join(emitted))
+        self.assertTrue(all(part.strip() for part in emitted))
 
-    def test_long_single_marker_roleplay_beats_are_not_spoken(self):
-        self.assertEqual(
-            AssistantService.clean_text_for_tts("*let out a soft, teasing huff and lean back on my heels*"),
-            "",
-        )
-        self.assertEqual(AssistantService.clean_text_for_tts("*I cross my arms*"), "")
-        self.assertEqual(AssistantService.clean_text_for_tts("*very close indeed*"), "very close indeed")
-        self.assertEqual(AssistantService.clean_text_for_tts("*I really mean this*"), "")
-        self.assertEqual(
-            AssistantService.clean_text_for_tts("I **really mean this very strongly**."),
-            "I really mean this very strongly.",
-        )
+    def test_abbreviation_and_decimal_do_not_emit_empty_chunks(self):
+        chunker = SpeechChunker(minimum_chars=10, preferred_max_chars=80, hard_max_chars=120)
+        pieces = chunker.feed("Version 1.5 is ready. Dr. Lee agreed.") + chunker.finish()
+        self.assertTrue(all(piece.strip() for piece in pieces))
 
+    def test_overlong_complete_sentence_still_respects_hard_audio_limit(self):
+        chunker = SpeechChunker(minimum_chars=20, preferred_max_chars=40, hard_max_chars=55)
+        text = "This deliberately oversized sentence has no punctuation until its ending and must remain safely chunked."
+        pieces = chunker.feed(text) + chunker.finish()
+        self.assertEqual(text, " ".join(pieces))
+        self.assertTrue(all(len(piece) <= 55 for piece in pieces))
+
+class PlaybackTests(unittest.TestCase):
     def test_shared_playback_controls_clamp_volume_and_stop(self):
-        provider = object.__new__(tts.PiperTextToSpeech)
+        provider = object.__new__(tts.LocalPlaybackTTS)
         provider._initialize_playback_state()
         provider.set_volume(5)
         self.assertEqual(provider.get_volume(), 1.0)
@@ -86,158 +62,433 @@ class ProviderIndependentTtsBehaviorTests(unittest.TestCase):
         provider.stop()
         self.assertTrue(provider.playback_finished.is_set())
 
-    def test_piper_speak_uses_in_memory_wav_and_starts_playback(self):
-        provider = object.__new__(tts.PiperTextToSpeech)
-        provider._initialize_playback_state()
-        provider.voice = MagicMock()
-        provider._start_playback = MagicMock(return_value=True)
 
-        def synthesize_wav(text, wav_file):
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(22050)
-            wav_file.writeframes(b"\x00\x00\x10\x00")
 
-        provider.voice.synthesize_wav.side_effect = synthesize_wav
-
-        self.assertTrue(provider.speak("Fallback speech works."))
-        provider.voice.synthesize_wav.assert_called_once()
-        audio, sample_rate, generation = provider._start_playback.call_args.args
-        self.assertEqual(sample_rate, 22050)
-        self.assertGreater(generation, 0)
-        self.assertEqual(audio.dtype, np.float32)
-        self.assertEqual(audio.shape[1], 1)
-
-    def test_interrupted_synthesis_cannot_start_stale_playback(self):
-        provider = object.__new__(tts.PiperTextToSpeech)
-        provider._initialize_playback_state()
-        synthesis_generation = provider._next_playback_generation()
-        provider.stop()
-
-        self.assertFalse(provider._start_playback(
-            np.zeros((8, 1), dtype=np.float32), 24000, synthesis_generation
-        ))
-
-    def test_interrupt_invalidates_active_audio_without_waiting_for_worker_cleanup(self):
-        provider = object.__new__(tts.PiperTextToSpeech)
-        provider._initialize_playback_state()
-
-        class FakeStream:
-            def __init__(self):
-                self.aborted = False
-                self.active = True
-
-            def abort(self):
-                self.aborted = True
-                self.active = False
-
-        generation = provider._next_playback_generation()
-        provider._mark_playback_active(generation)
-        stream = FakeStream()
-        provider.stream = stream
-
-        interrupted = provider.stop()
-
-        self.assertEqual(generation, interrupted)
-        self.assertTrue(stream.aborted)
-        self.assertIsNone(provider.playback_debug_state()["playing"])
-        # A stale synthesis/playback completion cannot restart the audio.
-        self.assertFalse(provider._start_playback(
-            np.zeros((8, 1), dtype=np.float32), 24000, generation
-        ))
-
-    def test_natural_completion_retires_active_playback_and_notifies_once(self):
-        provider = object.__new__(tts.PiperTextToSpeech)
-        provider._initialize_playback_state()
-        generation = provider._next_playback_generation()
-        provider._mark_playback_active(generation)
-        callbacks = []
-        provider.set_playback_finished_callback(callbacks.append)
-
-        class FakeStream:
-            active = True
-
-            def start(self):
-                pass
-
-            def stop(self):
-                self.active = False
-
-            def close(self):
-                pass
-
-            def abort(self):
-                self.active = False
-
-        stream = FakeStream()
-
-        class FakeSoundDevice:
-            def OutputStream(self, **_kwargs):
-                return stream
-
-            @staticmethod
-            def sleep(_milliseconds):
-                stream.active = False
-
-        with patch.object(tts, "sd", FakeSoundDevice()):
-            provider._play_audio(
-                np.zeros((8, 1), dtype=np.float32), 24000, 8 / 24000,
-                [], [], generation,
-            )
-
-        self.assertEqual([generation], callbacks)
-        state = provider.playback_debug_state()
-        self.assertIsNone(state["playing"])
-        self.assertFalse(state["stream"])
-
-    def test_kokoro_interruption_prevents_late_synthesis_chunks_from_playing(self):
+    def test_kokoro_stream_chunk_can_be_prepared_before_ordered_playback(self):
         provider = object.__new__(tts.KokoroTextToSpeech)
         provider._initialize_playback_state()
-        generation = provider._next_playback_generation()
-        provider._mark_synthesis_active(generation)
-        provider.pipeline = lambda *_args, **_kwargs: iter((
-            SimpleNamespace(audio=np.zeros(24, dtype=np.float32), tokens=[]),
-        ))
-        provider.voice_path = "unused"
+        audio = np.zeros((2400, 1), dtype=np.float32)
+        provider._generate_audio = MagicMock(return_value=(audio, 24000, [0.0]))
+
+        prepared = provider.prepare_stream_chunk("Synthetic sentence.")
+
+        provider._generate_audio.assert_called_once_with("Synthetic sentence.")
+        with patch.object(provider, "_start_playback", return_value=True) as start:
+            self.assertTrue(provider.start_prepared_chunk(prepared))
+        start.assert_called_once()
+        self.assertEqual([0.0], start.call_args.args[3])
+        self.assertFalse(provider.playback_finished.is_set())
+
+    def test_kokoro_continuous_player_opens_portaudio_once_for_two_pcm_chunks(self):
+        import threading
+        provider = object.__new__(tts.KokoroTextToSpeech)
+        provider._initialize_playback_state()
+        provider._initialize_continuous_state()
+        starts, finishes, streams = [], [], []
+        provider.set_playback_started_callback(
+            lambda duration, envelope, words, playback_id: starts.append(playback_id)
+        )
+        provider.set_playback_finished_callback(finishes.append)
+
+        class FakeOutputStream:
+            def __init__(self, *, samplerate, channels, dtype, callback):
+                self.callback = callback
+                self.active = False
+                self.worker = None
+                streams.append(self)
+            def start(self):
+                self.active = True
+                def pump():
+                    while self.active:
+                        output = np.zeros((64, 1), dtype=np.float32)
+                        try:
+                            self.callback(output, 64, None, None)
+                        except tts.sd.CallbackStop:
+                            self.active = False
+                        time.sleep(.001)
+                self.worker = threading.Thread(target=pump, daemon=True)
+                self.worker.start()
+            def abort(self): self.active = False
+            def stop(self): self.active = False
+            def close(self):
+                self.active = False
+                if self.worker is not None: self.worker.join(.2)
+
+        first = (np.ones((240, 1), dtype=np.float32) * .1, 24000, [0.0])
+        second = (np.ones((240, 1), dtype=np.float32) * .1, 24000, [0.0])
+        with patch.object(tts.sd, "OutputStream", FakeOutputStream), patch.object(
+            tts.sd, "sleep", side_effect=lambda milliseconds: time.sleep(milliseconds / 1000.0)
+        ):
+            self.assertTrue(provider.begin_prepared_stream(first, on_started=lambda: None))
+            self.assertTrue(provider.append_prepared_stream(second, on_started=lambda: None))
+            provider.finish_prepared_stream()
+            self.assertTrue(provider.playback_finished.wait(1))
+            if provider.playback_thread is not None:
+                provider.playback_thread.join(1)
+
+        self.assertEqual(1, len(streams))
+        self.assertEqual(2, len(starts))
+        self.assertEqual(1, len(set(starts)))
+        self.assertEqual(starts[-1:], finishes)
+
+    def test_kokoro_serializes_synthesis_across_replacement_turns(self):
+        import threading
+        provider = object.__new__(tts.KokoroTextToSpeech)
+        provider._initialize_playback_state()
+        provider._initialize_continuous_state()
+        provider.device = "cpu"
+        provider.voice = "af_test"
+        provider.voice_path = "synthetic.pt"
         provider.speed = 1.0
-        provider.stop()
+        active = 0
+        maximum_active = 0
+        guard = threading.Lock()
 
-        self.assertIsNone(provider._generate_audio("late synthesis", generation))
-        self.assertIsNone(provider.playback_debug_state()["synthesizing"])
+        def pipeline(text, **_kwargs):
+            nonlocal active, maximum_active
+            with guard:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            time.sleep(.03)
+            yield type("Result", (), {"audio": np.ones(24), "tokens": ()})()
+            with guard:
+                active -= 1
 
-    def test_lip_sync_envelope_tracks_audio_energy_without_text_timing(self):
-        silent_then_loud = np.concatenate((np.zeros(2400), np.ones(2400) * .5)).reshape(-1, 1)
+        provider.pipeline = pipeline
+        workers = [threading.Thread(target=provider._generate_audio, args=(text,)) for text in ("First.", "Second.")]
+        for worker in workers: worker.start()
+        for worker in workers: worker.join(1)
 
-        envelope = tts.PiperTextToSpeech.build_lip_sync_envelope(
-            silent_then_loud, 24000, samples_per_second=24
+        self.assertEqual(1, maximum_active)
+
+    def test_cancelled_synthesis_result_never_opens_continuous_playback(self):
+        import threading
+        synthesis_started = threading.Event()
+        release = threading.Event()
+        class BlockingContinuousFake:
+            def __init__(self):
+                self.playback_finished = threading.Event()
+                self.begin_count = 0
+                self.stop_count = 0
+            def prepare_stream_chunk(self, text):
+                synthesis_started.set()
+                release.wait(1)
+                return text
+            def begin_prepared_stream(self, prepared, *, on_started=None):
+                self.begin_count += 1
+                return True
+            def append_prepared_stream(self, prepared, *, on_started=None):
+                return True
+            def finish_prepared_stream(self):
+                self.playback_finished.set()
+            def stop(self):
+                self.stop_count += 1
+                self.playback_finished.set()
+
+        fake = BlockingContinuousFake()
+        queue = StreamingSpeechQueue(fake)
+        self.assertTrue(queue.submit("Speech from the cancelled turn."))
+        self.assertTrue(synthesis_started.wait(1))
+        queue.cancel()
+        release.set()
+        queue.join(1)
+
+        self.assertEqual(0, fake.begin_count)
+        self.assertEqual(1, fake.stop_count)
+
+
+
+
+
+
+
+    def test_queue_keeps_speech_in_order(self):
+        class FakeTts:
+            def __init__(self):
+                import threading
+                self.playback_finished = threading.Event(); self.playback_finished.set(); self.calls = []
+            def speak(self, text): self.calls.append(text); self.playback_finished.set(); return True
+            def stop(self): pass
+        fake = FakeTts()
+        queue = StreamingSpeechQueue(fake, max_chunks=2)
+        self.assertTrue(queue.submit("First.")); self.assertTrue(queue.submit("Second."))
+        queue.close(); queue.join(1)
+        self.assertEqual(["First.", "Second."], fake.calls)
+
+    def test_queue_preserves_audio_and_subtitle_chunk_identity_at_playback(self):
+        class FakeTts:
+            def __init__(self):
+                import threading
+                self.playback_finished = threading.Event(); self.playback_finished.set()
+            def speak(self, text): return True
+            def stop(self): pass
+        starting = []
+        fake = FakeTts()
+        queue = StreamingSpeechQueue(
+            fake,
+            on_chunk_starting=lambda spoken, presentation, index: starting.append(
+                (spoken, presentation, index)
+            ),
         )
+        self.assertTrue(queue.submit("Hello there.", presentation_text="**Hello** there."))
+        queue.close(); queue.join(1)
+        self.assertEqual([("Hello there.", "**Hello** there.", 0)], starting)
 
-        self.assertEqual(5, len(envelope))
-        self.assertEqual(0.0, envelope[0])
-        self.assertGreater(envelope[-1], .8)
+    def test_queue_announces_chunk_before_synthesis_and_playback(self):
+        import threading
+        order = []
+        class FakeTts:
+            def __init__(self): self.playback_finished = threading.Event(); self.playback_finished.set()
+            def prepare_stream_chunk(self, text): order.append("synthesis"); return text
+            def start_prepared_chunk(self, text): order.append("playback"); self.playback_finished.set(); return True
+            def stop(self): pass
+        queue = StreamingSpeechQueue(
+            FakeTts(),
+            on_chunk_submitted=lambda spoken, presentation, index: order.append("queued"),
+        )
+        self.assertTrue(queue.submit("Hello there."))
+        queue.close(); queue.join(1)
+        self.assertEqual(["queued", "synthesis", "playback"], order)
 
 
-class KokoroLocalAssetsTests(unittest.TestCase):
-    def test_local_asset_validation_requires_config_model_and_selected_voice(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "voices").mkdir()
-            for path in (root / "config.json", root / "kokoro-v1_0.pth", root / "voices" / "af_heart.pt"):
-                path.write_bytes(b"local")
+    def test_kokoro_continuous_capability_opens_one_session_for_all_sentences(self):
+        import threading
+        class ContinuousFake:
+            def __init__(self):
+                self.playback_finished = threading.Event()
+                self.prepared, self.appended = [], []
+                self.begin_count = 0
+                self.finish_count = 0
+            def prepare_stream_chunk(self, text):
+                self.prepared.append(text)
+                return text
+            def begin_prepared_stream(self, prepared, *, on_started=None):
+                self.begin_count += 1
+                self.appended.append(prepared)
+                if on_started: on_started()
+                return True
+            def append_prepared_stream(self, prepared, *, on_started=None):
+                self.appended.append(prepared)
+                if on_started: on_started()
+                return True
+            def finish_prepared_stream(self):
+                self.finish_count += 1
+                self.playback_finished.set()
+            def stop(self): self.playback_finished.set()
 
-            config, model, voice = require_local_assets(root, "af_heart")
-            self.assertTrue(config.is_file())
-            self.assertTrue(model.is_file())
-            self.assertTrue(voice.is_file())
+        fake = ContinuousFake()
+        started = []
+        queue = StreamingSpeechQueue(
+            fake, max_chunks=2,
+            on_chunk_starting=lambda spoken, presentation, index: started.append((index, spoken)),
+        )
+        for text in ("First.", "Second!", "Third?"):
+            self.assertTrue(queue.submit(text))
+        queue.close(); queue.join(1)
+        self.assertEqual(1, fake.begin_count)
+        self.assertEqual(1, fake.finish_count)
+        self.assertEqual(["First.", "Second!", "Third?"], fake.prepared)
+        self.assertEqual(fake.prepared, fake.appended)
+        self.assertEqual([(0, "First."), (1, "Second!"), (2, "Third?")], started)
 
-    def test_kokoro_token_starts_keep_only_lexical_timestamped_tokens(self):
-        tokens = [
-            SimpleNamespace(text="Hello", start_ts=0.1),
-            SimpleNamespace(text=",", start_ts=0.3),
-            SimpleNamespace(text="friend", start_ts=0.4),
-            SimpleNamespace(text="missing", start_ts=None),
-        ]
+    def test_bounded_queue_coalesces_only_not_yet_synthesized_sentences_in_order(self):
+        import threading
+        gate = threading.Event()
+        first_started = threading.Event()
+        class SlowFake:
+            def __init__(self):
+                self.playback_finished = threading.Event(); self.playback_finished.set()
+                self.prepared = []
+            def prepare_stream_chunk(self, text):
+                self.prepared.append(text)
+                if text == "First.":
+                    first_started.set(); gate.wait(1)
+                return text
+            def start_prepared_chunk(self, prepared):
+                self.playback_finished.set(); return True
+            def stop(self): self.playback_finished.set()
+
+        fake = SlowFake()
+        queue = StreamingSpeechQueue(fake, max_chunks=1)
+        self.assertTrue(queue.submit("First."))
+        self.assertTrue(first_started.wait(1))
+        self.assertTrue(queue.submit("Second."))
+        self.assertTrue(queue.submit("Third."))
+        self.assertTrue(queue.submit("Fourth."))
+        queue.close(); gate.set(); queue.join(1)
+        self.assertEqual(["First.", "Second.", "Third. Fourth."], fake.prepared)
+
+    def test_transient_synthesis_failure_retries_same_chunk_before_later_chunks(self):
+        import threading
+        class RetryFake:
+            def __init__(self):
+                self.playback_finished = threading.Event(); self.playback_finished.set()
+                self.attempts, self.played = [], []
+            def prepare_stream_chunk(self, text):
+                self.attempts.append(text)
+                if text == "First." and self.attempts.count(text) == 1:
+                    raise RuntimeError("CUDA allocation temporarily unavailable")
+                return text
+            def start_prepared_chunk(self, prepared):
+                self.played.append(prepared); self.playback_finished.set(); return True
+            def stop(self): self.playback_finished.set()
+        fake = RetryFake()
+        queue = StreamingSpeechQueue(fake)
+        queue.submit("First."); queue.submit("Second."); queue.close(); queue.join(2)
+        self.assertEqual(["First.", "First.", "Second."], fake.attempts)
+        self.assertEqual(["First.", "Second."], fake.played)
+
+    def test_repeated_cuda_failure_retries_same_chunk_once_on_cpu(self):
+        import threading
+        class CpuFallbackFake:
+            def __init__(self):
+                self.playback_finished = threading.Event(); self.playback_finished.set()
+                self.attempts, self.played = [], []
+                self.device = "cuda"
+                self.fallbacks = 0
+            def prepare_stream_chunk(self, text):
+                self.attempts.append((text, self.device))
+                if text == "Middle." and self.device == "cuda":
+                    raise RuntimeError("CUDA out of memory")
+                return text
+            def fallback_to_cpu_after_resource_failure(self):
+                self.fallbacks += 1; self.device = "cpu"; return True
+            def start_prepared_chunk(self, prepared):
+                self.played.append(prepared); self.playback_finished.set(); return True
+            def stop(self): self.playback_finished.set()
+        failures=[]; fake=CpuFallbackFake()
+        queue=StreamingSpeechQueue(fake, on_failure=failures.append)
+        for item in ("First.", "Middle.", "Later."): queue.submit(item)
+        queue.close(); queue.join(2)
+        self.assertEqual([
+            ("First.", "cuda"), ("Middle.", "cuda"),
+            ("Middle.", "cuda"), ("Middle.", "cpu"), ("Later.", "cpu"),
+        ], fake.attempts)
+        self.assertEqual(["First.", "Middle.", "Later."], fake.played)
+        self.assertEqual(1, fake.fallbacks)
+        self.assertEqual([], failures)
+
+    def test_second_synthesis_failure_aborts_sequence_without_skipping_middle(self):
+        import threading
+        class FailedFake:
+            def __init__(self):
+                self.playback_finished = threading.Event(); self.playback_finished.set(); self.attempts=[]; self.played=[]
+            def prepare_stream_chunk(self, text):
+                self.attempts.append(text)
+                if text == "Middle.": raise RuntimeError("CUDA out of memory")
+                return text
+            def start_prepared_chunk(self, prepared):
+                self.played.append(prepared); self.playback_finished.set(); return True
+            def stop(self): self.playback_finished.set()
+        failures=[]; fake=FailedFake(); queue=StreamingSpeechQueue(fake, on_failure=failures.append)
+        for item in ("First.", "Middle.", "Later."): queue.submit(item)
+        queue.close(); queue.join(2)
+        self.assertEqual(2, fake.attempts.count("Middle."))
+        self.assertNotIn("Later.", fake.attempts)
+        self.assertEqual(["tts_synthesis_sequence_failed"], failures)
+
+    def test_interruption_cancels_provider_idle_retry_wait(self):
+        import threading
+        attempted = threading.Event()
+        class BusyFake:
+            def __init__(self): self.playback_finished=threading.Event(); self.playback_finished.set(); self.stop_count=0
+            def prepare_stream_chunk(self, text): attempted.set(); raise RuntimeError("CUDA busy")
+            def stop(self): self.stop_count += 1; self.playback_finished.set()
+        fake=BusyFake(); queue=StreamingSpeechQueue(fake, provider_generation_active=lambda: True)
+        queue.submit("Pending."); self.assertTrue(attempted.wait(1)); queue.cancel(); queue.join(1)
+        self.assertEqual(1, fake.stop_count)
+
+    def test_interruption_during_direct_cpu_fallback_never_starts_same_utterance(self):
+        import threading
+        cancelled = threading.Event()
+        class DirectFake:
+            def __init__(self):
+                self.attempts = 0
+                self.fallbacks = 0
+            def prepare_stream_chunk(self, _text):
+                self.attempts += 1
+                raise RuntimeError("CUDA out of memory")
+            def fallback_to_cpu_after_resource_failure(self):
+                self.fallbacks += 1
+                cancelled.set()
+                return True
+        fake = DirectFake()
+        manager = TtsSynthesisResourceManager(fake, cancelled=cancelled)
+        result = manager.prepare("Exact governed utterance.", direct=True)
+        self.assertFalse(result.succeeded)
+        self.assertTrue(result.cancelled)
+        self.assertEqual(2, fake.attempts)
+        self.assertEqual(1, fake.fallbacks)
+
+    def test_cleaning_remains_provider_independent(self):
+        self.assertEqual(AssistantService.clean_text_for_tts("*waves* Hello, *smiles* friend!"), "Hello, friend!")
+
+    def test_emoji_are_removed_only_from_spoken_projection(self):
+        cases = {
+            "Okay! 😊": "Okay!",
+            "That's cute ✨✨": "That's cute.",
+            "❤️": "",
+            "Hello 👩🏽‍💻 friend": "Hello friend",
+            "Flag 🇨🇦": "Flag.",
+            "Press 1️⃣ now": "Press now",
+        }
+        for canonical, expected in cases.items():
+            with self.subTest(canonical=canonical):
+                self.assertEqual(expected, AssistantService.clean_text_for_tts(canonical))
+
+    def test_accelerator_oom_classification_is_cuda_hip_and_rocm_neutral(self):
+        import sys
+        import threading
+        from types import SimpleNamespace
+
+        class OutOfMemoryError(Exception):
+            pass
+        OutOfMemoryError.__module__ = "torch.cuda"
         self.assertEqual(
-            [1.1, 1.4],
-            tts.KokoroTextToSpeech._result_word_starts(tokens, 1.0),
+            "transient_resource",
+            TtsSynthesisResourceManager.failure_category(OutOfMemoryError(), False),
         )
+        self.assertEqual(
+            "concurrent_provider_resource",
+            TtsSynthesisResourceManager.failure_category(
+                RuntimeError("HIP/ROCm accelerator out of memory"), True,
+            ),
+        )
+        fake_torch = SimpleNamespace(version=SimpleNamespace(hip="6.2", cuda=None))
+        manager = TtsSynthesisResourceManager(
+            SimpleNamespace(device="cuda"), cancelled=threading.Event(),
+        )
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            self.assertEqual("hip_rocm", manager.accelerator_backend())
+
+    def test_kokoro_declares_conservative_complete_sentence_strategy(self):
+        provider = object.__new__(tts.KokoroTextToSpeech)
+        with patch("model_settings.kokoro_early_speech_status", return_value={"effective": True}):
+            self.assertEqual("complete_sentences", provider.synthesis_strategy)
+        with patch("model_settings.kokoro_early_speech_status", return_value={"effective": False}):
+            self.assertEqual("whole_response", provider.synthesis_strategy)
+
+    def test_kokoro_runtime_cpu_fallback_moves_existing_model_without_changing_settings(self):
+        import threading
+        provider = object.__new__(tts.KokoroTextToSpeech)
+        provider._kokoro_synthesis_lock = threading.Lock()
+        provider.device = "cuda"
+        provider.voice = "af_test"
+        provider._repo_id = "synthetic/kokoro"
+        provider._torch = MagicMock()
+        model = MagicMock()
+        model.to.return_value = model
+        model.eval.return_value = model
+        provider.pipeline = type("Pipeline", (), {"model": model})()
+        replacement = object()
+        provider._KPipeline = MagicMock(return_value=replacement)
+
+        self.assertTrue(provider.fallback_to_cpu_after_resource_failure())
+        self.assertEqual("cpu", provider.device)
+        self.assertIs(replacement, provider.pipeline)
+        model.to.assert_called_once_with("cpu")
+        provider._KPipeline.assert_called_once_with(
+            lang_code="a", repo_id="synthetic/kokoro", model=model, device="cpu"
+        )
+        provider._torch.cuda.empty_cache.assert_called_once_with()
+        self.assertFalse(provider.fallback_to_cpu_after_resource_failure())

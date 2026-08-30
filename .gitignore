@@ -57,6 +57,11 @@ conversation.json
 conversation_summary.json
 memories.json
 
+# Character registry and non-default character records are local canonical data.
+characters/*
+!characters/default/
+!characters/default/**
+
 
 # ============================================================
 # Generated Audio
@@ -126,6 +131,10 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 .tox/
+benchmarks/**/_results/
+
+# Ignored local presentation source assets used by local development builds.
+/icons/
 
 
 # ============================================================

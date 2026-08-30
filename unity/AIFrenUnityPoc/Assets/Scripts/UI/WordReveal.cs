@@ -29,20 +29,36 @@ namespace AIFren.UnityPoc.UI
         public void Begin(string text, bool revealImmediately)
         {
             FullText = text ?? string.Empty;
-            tokens.Clear();
+            Retokenize();
             accumulator = 0f;
             latestTokenAlpha = 1f;
             revealedTokenCount = 0;
-
-            foreach (Match match in TokenPattern.Matches(FullText))
-            {
-                tokens.Add(match.Value);
-            }
 
             if (revealImmediately)
             {
                 RevealAll();
             }
+        }
+
+        /// <summary>
+        /// Replaces the still-growing provider text without restarting the
+        /// presentation clock or replaying words that were already shown.
+        /// Retokenizing the complete source also joins provider chunks that
+        /// split in the middle of a word.
+        /// </summary>
+        public void UpdateText(string text, bool revealImmediately = false)
+        {
+            int previouslyRevealed = revealedTokenCount;
+            FullText = text ?? string.Empty;
+            Retokenize();
+            revealedTokenCount = Math.Min(previouslyRevealed, tokens.Count);
+            if (revealedTokenCount == 0) latestTokenAlpha = 1f;
+            if (revealImmediately) RevealAll();
+        }
+
+        public void Append(string text, bool revealImmediately = false)
+        {
+            UpdateText(FullText + (text ?? string.Empty), revealImmediately);
         }
 
         public bool Advance(float deltaTime)
@@ -115,7 +131,9 @@ namespace AIFren.UnityPoc.UI
                 return Math.Max(0.1f, fallback);
             }
 
-            return Math.Max(0.1f, wordCount / durationSeconds);
+            // Audio may slow visual reveal, but it must never make text race
+            // past the user's configured maximum reading speed.
+            return Math.Max(0.1f, Math.Min(fallback, wordCount / durationSeconds));
         }
 
         private string BuildVisibleText()
@@ -126,6 +144,15 @@ namespace AIFren.UnityPoc.UI
             }
 
             return string.Concat(tokens.GetRange(0, revealedTokenCount));
+        }
+
+        private void Retokenize()
+        {
+            tokens.Clear();
+            foreach (Match match in TokenPattern.Matches(FullText))
+            {
+                tokens.Add(match.Value);
+            }
         }
     }
 }

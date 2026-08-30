@@ -1,74 +1,18 @@
-import os
-import wave
+"""Offline-safe TTS integration smoke check (no model download or audio device)."""
 
-from piper import PiperVoice
+from unittest.mock import MagicMock, patch
 
-from config import TTS_VOICE
-
-
-# ============================================================
-# Paths
-# ============================================================
-
-BASE_DIR = os.path.dirname(
-    os.path.abspath(__file__)
-)
-
-VOICE_FILE = os.path.join(
-    BASE_DIR,
-    TTS_VOICE
-)
+from tts import tts
 
 
-# ============================================================
-# Test
-# ============================================================
+def main() -> None:
+    kokoro = MagicMock()
+    with patch.object(tts, "KokoroTextToSpeech", return_value=kokoro):
+        daily_driver = tts.create_tts_provider("kokoro")
+    assert daily_driver is kokoro
 
-print(
-    "Loading Piper voice..."
-)
+    print("Kokoro provider selection is configured.")
 
-if not os.path.isfile(
-    VOICE_FILE
-):
 
-    raise FileNotFoundError(
-        "\nVoice model not found:\n"
-        f"{VOICE_FILE}\n"
-    )
-
-voice = PiperVoice.load(
-    VOICE_FILE
-)
-
-print(
-    "Piper voice loaded."
-)
-
-output_file = os.path.join(
-    BASE_DIR,
-    "test_tts.wav"
-)
-
-text = (
-    "Hello. This is a test of the "
-    "local Piper text to speech system."
-)
-
-print(
-    "Generating speech..."
-)
-
-with wave.open(
-    output_file,
-    "wb"
-) as wav_file:
-
-    voice.synthesize_wav(
-        text,
-        wav_file
-    )
-
-print(
-    f"Generated:\n{output_file}"
-)
+if __name__ == "__main__":
+    main()

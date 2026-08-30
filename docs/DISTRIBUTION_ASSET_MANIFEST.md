@@ -39,9 +39,9 @@ release forms.
 
 | Material | Distribution decision |
 | --- | --- |
-| Generated Kokoro/Piper speech, temporary WAVs, and TTS playback output | Never publish or bundle as test/history content. They are runtime output, not application assets. |
+| Generated Kokoro speech, temporary WAVs, and TTS playback output | Never publish or bundle as test/history content. They are runtime output, not application assets. |
 | Conversation, summary, Memory V1/V2 data, logs, API keys, local settings | Never publish or bundle in a fresh package. |
-| Downloaded Kokoro/Piper/STT/embedding model weights and GPU/native runtime files | Not tracked. They require a version-specific distribution review and notices before portable bundling. |
+| Downloaded Kokoro/STT/embedding model weights and GPU/native runtime files | Not tracked. They require a version-specific distribution review and notices before portable bundling. |
 | Unity caches, builds, virtual environments, and local avatar/background files | Excluded by policy and `.gitignore`; not public-source material. |
 
 ## Software and model distribution record
@@ -51,15 +51,14 @@ release forms.
 | UniVRM / UniGLTF v0.130.1 | Pinned UPM dependencies; MIT upstream licensing recorded in `THIRD_PARTY_NOTICES.md` | Yes, with notice | Yes, with upstream notices | `SAFE_BOTH` after preserving the exact upstream notice set |
 | Unity UGUI, TextMeshPro, Vector Graphics, Mathematics, Test Framework | Pinned Unity packages; Unity Companion License applies | Yes as project/package references with notice | Review final Unity-player terms and notices | `SAFE_PUBLIC_SOURCE`; `UNKNOWN_NEEDS_REVIEW` for a final binary notice set |
 | Kokoro Python package | Requirement pinned at `kokoro==0.9.4`; Apache-2.0 code path recorded in notices | Yes, with notice | Code/runtime bundle needs final SBOM check | `SAFE_PUBLIC_SOURCE`; `UNKNOWN_NEEDS_REVIEW` for weights/runtime bundle |
-| Piper, faster-whisper, sentence-transformers, openai, sounddevice, pynput, websockets | Version pins in requirements; `faster-whisper` MIT recorded in notices | Yes as dependency manifests | Needs per-version SBOM, native library, and model review | `SAFE_PUBLIC_SOURCE`; `UNKNOWN_NEEDS_REVIEW` for binary bundle |
+| faster-whisper, sentence-transformers, openai, sounddevice, pynput, websockets | Version pins in requirements; `faster-whisper` MIT recorded in notices | Yes as dependency manifests | Needs per-version SBOM, native library, and model review | `SAFE_PUBLIC_SOURCE`; `UNKNOWN_NEEDS_REVIEW` for binary bundle |
 | PyTorch CUDA / NVIDIA runtime | Installed separately by setup; no redistributable runtime is tracked | Requirements/setup references only | No clearance recorded | `UNKNOWN_NEEDS_REVIEW`; portable-package blocker for GPU distribution |
 
 ## Release decisions
 
 ### Cleared for public repository
 
-- AIFren-owned source and documentation already identified in
-  `PUBLIC_RELEASE_CANDIDATE.md`.
+- AIFren-owned source and documentation identified by this manifest.
 - The 12 listed Game-icons SVGs, with the existing CC BY 3.0 attribution table.
 - Liberation Sans and its existing SIL OFL 1.1 notice.
 - Unity project/package references and dependency manifests, with their

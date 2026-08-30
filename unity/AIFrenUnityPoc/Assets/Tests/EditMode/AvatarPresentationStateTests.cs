@@ -85,6 +85,23 @@ namespace AIFren.UnityPoc.Tests.EditMode
         }
 
         [Test]
+        public void ExpandedFramingRangeKeepsExistingMaximumValuesValid()
+        {
+            PlayerPrefs.SetFloat("AIFren.AvatarPresentation.Portrait.X", 4f);
+            PlayerPrefs.SetFloat("AIFren.AvatarPresentation.Portrait.Y", -4f);
+            PlayerPrefs.SetFloat("AIFren.AvatarPresentation.Portrait.Scale", 8f);
+            PlayerPrefs.Save();
+
+            AvatarPresentationValues persisted = AvatarPresentationState.Load(new AvatarConfiguration()).GetValues(true);
+
+            Assert.AreEqual(15f, AvatarPresentationTransform.MaximumScale);
+            Assert.AreEqual(7.5f, AvatarPresentationTransform.MaximumTranslation);
+            Assert.AreEqual(4f, persisted.x);
+            Assert.AreEqual(-4f, persisted.y);
+            Assert.AreEqual(8f, persisted.scale);
+        }
+
+        [Test]
         public void TranslationCoversTheFullDirectViewRangeAndRejectsNonFiniteValues()
         {
             AvatarPresentationState state = AvatarPresentationState.Load(new AvatarConfiguration());

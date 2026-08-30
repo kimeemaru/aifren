@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import wave
 import time
 
@@ -40,10 +41,25 @@ CHUNK_SAMPLES = int(
     SAMPLE_RATE * CHUNK_MS / 1000
 )
 
+# A normal PortAudio input-stream stop completes within a callback interval or
+# two.  The real failing capture remained inside InputStream.__exit__ for
+# seconds, so 250 ms leaves ample scheduling margin without making PTT appear
+# permanently wedged.
+PTT_MIC_CLOSE_TIMEOUT_SECONDS = 0.25
+PTT_MIC_ABORT_TIMEOUT_SECONDS = 0.25
+
+
+class MicrophoneShutdownError(RuntimeError):
+    """The owned PTT capture stream could not be shut down safely."""
+
+    discard_capture = True
+
 
 class VoiceInput:
 
     def __init__(self):
+
+        self._ptt_stage_observer = None
 
         print(
             "Initializing VoiceInput..."
@@ -55,9 +71,23 @@ class VoiceInput:
             "VoiceInput ready."
         )
 
+    def set_ptt_stage_observer(self, observer):
+        self._ptt_stage_observer = observer
+
+    def _observe_ptt_stage(self, stage, **metadata):
+        observer = getattr(self, "_ptt_stage_observer", None)
+        if not callable(observer):
+            return
+        try:
+            observer(stage, **metadata)
+        except Exception:
+            # Development diagnostics must never affect capture or STT.
+            pass
+
     def record_ptt(
         self,
-        is_pressed
+        is_pressed,
+        capture_id=None,
     ):
     
         print()
@@ -66,6 +96,11 @@ class VoiceInput:
         )
     
         audio_chunks = []
+
+        def observe(stage, **metadata):
+            if capture_id is not None:
+                metadata["capture_id"] = int(capture_id)
+            self._observe_ptt_stage(stage, **metadata)
     
         def callback(
             indata,
@@ -90,16 +125,42 @@ class VoiceInput:
         # Open microphone stream.
         # --------------------------------------------------------
     
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            callback=callback
-        ):
-    
-            while is_pressed():
-    
-                sd.sleep(20)
+        observe("mic_open_begin")
+        mic_phase = "open"
+        capture_error = None
+        stream = None
+        try:
+            stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="int16",
+                callback=callback
+            )
+            stream.start()
+            observe("mic_open_end")
+            observe("mic_capture_started")
+            mic_phase = "capture"
+            try:
+                while is_pressed():
+                    sd.sleep(20)
+            except Exception as error:
+                capture_error = error
+                raise
+            finally:
+                mic_phase = "close"
+                observe("mic_close_begin")
+                self._close_ptt_stream(stream, observe)
+        except Exception as error:
+            if capture_error is not None:
+                error_stage = "mic_capture_error"
+            elif mic_phase == "open":
+                error_stage = "mic_open_error"
+            else:
+                error_stage = "mic_close_error"
+            observe(error_stage, error_type=type(error).__name__)
+            raise
+        else:
+            observe("mic_close_end")
     
         print(
             "PTT recording finished."
@@ -108,63 +169,96 @@ class VoiceInput:
         # --------------------------------------------------------
         # Nothing recorded.
         # --------------------------------------------------------
-    
-        if not audio_chunks:
-    
-            return ""
-    
-        # --------------------------------------------------------
-        # Combine audio chunks.
-        # --------------------------------------------------------
-    
-        import numpy as np
-    
-        audio = np.concatenate(
-            audio_chunks,
-            axis=0
+        observe("captured_audio_prepare_begin")
+        try:
+            if not audio_chunks:
+                observe(
+                    "captured_audio_ready", audio_samples=0, byte_count=0, duration_seconds=0.0
+                )
+                observe("transcription_ready", characters=0, words=0)
+                return ""
+
+            # --------------------------------------------------------
+            # Combine audio chunks.
+            # --------------------------------------------------------
+
+            import numpy as np
+
+            audio = np.concatenate(
+                audio_chunks,
+                axis=0
+            )
+        except Exception as error:
+            observe("captured_audio_prepare_error", error_type=type(error).__name__)
+            raise
+        audio_samples = int(audio.shape[0])
+        observe(
+            "captured_audio_ready",
+            audio_samples=audio_samples,
+            byte_count=int(audio.nbytes),
+            duration_seconds=audio_samples / float(SAMPLE_RATE),
         )
     
         temp_path = None
     
         try:
-    
-            with tempfile.NamedTemporaryFile(
-                suffix=".wav",
-                delete=False
-            ) as temp_file:
-    
-                temp_path = temp_file.name
-    
-            with wave.open(
-                temp_path,
-                "wb"
-            ) as wav_file:
-    
-                wav_file.setnchannels(
-                    CHANNELS
-                )
-    
-                wav_file.setsampwidth(
-                    2
-                )
-    
-                wav_file.setframerate(
-                    SAMPLE_RATE
-                )
-    
-                wav_file.writeframes(
-                    audio.tobytes()
-                )
+            observe("wav_prepare_begin")
+            try:
+                with tempfile.NamedTemporaryFile(
+                    suffix=".wav",
+                    delete=False
+                ) as temp_file:
+                    temp_path = temp_file.name
+
+                with wave.open(
+                    temp_path,
+                    "wb"
+                ) as wav_file:
+
+                    wav_file.setnchannels(
+                        CHANNELS
+                    )
+
+                    wav_file.setsampwidth(
+                        2
+                    )
+
+                    wav_file.setframerate(
+                        SAMPLE_RATE
+                    )
+
+                    wav_file.writeframes(
+                        audio.tobytes()
+                    )
+            except Exception as error:
+                observe("wav_prepare_error", error_type=type(error).__name__)
+                raise
+            observe("wav_prepare_end")
     
             print(
                 "Transcribing..."
             )
     
-            text = self.stt.transcribe(
-                temp_path
+            whisper_started = time.monotonic()
+            observe("whisper_begin")
+            try:
+                text = self.stt.transcribe(
+                    temp_path
+                )
+            except Exception as error:
+                observe("whisper_error", error_type=type(error).__name__)
+                raise
+            observe(
+                "whisper_end", duration_ms=(time.monotonic() - whisper_started) * 1000.0
             )
-    
-            return text.strip()
+
+            result = text.strip()
+            observe(
+                "transcription_ready",
+                characters=len(result),
+                words=len(result.split()),
+            )
+            return result
     
         finally:
     
@@ -184,6 +278,86 @@ class VoiceInput:
                 except OSError:
     
                     pass
+
+    def _close_ptt_stream(self, stream, observe):
+        """Bound PortAudio's synchronous stop/close and abort on a stall.
+
+        ``sounddevice.InputStream.__exit__`` calls ``stop()`` followed by
+        ``close()`` on the caller.  Either native call can block that PTT
+        worker indefinitely.  Keep that graceful sequence as the normal path,
+        but run it under an owned cleanup thread so the recorder worker can
+        recover if PortAudio does not return.
+        """
+        graceful_done = threading.Event()
+        graceful_error = []
+        phase = {"value": "stop"}
+
+        def graceful_close():
+            try:
+                observe("mic_stop_begin")
+                stream.stop()
+                observe("mic_stop_end")
+                phase["value"] = "close"
+                observe("mic_stream_close_begin")
+                stream.close()
+                observe("mic_stream_close_end")
+            except Exception as error:
+                graceful_error.append(error)
+            finally:
+                graceful_done.set()
+
+        cleanup_thread = threading.Thread(
+            target=graceful_close,
+            name="AIFren PTT microphone cleanup",
+            daemon=True,
+        )
+        cleanup_thread.start()
+        if graceful_done.wait(PTT_MIC_CLOSE_TIMEOUT_SECONDS):
+            if graceful_error:
+                raise MicrophoneShutdownError("Microphone shutdown failed.") from graceful_error[0]
+            return
+
+        observe(
+            "mic_close_timeout",
+            source=phase["value"],
+            duration_ms=PTT_MIC_CLOSE_TIMEOUT_SECONDS * 1000.0,
+        )
+        observe("mic_abort_begin", source=phase["value"])
+        abort_done = threading.Event()
+        abort_error = []
+
+        def abort_stream():
+            try:
+                # PortAudio defines abort as immediate: it discards pending
+                # input and is the safe way to release a wedged owned stream.
+                stream.abort()
+            except Exception as error:
+                abort_error.append(error)
+            finally:
+                abort_done.set()
+
+        abort_thread = threading.Thread(
+            target=abort_stream,
+            name="AIFren PTT microphone abort",
+            daemon=True,
+        )
+        abort_thread.start()
+        if not abort_done.wait(PTT_MIC_ABORT_TIMEOUT_SECONDS):
+            observe("mic_abort_error", source=phase["value"], error_type="TimeoutError")
+        elif abort_error:
+            observe(
+                "mic_abort_error",
+                source=phase["value"],
+                error_type=type(abort_error[0]).__name__,
+            )
+        else:
+            observe("mic_abort_end", source=phase["value"])
+
+        # A successful abort normally releases a blocked stop immediately and
+        # lets the same cleanup owner close the stream.  Bound that settle too;
+        # no PTT lifecycle state is owned by the daemon cleanup thread.
+        graceful_done.wait(PTT_MIC_ABORT_TIMEOUT_SECONDS)
+        raise MicrophoneShutdownError("Microphone shutdown timed out; capture discarded.")
 
     # ========================================================
     # Audio Level

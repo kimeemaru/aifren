@@ -3,6 +3,7 @@
     "references": [
     "VRM10",
     "UniGLTF",
+    "UniGLTF.Utils",
     "Unity.TextMeshPro",
     "Unity.ugui",
     "Unity.VectorGraphics"

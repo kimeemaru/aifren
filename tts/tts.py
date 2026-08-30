@@ -4,11 +4,12 @@ import re
 import threading
 import time
 import wave
+from collections import deque
+from queue import Empty, SimpleQueue
 
 import numpy as np
 import sounddevice as sd
-
-from piper import PiperVoice
+from development_flight_recorder import development_flight_recorder
 
 from config import (
     KOKORO_DEVICE,
@@ -16,7 +17,6 @@ from config import (
     KOKORO_SPEED,
     KOKORO_VOICE,
     TTS_PROVIDER,
-    TTS_VOICE,
 )
 
 
@@ -30,40 +30,12 @@ BASE_DIR = os.path.dirname(
     )
 )
 
-VOICE_FILE = os.path.join(
-    BASE_DIR,
-    TTS_VOICE
-)
-
-
-class PiperTextToSpeech:
-    """The established Piper implementation and shared local playback path."""
+class LocalPlaybackTTS:
+    """Provider-independent local PCM/WAV playback and PTT cancellation path."""
 
     def __init__(self):
 
-        print(
-            "Loading local TTS voice..."
-        )
-
-        if not os.path.isfile(
-            VOICE_FILE
-        ):
-
-            raise FileNotFoundError(
-                "\nTTS voice model not found.\n\n"
-                "Expected:\n"
-                f"{VOICE_FILE}\n"
-            )
-
-        self.voice = PiperVoice.load(
-            VOICE_FILE
-        )
-
         self._initialize_playback_state()
-
-        print(
-            "Local TTS voice loaded."
-        )
 
     def _initialize_playback_state(self):
         """Set up the provider-independent sounddevice playback controls."""
@@ -217,6 +189,16 @@ class PiperTextToSpeech:
         # Gate low-level noise and cap peaks to avoid jittery mouth movement.
         return np.clip((envelope / reference - .08) / .92, 0.0, 1.0).astype(float).tolist()
 
+    @staticmethod
+    def decode_wav_bytes(payload: bytes):
+        with wave.open(io.BytesIO(payload), "rb") as wav_file:
+            sample_rate, channels, sample_width = wav_file.getframerate(), wav_file.getnchannels(), wav_file.getsampwidth()
+            frames = wav_file.readframes(wav_file.getnframes())
+        if sample_width != 2:
+            raise ValueError("unsupported TTS WAV sample width")
+        audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        return audio.reshape(-1, channels if channels > 1 else 1), sample_rate
+
     # ========================================================
     # Set Volume
     # ========================================================
@@ -275,17 +257,7 @@ class PiperTextToSpeech:
 
             return False
 
-        with wave.open(
-            output_file,
-            "wb"
-        ) as wav_file:
-
-            self.voice.synthesize_wav(
-                text,
-                wav_file
-            )
-
-        return True
+        raise NotImplementedError("TTS provider must implement offline synthesis explicitly.")
 
     # ========================================================
     # Speak
@@ -295,120 +267,8 @@ class PiperTextToSpeech:
         self,
         text
     ):
-
-        if not text:
-
-            return False
-
-        # ----------------------------------------------------
-        # Stop anything currently playing.
-        # ----------------------------------------------------
-
-        self.stop()
-        generation = self._next_playback_generation()
-        self._mark_synthesis_active(generation)
-
-        self.stop_event.clear()
-
-        self.playback_finished.clear()
-
-        # ----------------------------------------------------
-        # Generate WAV in memory.
-        # ----------------------------------------------------
-
-        try:
-
-            wav_buffer = (
-                io.BytesIO()
-            )
-
-            with wave.open(
-                wav_buffer,
-                "wb"
-            ) as wav_file:
-
-                self.voice.synthesize_wav(
-                    text,
-                    wav_file
-                )
-
-            wav_buffer.seek(0)
-
-            with wave.open(
-                wav_buffer,
-                "rb"
-            ) as wav_file:
-
-                sample_rate = (
-                    wav_file.getframerate()
-                )
-
-                channels = (
-                    wav_file.getnchannels()
-                )
-
-                sample_width = (
-                    wav_file.getsampwidth()
-                )
-
-                frames = (
-                    wav_file.readframes(
-                        wav_file.getnframes()
-                    )
-                )
-
-            if sample_width != 2:
-
-                raise ValueError(
-                    "Unsupported Piper audio format."
-                )
-
-            # ------------------------------------------------
-            # Convert to float32.
-            #
-            # We keep the original audio at full scale and
-            # apply volume dynamically during playback.
-            # ------------------------------------------------
-
-            audio = np.frombuffer(
-                frames,
-                dtype=np.int16
-            ).astype(
-                np.float32
-            )
-
-            audio /= 32768.0
-
-            if channels > 1:
-
-                audio = audio.reshape(
-                    -1,
-                    channels
-                )
-
-            else:
-
-                audio = audio.reshape(
-                    -1,
-                    1
-                )
-
-            if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
-                self._retire_synthesis(generation)
-                self.playback_finished.set()
-                return False
-            return self._start_playback(audio, sample_rate, generation)
-
-        except Exception as e:
-
-            self._retire_synthesis(generation)
-            self.playback_finished.set()
-
-            print(
-                f"\nTTS synthesis error: {e}"
-            )
-
-            return False
+        """Speak through a concrete provider; the base owns playback only."""
+        raise NotImplementedError("TTS provider must implement speech synthesis.")
 
     # ========================================================
     # Audio Playback
@@ -422,13 +282,22 @@ class PiperTextToSpeech:
             # PTT or a newer request stopped this synthesis before it reached
             # the audio device. Never resurrect stale speech after an interrupt.
             self.playback_finished.set()
+            development_flight_recorder().mark(
+                "tts_stale_result_discarded", playback_id=int(generation or 0)
+            )
             return False
         if self.stop_event.is_set():
             self._retire_synthesis(generation)
             self.playback_finished.set()
             return False
+        recorder = development_flight_recorder()
+        buffer_started_at = time.monotonic()
         duration_seconds = len(audio) / float(sample_rate) if sample_rate else 0.0
         lip_sync_envelope = self.build_lip_sync_envelope(audio, sample_rate)
+        recorder.mark(
+            "audio_buffer_ready", playback_id=int(generation or 0), audio_samples=len(audio),
+            sample_rate=int(sample_rate or 0), duration_ms=(time.monotonic() - buffer_started_at) * 1000.0,
+        )
         self._mark_playback_active(generation)
         self.playback_thread = (
             threading.Thread(
@@ -450,7 +319,9 @@ class PiperTextToSpeech:
         generation,
     ):
 
+        recorder = development_flight_recorder()
         position = 0
+        first_non_silent_reported = False
 
         # ----------------------------------------------------
         # Keep a reference to the current stream locally.
@@ -467,9 +338,12 @@ class PiperTextToSpeech:
                 status
             ):
 
-                nonlocal position
+                nonlocal position, first_non_silent_reported
 
                 if status:
+
+                    if getattr(status, "output_underflow", False):
+                        recorder.mark("portaudio_underflow", playback_id=int(generation), underflows=1)
 
                     print(
                         f"\nTTS audio status: {status}"
@@ -520,6 +394,9 @@ class PiperTextToSpeech:
                     )
 
                     position += count
+                    if not first_non_silent_reported and np.any(np.abs(audio[position - count:position]) > 1e-7):
+                        first_non_silent_reported = True
+                        recorder.mark("playback_first_non_silent_buffer", playback_id=int(generation))
 
                 # --------------------------------------------
                 # Fill any remaining frames with silence.
@@ -539,6 +416,8 @@ class PiperTextToSpeech:
             # Create output stream.
             # ------------------------------------------------
 
+            stream_open_at = time.monotonic()
+            recorder.mark("playback_stream_open_begin", playback_id=int(generation))
             stream = sd.OutputStream(
                 samplerate=sample_rate,
                 channels=audio.shape[1],
@@ -546,11 +425,15 @@ class PiperTextToSpeech:
                 callback=callback
             )
 
+            recorder.mark("playback_stream_open_end", playback_id=int(generation), duration_ms=(time.monotonic() - stream_open_at) * 1000.0)
             with self.stream_lock:
 
                 self.stream = stream
 
+            stream_start_at = time.monotonic()
+            recorder.mark("playback_stream_start_begin", playback_id=int(generation))
             stream.start()
+            recorder.mark("playback_stream_start_end", playback_id=int(generation), duration_ms=(time.monotonic() - stream_start_at) * 1000.0)
             # A PTT press can invalidate playback between stream creation and
             # start. Do not emit a false playback_started event or let that
             # stale stream produce another audible callback.
@@ -562,6 +445,7 @@ class PiperTextToSpeech:
                 return
             print(f"[AIFren Timing] audio playback started; id={generation}; duration={duration_seconds:.3f}s")
             self._notify_playback_started(duration_seconds, lip_sync_envelope, word_start_seconds, generation)
+            recorder.mark("playback_started_callback_sent", playback_id=int(generation), duration_seconds=duration_seconds)
 
             # ------------------------------------------------
             # Wait until playback finishes or is stopped.
@@ -617,6 +501,7 @@ class PiperTextToSpeech:
                 not self.stop_event.is_set()
                 and self._is_current_playback_generation(generation)
             )
+            recorder.mark("playback_stream_stopped", playback_id=int(generation), cancelled=not naturally_completed)
             self._retire_playback(generation)
             if self.playback_thread is threading.current_thread():
                 self.playback_thread = None
@@ -634,6 +519,9 @@ class PiperTextToSpeech:
         # Invalidate both active playback and any in-progress synthesis before
         # touching the shared audio stream. A later speak() gets a new token.
         interrupted_generation = self._next_playback_generation()
+        development_flight_recorder().mark(
+            "tts_cancellation", playback_id=int(interrupted_generation or 0), cancelled=True
+        )
         self.stop_event.set()
         with self.playback_state_lock:
             interrupted_synthesis = self.active_synthesis_generation
@@ -680,8 +568,15 @@ class PiperTextToSpeech:
         return interrupted_playback
 
 
-class KokoroTextToSpeech(PiperTextToSpeech):
+class KokoroTextToSpeech(LocalPlaybackTTS):
     """Optional hexgrad Kokoro-82M provider using the shared local player."""
+
+    supports_early_speech = True
+
+    @property
+    def synthesis_strategy(self):
+        from model_settings import kokoro_early_speech_status
+        return "complete_sentences" if kokoro_early_speech_status()["effective"] else "whole_response"
 
     def __init__(self, voice=KOKORO_VOICE, speed=KOKORO_SPEED, device=KOKORO_DEVICE):
         try:
@@ -696,6 +591,8 @@ class KokoroTextToSpeech(PiperTextToSpeech):
             ) from error
 
         self._torch = torch
+        self._KPipeline = KPipeline
+        self._repo_id = REPOSITORY_ID
         self.voice = str(voice).strip()
         self.speed = float(speed)
         if not self.voice or self.speed <= 0:
@@ -712,10 +609,58 @@ class KokoroTextToSpeech(PiperTextToSpeech):
             lang_code=self.voice[:1], repo_id=REPOSITORY_ID, model=model, device=self.device
         )
         self._initialize_playback_state()
+        self._initialize_continuous_state()
         print("Kokoro TTS loaded.")
 
+    def fallback_to_cpu_after_resource_failure(self) -> bool:
+        """Move the loaded model to CPU after repeated CUDA resource pressure."""
+        with self._kokoro_synthesis_lock:
+            if str(self.device).casefold() == "cpu":
+                return False
+            pipeline = getattr(self, "pipeline", None)
+            model = getattr(pipeline, "model", None)
+            if model is None:
+                return False
+            started_at = time.monotonic()
+            model = model.to("cpu").eval()
+            self.pipeline = self._KPipeline(
+                lang_code=self.voice[:1], repo_id=self._repo_id,
+                model=model, device="cpu",
+            )
+            self.device = "cpu"
+            try:
+                self._torch.cuda.empty_cache()
+            except Exception:
+                pass
+            development_flight_recorder().mark(
+                "kokoro_runtime_device_fallback", device="cpu",
+                duration_ms=(time.monotonic() - started_at) * 1000.0,
+            )
+            return True
+
+    def _initialize_continuous_state(self):
+        self._kokoro_synthesis_lock = threading.Lock()
+        self._continuous_condition = threading.Condition()
+        self._continuous_chunks = deque()
+        self._continuous_closed = False
+        self._continuous_generation = None
+        self._continuous_sample_rate = None
+        self._continuous_max_chunks = 4
+
     def _generate_audio(self, text, generation=None):
+        # Cancellation can retire a turn while a CUDA kernel is still winding
+        # down. Serialize at the provider boundary so the replacement turn can
+        # never start a second Kokoro inference concurrently.
+        with self._kokoro_synthesis_lock:
+            return self._generate_audio_serial(text, generation)
+
+    def _generate_audio_serial(self, text, generation=None):
         synthesis_started_at = time.monotonic()
+        recorder = development_flight_recorder()
+        recorder.mark(
+            "kokoro_synthesis_start", playback_id=int(generation or 0), characters=len(str(text or "")),
+            words=len(re.findall(r"\S+", str(text or ""))), device=self.device, active_jobs=1,
+        )
         chunks = []
         word_starts = []
         offset_seconds = 0.0
@@ -728,6 +673,7 @@ class KokoroTextToSpeech(PiperTextToSpeech):
                 or not self._is_current_playback_generation(generation)
             ):
                 self._retire_synthesis(generation)
+                recorder.mark("tts_stale_result_discarded", playback_id=int(generation or 0))
                 print(f"[AIFren TTS] synthesis cancelled; id={generation}")
                 return None
             audio = result.audio
@@ -749,6 +695,11 @@ class KokoroTextToSpeech(PiperTextToSpeech):
             "[AIFren Timing] Kokoro synthesis/audio ready "
             f"t={time.monotonic() - synthesis_started_at:.3f}s; "
             f"aligned_words={len(word_starts)}/{len(expected_words)}"
+        )
+        recorder.mark(
+            "kokoro_synthesis_end", playback_id=int(generation or 0),
+            duration_ms=(time.monotonic() - synthesis_started_at) * 1000.0,
+            audio_samples=sum(len(chunk) for chunk in chunks), sample_rate=24000, active_jobs=0,
         )
         return np.concatenate(chunks).reshape(-1, 1), 24000, word_starts
 
@@ -776,6 +727,251 @@ class KokoroTextToSpeech(PiperTextToSpeech):
             wav_file.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
         return True
 
+    def prepare_stream_chunk(self, text: str):
+        """Synthesize the next chunk without disturbing current playback."""
+        return self._generate_audio(str(text))
+
+    @staticmethod
+    def _continuous_chunk(prepared, on_started=None):
+        audio, sample_rate, word_starts = prepared
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim == 1:
+            audio = audio.reshape(-1, 1)
+        if audio.ndim != 2 or audio.shape[1] != 1 or len(audio) == 0 or int(sample_rate) <= 0:
+            raise ValueError("Continuous Kokoro playback requires non-empty mono PCM.")
+        duration = len(audio) / float(sample_rate) if sample_rate else 0.0
+        return {
+            "audio": audio,
+            "sample_rate": int(sample_rate),
+            "word_starts": list(word_starts or ()),
+            "duration": duration,
+            "envelope": LocalPlaybackTTS.build_lip_sync_envelope(audio, sample_rate),
+            "on_started": on_started,
+            "position": 0,
+            "announced": False,
+        }
+
+    def begin_prepared_stream(self, prepared, *, on_started=None) -> bool:
+        """Open one queued PCM playback session for this assistant turn."""
+        self.stop()
+        chunk = self._continuous_chunk(prepared, on_started)
+        generation = self._next_playback_generation()
+        self.stop_event.clear()
+        self.playback_finished.clear()
+        with self._continuous_condition:
+            self._continuous_chunks.clear()
+            self._continuous_chunks.append(chunk)
+            self._continuous_closed = False
+            self._continuous_generation = generation
+            self._continuous_sample_rate = chunk["sample_rate"]
+            self._continuous_condition.notify_all()
+        self._mark_playback_active(generation)
+        self.playback_thread = threading.Thread(
+            target=self._play_continuous_audio,
+            args=(chunk["sample_rate"], generation),
+            name="aifren-tts-continuous-playback",
+            daemon=True,
+        )
+        self.playback_thread.start()
+        return True
+
+    def append_prepared_stream(self, prepared, *, on_started=None) -> bool:
+        """Append ordered PCM without opening or restarting the audio device."""
+        chunk = self._continuous_chunk(prepared, on_started)
+        with self._continuous_condition:
+            generation = self._continuous_generation
+            if (
+                generation is None or self._continuous_closed or self.stop_event.is_set()
+                or not self._is_current_playback_generation(generation)
+                or chunk["sample_rate"] != self._continuous_sample_rate
+            ):
+                development_flight_recorder().mark(
+                    "tts_stale_result_discarded", playback_id=int(generation or 0)
+                )
+                return False
+            while len(self._continuous_chunks) >= self._continuous_max_chunks:
+                self._continuous_condition.wait(timeout=0.10)
+                if (
+                    self._continuous_closed or self.stop_event.is_set()
+                    or not self._is_current_playback_generation(generation)
+                ):
+                    return False
+            self._continuous_chunks.append(chunk)
+            depth = len(self._continuous_chunks)
+            self._continuous_condition.notify_all()
+        development_flight_recorder().mark(
+            "tts_pcm_queued", playback_id=int(generation), queue_depth=depth,
+            audio_samples=len(chunk["audio"]), sample_rate=chunk["sample_rate"],
+        )
+        return True
+
+    def finish_prepared_stream(self) -> None:
+        with self._continuous_condition:
+            self._continuous_closed = True
+            self._continuous_condition.notify_all()
+
+    def _cancel_continuous_stream(self) -> None:
+        with self._continuous_condition:
+            self._continuous_closed = True
+            self._continuous_chunks.clear()
+            self._continuous_generation = None
+            self._continuous_sample_rate = None
+            self._continuous_condition.notify_all()
+
+    def _play_continuous_audio(self, sample_rate, generation):
+        recorder = development_flight_recorder()
+        transitions = SimpleQueue()
+        current = None
+        stream = None
+
+        try:
+            def callback(outdata, frames, time_info, status):
+                nonlocal current
+                if status:
+                    if getattr(status, "output_underflow", False):
+                        recorder.mark("portaudio_underflow", playback_id=int(generation), underflows=1)
+                    print(f"\nTTS audio status: {status}")
+                outdata.fill(0)
+                if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
+                    raise sd.CallbackStop()
+
+                written = 0
+                while written < frames:
+                    if current is None:
+                        with self._continuous_condition:
+                            if self._continuous_chunks:
+                                current = self._continuous_chunks.popleft()
+                                self._continuous_condition.notify_all()
+                            elif self._continuous_closed:
+                                raise sd.CallbackStop()
+                            else:
+                                return
+                    if not current["announced"]:
+                        current["announced"] = True
+                        transitions.put(current)
+                    available = len(current["audio"]) - current["position"]
+                    count = min(frames - written, available)
+                    if count > 0:
+                        with self.volume_lock:
+                            volume = self.volume
+                        start = current["position"]
+                        outdata[written:written + count] = current["audio"][start:start + count] * volume
+                        current["position"] += count
+                        written += count
+                    if current["position"] >= len(current["audio"]):
+                        current = None
+
+            opened_at = time.monotonic()
+            recorder.mark("playback_stream_open_begin", playback_id=int(generation))
+            stream = sd.OutputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="float32",
+                callback=callback,
+            )
+            recorder.mark(
+                "playback_stream_open_end", playback_id=int(generation),
+                duration_ms=(time.monotonic() - opened_at) * 1000.0,
+            )
+            with self.stream_lock:
+                self.stream = stream
+            started_at = time.monotonic()
+            recorder.mark("playback_stream_start_begin", playback_id=int(generation))
+            stream.start()
+            recorder.mark(
+                "playback_stream_start_end", playback_id=int(generation),
+                duration_ms=(time.monotonic() - started_at) * 1000.0,
+            )
+
+            first_transition = True
+            while stream.active:
+                while True:
+                    try:
+                        chunk = transitions.get_nowait()
+                    except Empty:
+                        break
+                    callback_started = chunk.get("on_started")
+                    if callable(callback_started):
+                        callback_started()
+                    recorder.mark(
+                        "playback_chunk_transition", playback_id=int(generation),
+                        duration_seconds=chunk["duration"],
+                    )
+                    if first_transition:
+                        first_transition = False
+                        recorder.mark("playback_first_non_silent_buffer", playback_id=int(generation))
+                    self._notify_playback_started(
+                        chunk["duration"], chunk["envelope"], chunk["word_starts"], generation
+                    )
+                if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
+                    break
+                sd.sleep(2)
+
+            # A short final buffer can stop the stream before the management
+            # loop observes its transition marker.
+            while True:
+                try:
+                    chunk = transitions.get_nowait()
+                except Empty:
+                    break
+                callback_started = chunk.get("on_started")
+                if callable(callback_started):
+                    callback_started()
+                recorder.mark("playback_chunk_transition", playback_id=int(generation))
+                self._notify_playback_started(
+                    chunk["duration"], chunk["envelope"], chunk["word_starts"], generation
+                )
+        except Exception as error:
+            if not self.stop_event.is_set() and self._is_current_playback_generation(generation):
+                print(f"\nTTS playback error: {error}")
+        finally:
+            if stream is not None:
+                try:
+                    stream.stop()
+                except Exception:
+                    pass
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            with self.stream_lock:
+                if self.stream is stream:
+                    self.stream = None
+            naturally_completed = (
+                not self.stop_event.is_set()
+                and self._is_current_playback_generation(generation)
+            )
+            recorder.mark(
+                "playback_stream_stopped", playback_id=int(generation),
+                cancelled=not naturally_completed,
+            )
+            self._retire_playback(generation)
+            with self._continuous_condition:
+                if self._continuous_generation == generation:
+                    self._continuous_generation = None
+                    self._continuous_sample_rate = None
+                    self._continuous_chunks.clear()
+                    self._continuous_closed = True
+                    self._continuous_condition.notify_all()
+            if self.playback_thread is threading.current_thread():
+                self.playback_thread = None
+            if naturally_completed:
+                self.playback_finished.set()
+                self._notify_playback_finished(generation)
+
+    def stop(self):
+        interrupted = super().stop()
+        self._cancel_continuous_stream()
+        return interrupted
+
+    def start_prepared_chunk(self, prepared) -> bool:
+        """Start an already-synthesized Kokoro chunk in source order."""
+        audio, sample_rate, word_starts = prepared
+        generation = self._next_playback_generation()
+        self.stop_event.clear()
+        self.playback_finished.clear()
+        return self._start_playback(audio, sample_rate, generation, word_starts)
+
     def speak(self, text):
         if not text:
             return False
@@ -800,11 +996,8 @@ class KokoroTextToSpeech(PiperTextToSpeech):
 
 
 def create_tts_provider(provider=None, fallback=True):
-    """Create a configured provider while preserving Piper as a safe fallback."""
+    """Create the configured public Kokoro provider."""
     selected = str(provider or TTS_PROVIDER).strip().lower()
-
-    if selected == "piper":
-        return PiperTextToSpeech()
 
     if selected == "kokoro":
         try:
@@ -812,11 +1005,10 @@ def create_tts_provider(provider=None, fallback=True):
         except Exception as error:
             if not fallback:
                 raise
-            print(f"Kokoro unavailable ({error}); falling back to Piper.")
-            return PiperTextToSpeech()
+            raise RuntimeError(f"Kokoro unavailable: {type(error).__name__}") from error
 
     raise ValueError(
-        f"Unsupported TTS_PROVIDER {selected!r}. Use 'piper' or 'kokoro'."
+        f"Unsupported TTS_PROVIDER {selected!r}. Use 'kokoro'."
     )
 
 

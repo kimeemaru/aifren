@@ -20,12 +20,15 @@ namespace AIFren.UnityPoc.UI
     /// </summary>
     public sealed class AIFrenPocController : MonoBehaviour
     {
-        private enum HiddenSubtitlePageState
+        private enum HistoryNavigationLevel { Years, Months, Days, Messages }
+
+        private sealed class PreparedSubtitlePlan
         {
-            ShowingPage,
-            FadingOut,
-            PreparingNextPage,
-            FadingIn
+            internal string Source;
+            internal string Spoken;
+            internal List<string> Pages;
+            internal List<SubtitlePageWordRange> Ranges;
+            internal float PreparationMilliseconds;
         }
 
         private const string BackendUri = "ws://127.0.0.1:8765";
@@ -38,6 +41,9 @@ namespace AIFren.UnityPoc.UI
         private const string GraphicsQualityPreference = "AIFren.GraphicsQuality";
         private const string ShowDialogueWhenHiddenPreference = "AIFren.ShowDialogueWhenHidden";
         private const string AlwaysOnTopPreference = "AIFren.AlwaysOnTop";
+        private const string AvatarLightingPreference = "AIFren.AvatarLighting";
+        private const string SceneOverlayPreference = "AIFren.SceneOverlay";
+        private const float DefaultAvatarLighting = 1.3f;
         private static readonly Vector2 DefaultReferenceResolution = new Vector2(1440f, 900f);
         private const float DialogueMinimumHeight = 150f;
         private const float DialogueMaximumHeight = 360f;
@@ -48,6 +54,7 @@ namespace AIFren.UnityPoc.UI
         // than continuously pushing the companion composition around.
         private const float DialogueLandscapeHeight = 252f;
         private const float DialoguePortraitHeight = 288f;
+        private const int HistoryMessagePageSize = 80;
 
         private static readonly Color Ink = new Color(0.95f, 0.94f, 0.99f, 1f);
         private static readonly Color Panel = new Color(0.07f, 0.07f, 0.13f, 0.88f);
@@ -55,8 +62,9 @@ namespace AIFren.UnityPoc.UI
         private static readonly Color UserAccent = new Color(0.42f, 0.72f, 0.92f, 1f);
 
         private readonly List<ConversationMessage> messages = new List<ConversationMessage>();
+        private readonly HashSet<string> canonicalMessageIds = new HashSet<string>(StringComparer.Ordinal);
+        private bool historyDirty = true;
         private readonly WordReveal wordReveal = new WordReveal();
-        private readonly WordReveal hiddenSubtitleReveal = new WordReveal();
 
         private AIFrenWebSocketClient client;
         private AvatarLoader avatarLoader;
@@ -79,6 +87,28 @@ namespace AIFren.UnityPoc.UI
         private TMP_Text statusLabel;
         private TMP_Text statusDetailLabel;
         private TMP_Text backendWarningLabel;
+        private TMP_Text truthScopeIndicatorLabel;
+        private TMP_Text continuityScopeValue;
+        private TMP_Text continuityActivityValue;
+        private TMP_Text continuityCompanionActivityValue;
+        private TMP_Text continuitySceneValue;
+        private ScrollRect continuitySceneScroll;
+        private RectTransform continuitySceneContent;
+        private Toggle sceneOverlayToggle;
+        private GameObject sceneOverlayPanel;
+        private Transform sceneOverlayContent;
+        private ScrollRect sceneOverlayScroll;
+        private bool showSceneOverlay;
+        private TMP_Text proactiveEligibilityValue;
+        private Button clearContinuityActivityButton;
+        private Button leaveContinuityScenarioButton;
+        private Transform continuityThreadsContent;
+        private ContinuitySnapshot authoritativeContinuity;
+        private string pendingContinuityCommandId;
+        private string pendingContinuityAction;
+        private string pendingContinuityActionToken;
+        private string pendingContinuityRevision;
+        private bool pendingContinuityRetrySent;
         private Button backendReconnectButton;
         private TMP_Text avatarModelValue;
         private TMP_Text volumeLabel;
@@ -99,22 +129,57 @@ namespace AIFren.UnityPoc.UI
         // Model loading changes live Unity objects asynchronously. Queue the
         // most recent request and let only that request commit UI/state.
         private ManagedAssetRecord pendingModelApply;
+        private bool pendingBundledModelApply;
         private bool pendingModelApplyRemoveOnFailure;
+        private bool pendingModelApplyPersistsSelection = true;
+        private string pendingModelApplyCharacterId;
         private bool modelApplyInProgress;
         private string modelApplyInFlightId;
         private int modelApplyGeneration;
+        private bool characterAvatarSwitchInFlight;
+        private PresentationMetadata authoritativeStatePresentation;
         private Button deleteModelAssetsButton;
         private Button deleteBackgroundAssetsButton;
+        private Button renameModelAssetButton;
+        private Button renameBackgroundAssetButton;
         private GameObject modelDeleteConfirmPanel;
         private GameObject backgroundDeleteConfirmPanel;
+        private GameObject assetRenamePanel;
+        private TMP_InputField assetRenameInput;
+        private TMP_Text assetRenameMessage;
+        private string renameAssetKind;
+        private string renameAssetId;
         private Transform historyContent;
         private ScrollRect historyScroll;
+        private Button historyBackButton;
+        private TMP_Text historyPathLabel;
+        private readonly ConversationHistoryIndex historyIndex = new ConversationHistoryIndex();
+        private readonly List<TMP_Text> historyTextRows = new List<TMP_Text>();
+        private readonly List<Button> historyButtonRows = new List<Button>();
+        private int activeHistoryTextRows;
+        private int activeHistoryButtonRows;
+        private HistoryNavigationLevel historyLevel = HistoryNavigationLevel.Messages;
+        private HistoryDayKey selectedHistoryDay;
+        private int selectedHistoryYear;
+        private int selectedHistoryMonth;
+        private int selectedHistoryPage;
         private Slider volumeSlider;
         private bool ttsVolumeDirty;
         private float pendingTtsVolume;
         private float nextTtsVolumeSendAt;
         private Slider revealSlider;
+        private Slider avatarLightingSlider;
+        private TMP_Text avatarLightingValue;
+        private float avatarLightingMultiplier = DefaultAvatarLighting;
         private Toggle instantTextToggle;
+        private Toggle earlySpeechToggle;
+        private Button proactiveIntervalButton;
+        private bool authoritativeProactiveBehavior = true;
+        private int authoritativeProactiveIntervalSeconds = 3600;
+        private string latestProactiveEligibility = "unavailable";
+        private int latestProactiveNextSeconds = -1;
+        private int latestProactiveIgnoredStreak;
+        private static readonly int[] ProactiveIntervals = { 0, 30, 60, 300, 600, 900, 1800, 2700, 3600, 7200, 10800, 14400, 18000, 21600 };
         private Toggle hiddenDialogueToggle;
         private Toggle alwaysOnTopToggle;
         private Toggle sfxMuteToggle;
@@ -170,10 +235,39 @@ namespace AIFren.UnityPoc.UI
         private Texture2D landscapeCustomBackground;
         private TMP_Text geminiProviderStatus;
         private TMP_Text geminiModelValue;
+        private TMP_Text localSelectedModelValue;
+        private TMP_Text localRuntimeStatusValue;
+        private TMP_Text localComputeValue;
+        private TMP_Text localContextCapacityValue;
         private TMP_Text ttsProviderValue;
         private TMP_Text ttsVoiceValue;
         private TMP_Text ttsDeviceValue;
         private TMP_InputField geminiApiKeyInput;
+        private Button onlineModelModeButton;
+        private Button localModelModeButton;
+        private readonly List<GameObject> onlineModelControls = new List<GameObject>();
+        private readonly List<GameObject> localModelControls = new List<GameObject>();
+        private string selectedModelMode = "online";
+        private string authoritativeModelMode = "online";
+        private string pendingModelMode;
+        private bool? pendingLocalAutoStart;
+        private bool? pendingEarlySpeech;
+        private bool authoritativeEarlySpeech = true;
+        private ModelSettingsSnapshot authoritativeModelSettings;
+        private TMP_InputField localEndpointInput;
+        private TMP_Text localModelSelectionValue;
+        private Toggle localAutoStartToggle;
+        private Button startLocalModelButton;
+        private Button stopLocalModelButton;
+        private readonly List<LocalModelOption> localModelOptions = new List<LocalModelOption>();
+        private LocalModelRuntimeSnapshot localModelRuntime;
+        private GameObject localModelPickerPanel;
+        private TMP_Text currentCharacterValue;
+        private Transform characterListContent;
+        private TMP_InputField newCharacterNameInput;
+        private TMP_InputField newCharacterPersonalityInput;
+        private readonly List<CharacterSummary> availableCharacters = new List<CharacterSummary>();
+        private bool characterSwitchInFlight;
         private bool showGeminiApiKey;
         private bool alwaysOnTop;
         private TMP_Text pttBindValue;
@@ -197,16 +291,20 @@ namespace AIFren.UnityPoc.UI
         private Button consoleCopyButton;
         private bool consoleUnlocked;
         private string consoleUnlockBuffer = string.Empty;
+        private string avatarQaUnlockBuffer = string.Empty;
         private readonly List<string> consoleLines = new List<string>();
         private TMP_Text displayConfirmLabel;
         private float displayConfirmDeadline;
         private bool displayConfirmActive;
         private bool startupDisplayFinalizationPending;
         private string characterName = "AIFren";
+        private string activeCharacterId;
         private string visibleState = "Disconnected";
         private ConnectionState lastObservedConnectionState = ConnectionState.Disconnected;
         private string detail = "Start backend_host.py to connect.";
         private bool submitInFlight;
+        private readonly PttThinkingPresentationState pttThinkingPresentation =
+            new PttThinkingPresentationState();
         private bool backendReconnectInProgress;
         private bool instantText;
         private float revealWordsPerSecond;
@@ -216,9 +314,19 @@ namespace AIFren.UnityPoc.UI
         private const float HiddenSubtitlePageFadeOutSeconds = .09f;
         private const float HiddenSubtitlePageFadeInSeconds = .12f;
         private string pendingAssistantContent;
+        private bool assistantStreamVisible;
+        private bool assistantStreamPresentationDirty;
+        private float nextAssistantStreamPresentationAt;
+        private const float AssistantStreamPresentationIntervalSeconds = .05f;
         private bool pendingAssistantReveal;
         private bool pendingSpeechReady;
         private float pendingSpeechDuration;
+        private bool streamedSubtitleMode;
+        private int streamedSubtitleTurnId;
+        private readonly Dictionary<string, PreparedSubtitlePlan> preparedSubtitlePlans =
+            new Dictionary<string, PreparedSubtitlePlan>();
+        private readonly Queue<string> preparedSubtitlePlanOrder = new Queue<string>();
+        private const int PreparedSubtitlePlanLimit = 8;
         private bool interfaceHidden;
         private Vector2 lastLoggedAvatarContainerSize;
         private bool lastLoggedAvatarContainerUiHidden;
@@ -235,7 +343,7 @@ namespace AIFren.UnityPoc.UI
         private Button closeButton;
         private bool edgeRevealActive;
         private bool temporarilyRevealed;
-        private bool hiddenSubtitleTemporarilySuppressed;
+        private bool hiddenSubtitleSuppressedByUi;
         private bool dialogueAutoFollow = true;
         private float edgeRevealGraceUntil;
         private Coroutine visibilityTransition;
@@ -249,8 +357,7 @@ namespace AIFren.UnityPoc.UI
         private float avatarRenderScale = 1.5f;
         private bool showDialogueWhenHidden;
         private TMP_Text hiddenDialogueText;
-        private readonly List<TMP_Text> hiddenSubtitleBackings = new List<TMP_Text>();
-        private readonly List<Material> hiddenSubtitleBackingMaterials = new List<Material>();
+        private TMP_Text hiddenSubtitleMeasurementText;
         private RectTransform hiddenDialogueViewport;
         private ScrollRect hiddenDialogueScroll;
         private Scrollbar hiddenDialogueScrollbar;
@@ -260,23 +367,34 @@ namespace AIFren.UnityPoc.UI
         private string currentAssistantPresentationText = string.Empty;
         private bool subtitleSpeechActive;
         private readonly List<string> subtitlePages = new List<string>();
-        private int subtitlePageIndex;
         private int subtitleGeneration;
         private int subtitlePlaybackGeneration = -1;
         private float subtitleSpeechDuration;
         private bool subtitleAwaitingPlayback;
-        private Coroutine subtitlePresentationCoroutine;
-        private bool subtitlePlaybackStartedSignal;
-        private bool subtitlePlaybackStoppedSignal;
         private readonly List<float> subtitleWordSchedule = new List<float>();
         private readonly List<SubtitlePageWordRange> subtitlePageWordRanges = new List<SubtitlePageWordRange>();
-        private float subtitlePresentationStartedAt;
         private float subtitlePlaybackStartedAt;
-        private bool subtitleTimingUsesPlaybackClock;
         private int subtitlePlaybackId;
         private float subtitleResponseReceivedAt;
-        private bool subtitleFirstWordLogged;
-        private HiddenSubtitlePageState hiddenSubtitlePageState;
+        private bool activeTurnIsProactive;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        private DevelopmentFrameProfiler developmentFrameProfiler;
+        private DevelopmentFlightRecorder developmentFlightRecorder;
+        private string flightRecorderDumpBuffer = string.Empty;
+        private int flightRecorderTurnId;
+        private bool flightRecorderFirstDeltaSeen;
+        private bool developmentProfileQa;
+        private bool verboseSubtitleDiagnostics;
+        private bool developmentProfileQaStarted;
+        private int developmentProfileScenarioIndex = -1;
+        private int developmentProfileDeltaCount;
+        private bool developmentProfileAdvancePending;
+        private bool developmentLongPeekScheduled;
+        private bool dialogueCanonicalFinalReceived;
+        private bool dialogueMidRevealRecorded;
+        private bool dialogueManualBottomRecorded;
+        private readonly string[] developmentProfileScenarios = { "cold", "warm", "long" };
+#endif
 
         private const float TtsVolumeSendIntervalSeconds = .12f;
 
@@ -316,6 +434,7 @@ namespace AIFren.UnityPoc.UI
                 avatarLoader.SetPreviewSurface(avatarSurface);
             }
             avatarLoader.SetPresentationRenderScale(avatarRenderScale);
+            avatarLoader.SetPresentationLightingMultiplier(avatarLightingMultiplier);
         }
 
         private void Awake()
@@ -334,6 +453,12 @@ namespace AIFren.UnityPoc.UI
         private async void Start()
         {
             string[] commandLine = Environment.GetCommandLineArgs();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            developmentProfileQa = commandLine.Contains("-aifren-profile-qa");
+            verboseSubtitleDiagnostics = commandLine.Contains("-aifren-verbose-subtitles");
+            if (developmentProfileQa)
+                developmentFrameProfiler = gameObject.AddComponent<DevelopmentFrameProfiler>();
+#endif
             useDirectAvatarPresentation = !commandLine.Contains("-aifren-avatar-rt") || commandLine.Contains("-aifren-avatar-direct");
             avatarLoader?.SetDirectPresentation(useDirectAvatarPresentation);
             if (Environment.GetCommandLineArgs().Contains("-aifren-reset-console-unlock"))
@@ -350,6 +475,7 @@ namespace AIFren.UnityPoc.UI
                 PlayerPrefs.DeleteKey(AvatarRenderScalePreference);
                 PlayerPrefs.DeleteKey(GraphicsQualityPreference);
                 PlayerPrefs.DeleteKey(ShowDialogueWhenHiddenPreference);
+                PlayerPrefs.DeleteKey(SceneOverlayPreference);
                 PlayerPrefs.Save();
             }
             presentation = CompanionPresentationConfiguration.Load();
@@ -373,8 +499,10 @@ namespace AIFren.UnityPoc.UI
                 (int)PresentationGraphicsQuality.Low, (int)PresentationGraphicsQuality.Ultra);
             avatarRenderScale = Mathf.Clamp(PlayerPrefs.GetFloat(
                 AvatarRenderScalePreference, DefaultAvatarRenderScale(graphicsQuality)), 1f, 2f);
+            avatarLightingMultiplier = Mathf.Clamp(PlayerPrefs.GetFloat(AvatarLightingPreference, DefaultAvatarLighting), 0f, 2f);
             showDialogueWhenHidden = PlayerPrefs.GetInt(ShowDialogueWhenHiddenPreference, 0) == 1;
             alwaysOnTop = PlayerPrefs.GetInt(AlwaysOnTopPreference, 0) == 1;
+            showSceneOverlay = PlayerPrefs.GetInt(SceneOverlayPreference, 0) == 1;
             avatarPresentationState = AvatarPresentationState.Load(AvatarConfiguration.Load());
             avatarViewerBackgroundState = AvatarViewerBackgroundState.Load();
             managedAssetLibrary = ManagedAssetLibrary.Load();
@@ -401,11 +529,26 @@ namespace AIFren.UnityPoc.UI
             // resolution/mode happens to match the launch monitor. This uses
             // the same authoritative Apply path as an interactive change.
             ApplyDisplaySettings(currentDisplaySettings, false, true);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (developmentProfileQa)
+            {
+                // The acceptance harness is deliberately portrait and local
+                // to Development builds. It does not persist display or UI
+                // settings into the ordinary product configuration.
+                Screen.SetResolution(900, 1600, FullScreenMode.Windowed);
+                showDialogueWhenHidden = true;
+                interfaceHidden = true;
+                inputRequested = false;
+                inputVisibilityTarget = 0f;
+                RefreshPresentationVisibility();
+            }
+#endif
 
             if (avatarLoader != null)
             {
                 avatarLoader.SetPreviewSurface(avatarSurface);
                 avatarLoader.SetPresentationRenderScale(avatarRenderScale);
+                avatarLoader.SetPresentationLightingMultiplier(avatarLightingMultiplier);
             }
             ApplyAvatarPresentationMode();
             if (alwaysOnTop)
@@ -415,10 +558,24 @@ namespace AIFren.UnityPoc.UI
 
             client = new AIFrenWebSocketClient();
             await ConnectAsync();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (!commandLine.Contains("-aifren-no-flight-recorder"))
+            {
+                developmentFlightRecorder = gameObject.AddComponent<DevelopmentFlightRecorder>();
+                developmentFlightRecorder.Initialize(client);
+            }
+#endif
         }
 
         private void Update()
         {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            developmentFlightRecorder?.SetPresentationState(
+                interfaceHidden,
+                hiddenSubtitlePresenter != null && hiddenSubtitlePresenter.IsActive,
+                avatarAnimation != null,
+                subtitleSpeechActive);
+#endif
             if (Screen.width != lastScreenWidth || Screen.height != lastScreenHeight)
             {
                 lastScreenWidth = Screen.width;
@@ -429,7 +586,11 @@ namespace AIFren.UnityPoc.UI
             }
 
             UpdateDisplayConfirmation();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (!developmentProfileQa) UpdateHiddenInterfaceReveal();
+#else
             UpdateHiddenInterfaceReveal();
+#endif
             UpdateUnityPushToTalk();
             UpdateSubtitlePaging();
 
@@ -443,15 +604,28 @@ namespace AIFren.UnityPoc.UI
                     HandleServerMessage(message);
                 }
 
+                // Conversation messages commonly arrive as a user/assistant pair.
+                // Render the visible history once after draining that event burst,
+                // and do no TMP/layout work at all while the panel is hidden.
+                RefreshHistoryIfVisible();
+
+                if (assistantStreamPresentationDirty &&
+                    Time.unscaledTime >= nextAssistantStreamPresentationAt)
+                {
+                    RefreshStreamedAssistantDialogue(false);
+                }
+
                 if (client.State == ConnectionState.Disconnected && visibleState != "Disconnected")
                 {
                     ApplyStatus("disconnected", "Backend is unavailable or disconnected.");
+                    ApplyTruthScopeIndicator("real_world", string.Empty);
                     backendGlobalPtt = false;
                     UpdatePttIndicator("ready");
                 }
                 else if (client.State == ConnectionState.Error)
                 {
                     ApplyStatus("error", client.LastError);
+                    ApplyTruthScopeIndicator("real_world", string.Empty);
                     submitInFlight = false;
                     backendGlobalPtt = false;
                     UpdatePttIndicator("ready");
@@ -463,10 +637,24 @@ namespace AIFren.UnityPoc.UI
 
             if (wordReveal.Advance(Time.unscaledDeltaTime))
             {
-                dialogueTextLabel.text = DialoguePresentationParser.FormatVisible(wordReveal.VisibleText, !wordReveal.IsComplete);
-                SyncHiddenDialogueText();
-                if (dialogueAutoFollow && RefreshDialogueScrollableContent())
+                RefreshDialogueRevealText(!wordReveal.IsComplete || assistantStreamVisible);
+                bool dialogueContentResized = RefreshDialogueScrollableContent();
+                if (dialogueAutoFollow && dialogueContentResized)
                     FollowScrollIfNearBottom(dialogueScroll);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                if (dialogueCanonicalFinalReceived && !dialogueMidRevealRecorded &&
+                    !wordReveal.IsComplete && wordReveal.WordCount > 0 &&
+                    wordReveal.RevealedTokenCount * 2 >= wordReveal.WordCount)
+                {
+                    dialogueMidRevealRecorded = true;
+                    RecordDialogueLayoutState("mid_reveal");
+                }
+                if (wordReveal.IsComplete)
+                {
+                    RecordDialogueLayoutState("reveal_complete");
+                    ScheduleDialogueLayoutFollowup("reveal_complete");
+                }
+#endif
             }
 
             if (ttsVolumeDirty && Time.unscaledTime >= nextTtsVolumeSendAt)
@@ -474,18 +662,18 @@ namespace AIFren.UnityPoc.UI
                 SendPendingTtsVolume();
             }
 
-            if (visibleState == "Thinking" && dialogueTextLabel != null && !pendingAssistantReveal)
+            if (visibleState == "Thinking" && dialogueTextLabel != null && !pendingAssistantReveal &&
+                !assistantStreamVisible)
             {
                 thinkingElapsed += Time.unscaledDeltaTime;
                 dialogueTextLabel.text = "Thinking" + new string('.', 1 + (int)(thinkingElapsed * 2f) % 3);
-                SyncHiddenDialogueText();
             }
 
         }
 
         private void HandlePresentationInput()
         {
-            HandleConsoleUnlockSequence();
+            HandleHiddenDeveloperSequences();
             if (displayConfirmActive)
             {
                 if (Input.GetKeyDown(KeyCode.Escape))
@@ -573,32 +761,47 @@ namespace AIFren.UnityPoc.UI
             }
         }
 
-        private void HandleConsoleUnlockSequence()
+        private void HandleHiddenDeveloperSequences()
         {
             if (messageInput != null && messageInput.isFocused) return;
             string input = Input.inputString;
             if (string.IsNullOrEmpty(input)) return;
             foreach (char character in input)
             {
-                if (character != '8')
-                {
-                    consoleUnlockBuffer = string.Empty;
-                    continue;
-                }
-                consoleUnlockBuffer += character;
-                if (consoleUnlockBuffer.Length > 8)
-                {
-                    consoleUnlockBuffer = consoleUnlockBuffer.Substring(consoleUnlockBuffer.Length - 8);
-                }
-                if (consoleUnlockBuffer == "88888888")
+                AdvanceHiddenSequence(ref consoleUnlockBuffer, character, '8', 8, () =>
                 {
                     consoleUnlocked = true;
                     PlayerPrefs.SetInt("AIFren.ConsoleUnlocked", 1);
                     PlayerPrefs.Save();
                     RefreshDeveloperControlVisibility();
-                    consoleUnlockBuffer = string.Empty;
-                }
+                });
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                AdvanceHiddenSequence(ref avatarQaUnlockBuffer, character, '7', 7, () =>
+                {
+                    AvatarQaVisibility.Toggle();
+                    Debug.Log("[AIFren QA] avatar frames visible=" + AvatarQaVisibility.Visible + ".");
+                });
+                AdvanceHiddenSequence(ref flightRecorderDumpBuffer, character, '6', 7, () =>
+                {
+                    developmentFlightRecorder?.ManualDump();
+                    Debug.Log("[AIFren Flight Recorder] manual dump requested.");
+                });
+#endif
             }
+        }
+
+        internal static void AdvanceHiddenSequence(ref string buffer, char input, char expected, int length, Action matched)
+        {
+            if (input != expected)
+            {
+                buffer = string.Empty;
+                return;
+            }
+            buffer += input;
+            if (buffer.Length > length) buffer = buffer.Substring(buffer.Length - length);
+            if (buffer.Length != length) return;
+            buffer = string.Empty;
+            matched?.Invoke();
         }
 
         private void UpdateHiddenInterfaceReveal()
@@ -709,26 +912,19 @@ namespace AIFren.UnityPoc.UI
             // framing appear to shift on Hide -> Show.
             if (visibilityTransition != null) StopCoroutine(visibilityTransition);
             visibilityTransition = StartCoroutine(TransitionUiVisibility(show));
+            RefreshSceneOverlay(authoritativeContinuity);
             SetTopControlLabel(hideUiButton, interfaceHidden || temporarilyRevealed ? "Show" : "Hide");
         }
 
         private IEnumerator TransitionUiVisibility(bool show)
         {
-            // The hidden overlay owns dialogue only while the ordinary UI is
-            // hidden. Disable it before the normal card begins its entrance.
-            // A top-edge peek is not a committed Show action. It suppresses
-            // the floating subtitle visually, but never invalidates its
-            // response generation or stops its sole presentation coroutine.
-            if (show && !temporarilyRevealed && hiddenDialogueViewport != null)
+            // A temporary edge peek changes only renderability and must restore
+            // the same subtitle session. A committed Show is a separate product
+            // state and cancels hidden-subtitle presentation.
+            if (show)
             {
-                subtitleGeneration++;
-                if (subtitlePresentationCoroutine != null) StopCoroutine(subtitlePresentationCoroutine);
-                subtitlePresentationCoroutine = null;
-                HideHiddenSubtitleImmediately();
-            }
-            else if (show && temporarilyRevealed)
-            {
-                SuppressHiddenSubtitleForTemporaryReveal();
+                if (temporarilyRevealed) SuppressHiddenSubtitleForUiReveal();
+                else HideHiddenSubtitleImmediately();
             }
 
             GameObject[] elements = { topBar, dialogueCard, inputCard };
@@ -773,11 +969,10 @@ namespace AIFren.UnityPoc.UI
             if (inputRect != null) inputRect.anchoredPosition = inputTo;
             visibilityTransition = null;
             // Restore only after the normal dialogue has fully left the
-            // screen, so temporary edge reveal can never overlap both text
-            // presentations. The running subtitle coroutine kept its page,
-            // schedule, and reveal position while its root was inactive.
-            if (!show) RestoreHiddenSubtitleAfterTemporaryReveal();
-            SyncHiddenDialogueText();
+            // screen, so the two text presentations never overlap. The sole
+            // subtitle presenter retained its page, schedule, and revealed
+            // word count while its root was suppressed.
+            if (!show) RestoreHiddenSubtitleAfterUiReveal();
         }
 
         private static void SetPresentationAlpha(GameObject element, float alpha, bool interactable)
@@ -861,14 +1056,33 @@ namespace AIFren.UnityPoc.UI
                 return;
             }
 
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            developmentFlightRecorder?.ObserveTransportEvent();
+#endif
+
             if (message.type == "snapshot")
             {
                 ApplySnapshot(message.data);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                if (developmentProfileQa && !developmentProfileQaStarted)
+                {
+                    developmentProfileQaStarted = true;
+                    StartCoroutine(BeginDevelopmentProfileQa());
+                }
+#endif
                 return;
             }
 
             if (message.type == "command_error")
             {
+                RestoreAuthoritativeModelSettingsAfterFailure();
+                characterSwitchInFlight = false;
+                if (message.error != null && !string.IsNullOrEmpty(message.error.code)
+                    && message.error.code.Contains("continuity_control"))
+                {
+                    ClearPendingContinuityControl();
+                    if (client != null) _ = client.RequestSnapshotAsync();
+                }
                 ApplyStatus("error", message.error != null ? message.error.message : "Backend command error.");
                 submitInFlight = false;
                 RefreshInputAvailability();
@@ -883,51 +1097,295 @@ namespace AIFren.UnityPoc.UI
             BackendEvent backendEvent = message.@event;
             BackendEventData data = backendEvent.data;
 
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (backendEvent.type == "flight_recorder_backend_dumped")
+            {
+                developmentFlightRecorder?.AcceptBackendSummary(data);
+                return;
+            }
+            if (backendEvent.type == "flight_recorder_auto_trigger")
+            {
+                developmentFlightRecorder?.AutomaticTrigger(data != null ? data.reason : "backend_trigger");
+                return;
+            }
+            if (backendEvent.type == "voice_transcription")
+                developmentFlightRecorder?.Mark("stt_final");
+            if (backendEvent.type != "assistant_delta")
+            {
+                developmentFlightRecorder?.Mark(
+                    "backend_" + backendEvent.type,
+                    data != null ? data.turn_id : 0,
+                    data != null ? data.playback_id : 0);
+            }
+#endif
+
             if (backendEvent.type == "status" && data != null)
             {
                 ApplyStatus(data.state, data.message);
             }
             else if (backendEvent.type == "turn_started")
             {
-                ApplyStatus("thinking", "Thinking...");
+                activeTurnIsProactive = IsProactiveGeneration(data);
+                // This PTT capture successfully crossed into the canonical
+                // assistant-turn lifecycle. The thinking placeholder now
+                // belongs to generation and must never be rolled back by a
+                // late ready/cleanup event from microphone capture.
+                if (!activeTurnIsProactive)
+                    pttThinkingPresentation.MarkTurnStarted();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                flightRecorderTurnId = data != null ? data.turn_id : 0;
+                flightRecorderFirstDeltaSeen = false;
+                if (!activeTurnIsProactive)
+                    developmentFlightRecorder?.ArmForUserTurn();
+                developmentFlightRecorder?.Mark("turn_started", flightRecorderTurnId);
+                developmentProfileDeltaCount = 0;
+                developmentFrameProfiler?.Mark("turn_started:" + DevelopmentProfileScenarioName());
+#endif
+                // turn_started is the backend acknowledgement that this input
+                // really entered arbitration. Release only this transport gate
+                // here so a later user input can explicitly replace this turn.
+                submitInFlight = false;
+                RefreshInputAvailability();
+                pendingAssistantContent = string.Empty;
+                assistantStreamVisible = false;
+                assistantStreamPresentationDirty = false;
+                ClearPreparedSubtitlePlans();
+                pendingAssistantReveal = false;
+                pendingSpeechReady = false;
+                pendingSpeechDuration = 0f;
+                streamedSubtitleMode = false;
+                streamedSubtitleTurnId = data != null ? data.turn_id : 0;
+                subtitleGeneration++;
+                HideHiddenSubtitleImmediately();
+                // Proactive provider work stayed private and already produced
+                // a publishable response. Preserve the current dialogue/status
+                // until its immediately following response event arrives.
+                if (!activeTurnIsProactive)
+                    ApplyStatus("thinking", "Thinking...");
+            }
+            else if (backendEvent.type == "turn_cancelled")
+            {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                developmentFlightRecorder?.Mark("interruption_cancelled", data != null ? data.turn_id : flightRecorderTurnId);
+#endif
+                // Freeze only text that was genuinely presented before the
+                // interruption; discarded provider deltas must not continue
+                // revealing while PTT records or a replacement waits.
+                string shown = wordReveal.VisibleText;
+                wordReveal.Begin(shown, true);
+                currentAssistantPresentationText = shown;
+                dialogueLayoutContent = DialoguePresentationParser.FormatVisible(shown);
+                assistantStreamVisible = false;
+                assistantStreamPresentationDirty = false;
+                ClearPreparedSubtitlePlans();
+                pendingAssistantReveal = false;
+                pendingAssistantContent = null;
+                RefreshDialogueRevealText(false);
+                subtitleGeneration++;
+                HideHiddenSubtitleImmediately();
             }
             else if (backendEvent.type == "conversation_message" && data != null)
             {
                 // Canonical conversation_message is the only source for Log
                 // history. It is emitted after each persisted message and is
                 // intentionally independent of visibility/reveal state.
-                AddMessage(data.role, data.content, DateTimeOffset.Now.ToString("o"), false, false);
+                AddCanonicalMessage(
+                    data.role, data.content,
+                    string.IsNullOrWhiteSpace(data.timestamp) ? DateTimeOffset.Now.ToString("o") : data.timestamp,
+                    false, false, data.message_id);
+            }
+            else if (backendEvent.type == "truth_scope_changed" && data != null)
+            {
+                ApplyTruthScopeIndicator(data.scope_kind, data.scope_label);
+            }
+            else if (backendEvent.type == "continuity_changed" && data != null)
+            {
+                ApplyAuthoritativeContinuityChange(data.command_id, data.continuity);
+            }
+            else if (backendEvent.type == "continuity_control_result" && data != null)
+            {
+                if (data.accepted && data.command_id == pendingContinuityCommandId)
+                {
+                    CompletePendingContinuityControl(data.continuity);
+                }
             }
             else if (backendEvent.type == "assistant_response" && data != null)
             {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                developmentFlightRecorder?.Mark("assistant_final", data.turn_id);
+                developmentFrameProfiler?.Mark("assistant_response_begin:" + DevelopmentProfileScenarioName());
+#endif
                 // This is presentation-only. Its later canonical
                 // conversation_message event appends history exactly once.
+                if (assistantStreamPresentationDirty) RefreshStreamedAssistantDialogue(false);
                 pendingAssistantContent = data.content;
                 subtitleResponseReceivedAt = Time.unscaledTime;
                 Debug.Log("[AIFren Timing] Unity assistant response received t=" + subtitleResponseReceivedAt.ToString("F3"));
                 Debug.Log("[AIFren Subtitle] assistant response received hidden=" + interfaceHidden + " enabled=" + showDialogueWhenHidden);
-                BeginSubtitleResponse(data.content);
-                List<string> emotes = DialoguePresentationParser.EmoteTexts(data.content);
-                if (AvatarGestureMapper.TryFirstSupported(emotes, out AvatarGestureIntent gesture, out string matchedEmote))
+                if (!streamedSubtitleMode) BeginSubtitleResponse(data.content);
+                AvatarPresentationResolver presentationResolver = avatarLoader != null
+                    ? avatarLoader.GetComponent<AvatarPresentationResolver>()
+                    : null;
+                if (data.has_presentation)
                 {
-                    Debug.Log("[AvatarGesture] mapped emote=\"" + matchedEmote + "\" -> " + gesture);
-                    avatarAnimation?.PlayGesture(gesture);
+                    presentationResolver?.Apply(data.presentation);
                 }
-                else avatarAnimation?.PlayAttentiveReaction();
-                pendingAssistantReveal = true;
-                TryBeginPendingAssistantReveal();
+                else
+                {
+                    // Keep old servers and historical test events compatible.
+                    List<string> emotes = DialoguePresentationParser.EmoteTexts(data.content);
+                    if (AvatarGestureMapper.TryFirstSupported(emotes, out AvatarGestureIntent gesture, out string matchedEmote))
+                    {
+                        Debug.Log("[AvatarGesture] mapped emote=\"" + matchedEmote + "\" -> " + gesture);
+                        avatarAnimation?.PlayGesture(gesture);
+                    }
+                    else avatarAnimation?.PlayAttentiveReaction();
+                }
+                if (assistantStreamVisible)
+                {
+                    // Reconcile against the canonical final response while
+                    // preserving the stream's already-revealed word count and
+                    // timing accumulator. Any not-yet-shown words continue at
+                    // the configured reveal pace instead of being dumped or
+                    // replayed from word one.
+                    FinalizeStreamedAssistantDialogue(data.content);
+                    pendingAssistantContent = null;
+                    pendingAssistantReveal = false;
+                    pendingSpeechReady = false;
+                    pendingSpeechDuration = 0f;
+                    assistantStreamVisible = false;
+                }
+                else
+                {
+                    pendingAssistantReveal = true;
+                    TryBeginPendingAssistantReveal();
+                }
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                developmentFrameProfiler?.Mark("assistant_response_end:canonical_exact=" +
+                    string.Equals(data.content, currentAssistantPresentationText, StringComparison.Ordinal));
+#endif
+            }
+            else if (backendEvent.type == "assistant_delta" && data != null)
+            {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                if (!flightRecorderFirstDeltaSeen)
+                {
+                    flightRecorderFirstDeltaSeen = true;
+                    developmentFlightRecorder?.Mark("first_assistant_delta", data.turn_id);
+                }
+#endif
+                // Streaming text is presentation-only; the later canonical
+                // assistant message still enters history exactly once.
+                bool firstDelta = !assistantStreamVisible;
+                assistantStreamVisible = true;
+                pendingAssistantContent = (pendingAssistantContent ?? string.Empty) + (data.content ?? string.Empty);
+                assistantStreamPresentationDirty = true;
+                // Preserve immediate time-to-first-text, then coalesce the
+                // token-rate stream into bounded presentation updates. TTS and
+                // canonical persistence continue to consume every delta.
+                if (firstDelta) RefreshStreamedAssistantDialogue(true);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                if (developmentProfileQa)
+                {
+                    developmentProfileDeltaCount++;
+                    if (developmentProfileDeltaCount == 1)
+                        developmentFrameProfiler?.Mark("first_dialogue_delta:" + DevelopmentProfileScenarioName());
+                    if (developmentProfileScenarioIndex == 1 && developmentProfileDeltaCount == 3)
+                    {
+                        instantTextToggle.SetIsOnWithoutNotify(true);
+                        SetInstantText(true);
+                        developmentFrameProfiler?.Mark("instant_on_midstream:visible_equals_received=" +
+                            string.Equals(wordReveal.VisibleText, pendingAssistantContent, StringComparison.Ordinal));
+                    }
+                    else if (developmentProfileScenarioIndex == 1 && developmentProfileDeltaCount == 7)
+                    {
+                        string before = wordReveal.VisibleText;
+                        instantTextToggle.SetIsOnWithoutNotify(false);
+                        SetInstantText(false);
+                        developmentFrameProfiler?.Mark("instant_off_midstream:visible_preserved=" +
+                            string.Equals(before, wordReveal.VisibleText, StringComparison.Ordinal));
+                    }
+                }
+#endif
+            }
+            else if (backendEvent.type == "local_models" && data != null)
+            {
+                SetLocalModelOptions(data.models);
+                ApplyStatus("ready", localModelOptions.Count == 0 ? "No managed GGUF models found." : "Local models refreshed.");
+            }
+            else if (backendEvent.type == "local_model_runtime" && data != null)
+            {
+                localModelRuntime = data.local_runtime;
+                RefreshLocalRuntimeUi();
             }
             else if (backendEvent.type == "tts_state" && data != null)
             {
-                if (data.state == "playback_started")
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                if (data.state == "starting") developmentFlightRecorder?.Mark("tts_submit", data.turn_id, data.playback_id);
+                else if (data.state == "playback_started")
                 {
+                    developmentFlightRecorder?.Mark("tts_synthesis_complete", data.turn_id, data.playback_id);
+                    developmentFlightRecorder?.Mark("playback_started", data.turn_id, data.playback_id);
+                }
+                else if (data.state == "stopped" || data.state == "failed" || data.state == "not_started")
+                    developmentFlightRecorder?.Mark("playback_stopped", data.turn_id, data.playback_id);
+#endif
+                if (data.state == "starting" && data.streamed)
+                {
+                    streamedSubtitleMode = true;
+                    streamedSubtitleTurnId = data.turn_id;
+                    ApplyStatus("speaking", data.message);
+                }
+                else if (data.state == "chunk_queued" && data.streamed &&
+                    data.turn_id > 0 && data.turn_id == streamedSubtitleTurnId)
+                {
+                    string subtitleChunk = !string.IsNullOrWhiteSpace(data.subtitle_content)
+                        ? data.subtitle_content : data.content;
+                    CachePreparedSubtitlePlan(data.turn_id, data.chunk_index, subtitleChunk);
+                }
+                else if (data.state == "playback_started")
+                {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                    developmentFrameProfiler?.Mark("playback_started_begin:" + DevelopmentProfileScenarioName());
+#endif
+                    var playbackStartHandlerTimer = System.Diagnostics.Stopwatch.StartNew();
+                    if (data.streamed && streamedSubtitleTurnId > 0 && data.turn_id > 0 &&
+                        data.turn_id != streamedSubtitleTurnId)
+                    {
+                        Debug.Log("[AIFren Subtitle] ignored stale streamed playback for turn=" + data.turn_id +
+                            "; current=" + streamedSubtitleTurnId + ".");
+                        return;
+                    }
+                    if (data.streamed && !string.IsNullOrWhiteSpace(data.content))
+                    {
+                        streamedSubtitleMode = true;
+                        streamedSubtitleTurnId = data.turn_id;
+                        // The session now owns the same source chunk as this
+                        // audio callback. Duration and word timestamps can no
+                        // longer compress the entire response into each chunk.
+                        string subtitleChunk = !string.IsNullOrWhiteSpace(data.subtitle_content)
+                            ? data.subtitle_content : data.content;
+                        subtitleResponseReceivedAt = Time.unscaledTime;
+                        BeginSubtitleResponse(subtitleChunk,
+                            TakePreparedSubtitlePlan(data.turn_id, data.chunk_index, subtitleChunk));
+                    }
                     Debug.Log("[AIFren Subtitle] playback_started generation=" + subtitleGeneration);
                     pendingSpeechReady = true;
                     pendingSpeechDuration = data.duration_seconds;
                     subtitleSpeechDuration = data.duration_seconds;
-                    avatarAnimation?.BeginSpeech(data.duration_seconds, data.lip_sync_envelope);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                    developmentFrameProfiler?.Mark("lip_sync_begin");
+#endif
+                    AvatarPresentationResolver speechResolver = avatarLoader != null
+                        ? avatarLoader.GetComponent<AvatarPresentationResolver>() : null;
+                    if (speechResolver == null || speechResolver.AllowsLipSync)
+                        avatarAnimation?.BeginSpeech(data.duration_seconds, data.lip_sync_envelope);
+                    else
+                        avatarAnimation?.StopSpeech();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                    developmentFrameProfiler?.Mark("lip_sync_ready");
+#endif
                     subtitleSpeechActive = true;
-                    subtitlePlaybackStartedSignal = true;
                     subtitleAwaitingPlayback = false;
                     subtitlePlaybackGeneration = subtitleGeneration;
                     subtitlePlaybackId = data.playback_id;
@@ -938,8 +1396,19 @@ namespace AIFren.UnityPoc.UI
                     hiddenSubtitlePresenter?.OnPlaybackStarted(subtitleGeneration, data.playback_id,
                         new List<float>(subtitleWordSchedule), Time.unscaledTime);
                     TryBeginPendingAssistantReveal();
-                    SyncHiddenDialogueText();
                     ApplyStatus("speaking", data.message);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                    if (developmentProfileQa && developmentProfileScenarioIndex == 2 && !developmentLongPeekScheduled)
+                    {
+                        developmentLongPeekScheduled = true;
+                        StartCoroutine(RunDevelopmentTemporaryPeek("mid_response", 2f));
+                    }
+                    playbackStartHandlerTimer.Stop();
+                    Debug.Log("[AIFren Timing] Unity playback_started handler=" +
+                        playbackStartHandlerTimer.Elapsed.TotalMilliseconds.ToString("F2") + "ms.");
+                    developmentFrameProfiler?.Mark("playback_started_end:handler_ms=" +
+                        playbackStartHandlerTimer.Elapsed.TotalMilliseconds.ToString("F3"));
+#endif
                 }
                 else if (data.state == "failed" || data.state == "not_started" || data.state == "stopped")
                 {
@@ -961,17 +1430,26 @@ namespace AIFren.UnityPoc.UI
                         return;
                     }
                     subtitleSpeechActive = false;
-                    subtitlePlaybackStoppedSignal = data.state == "stopped";
                     subtitleAwaitingPlayback = false;
                     if (data.state == "stopped") hiddenSubtitlePresenter?.OnPlaybackStopped(data.playback_id, Time.unscaledTime);
                     // Do not RevealAll or rewrite page ownership here: a late
                     // stop must show only the current page's already-due
-                    // words, then let the sole presentation coroutine exit.
+                    // words, then let the sole presenter session exit.
                     // Preserve the final readable page briefly after actual
                     // playback; failed/disabled TTS uses the text-duration
                     // fallback scheduled when the response arrived.
-                    SyncHiddenDialogueText();
-                    ApplyStatus("ready", data.message);
+                    if (!data.streamed && !data.interrupted) ApplyStatus("ready", data.message);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                    if (developmentProfileQa && data.state == "stopped" && !data.interrupted)
+                    {
+                        developmentFrameProfiler?.Mark("playback_stopped:" + DevelopmentProfileScenarioName());
+                        if (!developmentProfileAdvancePending)
+                        {
+                            developmentProfileAdvancePending = true;
+                            StartCoroutine(AdvanceDevelopmentProfileQa());
+                        }
+                    }
+#endif
                 }
                 else
                 {
@@ -980,6 +1458,23 @@ namespace AIFren.UnityPoc.UI
             }
             else if (backendEvent.type == "voice_state" && data != null)
             {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                if (data.state == "listening") developmentFlightRecorder?.Mark("stt_start");
+                else if (data.state == "transcribed" || data.state == "transcription_ready") developmentFlightRecorder?.Mark("stt_final");
+#endif
+                if (string.Equals(data.state, "listening", StringComparison.OrdinalIgnoreCase))
+                {
+                    pttThinkingPresentation.BeginAttempt();
+                }
+                else if (string.Equals(data.state, "released", StringComparison.OrdinalIgnoreCase))
+                {
+                    pttThinkingPresentation.MarkReleased();
+                }
+                else if (string.Equals(data.state, "ready", StringComparison.OrdinalIgnoreCase) &&
+                    pttThinkingPresentation.TryRestoreOnVoiceReady(out string previousDialogue))
+                {
+                    RestoreDialogueAfterPttEndedWithoutTurn(previousDialogue);
+                }
                 backendGlobalPtt = data.global_listener;
                 Debug.Log("[AIFren PTT] Backend voice state=" + data.state +
                     ", globalListener=" + backendGlobalPtt + ".");
@@ -988,6 +1483,7 @@ namespace AIFren.UnityPoc.UI
             }
             else if (backendEvent.type == "voice_transcription" && data != null)
             {
+                pttThinkingPresentation.MarkTranscription(data.content, pttAutoSend);
                 if (!pttAutoSend && !string.IsNullOrWhiteSpace(data.content))
                 {
                     messageInput.text = data.content;
@@ -1004,6 +1500,7 @@ namespace AIFren.UnityPoc.UI
             {
                 if (string.Equals(data.source, "voice", StringComparison.OrdinalIgnoreCase))
                 {
+                    pttThinkingPresentation.MarkVoiceFailure();
                     // A transcription/microphone error is not evidence that
                     // the independently operating global hook is unavailable.
                     RefreshGlobalPttStatus();
@@ -1013,6 +1510,12 @@ namespace AIFren.UnityPoc.UI
                 submitInFlight = false;
                 RefreshInputAvailability();
             }
+        }
+
+        internal static bool IsProactiveGeneration(BackendEventData data)
+        {
+            return data != null && (data.proactive || string.Equals(
+                data.generation_origin, "proactive", StringComparison.Ordinal));
         }
 
         private void ApplySnapshot(SnapshotData snapshot)
@@ -1029,23 +1532,50 @@ namespace AIFren.UnityPoc.UI
                 return;
             }
 
+            bool receivedCharacterIdentity = snapshot.character != null
+                && !string.IsNullOrWhiteSpace(snapshot.character.character_id);
+            bool characterChanged = receivedCharacterIdentity
+                && HasCharacterChanged(activeCharacterId, snapshot.character.character_id);
+            bool initialCharacterIdentity = receivedCharacterIdentity
+                && string.IsNullOrWhiteSpace(activeCharacterId);
+            if (snapshot.character != null && !string.IsNullOrWhiteSpace(snapshot.character.character_id))
+            {
+                activeCharacterId = snapshot.character.character_id;
+            }
             if (snapshot.character != null && !string.IsNullOrWhiteSpace(snapshot.character.name))
             {
                 characterName = snapshot.character.name;
             }
+            availableCharacters.Clear();
+            if (snapshot.characters != null) availableCharacters.AddRange(snapshot.characters);
+            characterSwitchInFlight = false;
+            RefreshCharacterSettings();
             backendReconnectInProgress = false;
             ClearBackendDisconnectWarning();
+
+            if (characterChanged)
+            {
+                ClearPendingContinuityControl();
+                ClearTransientAssistantPresentationForSnapshot();
+                ResetCharacterScopedAvatarPresentation();
+            }
 
             // A snapshot is authoritative at connection/reconnection time.
             // Replacing this list never depends on UI visibility.
             messages.Clear();
+            canonicalMessageIds.Clear();
             if (snapshot.conversation != null)
             {
                 messages.AddRange(snapshot.conversation);
+                foreach (ConversationMessage message in snapshot.conversation)
+                    if (!string.IsNullOrWhiteSpace(message.message_id))
+                        canonicalMessageIds.Add(message.message_id);
             }
+            historyIndex.Rebuild(messages);
+            SelectLatestHistoryDay();
+            historyDirty = true;
 
             if (characterNameLabel != null) characterNameLabel.text = characterName;
-            RebuildHistory();
 
             ConversationMessage latestAssistant = null;
             for (int index = messages.Count - 1; index >= 0; index--)
@@ -1060,11 +1590,16 @@ namespace AIFren.UnityPoc.UI
             if (latestAssistant != null)
             {
                 ShowAssistantDialogue(latestAssistant.content, true);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                dialogueCanonicalFinalReceived = true;
+                dialogueManualBottomRecorded = false;
+                RecordDialogueLayoutState("snapshot_restore");
+                ScheduleDialogueLayoutFollowup("snapshot_restore");
+#endif
             }
             else
             {
                 dialogueTextLabel.text = "I’m here when you’re ready to talk.";
-                SyncHiddenDialogueText();
             }
 
             if (snapshot.tts != null)
@@ -1073,14 +1608,33 @@ namespace AIFren.UnityPoc.UI
                 UpdateVolumeLabel(snapshot.tts.volume);
                 RefreshTtsModelUi(snapshot.tts);
             }
+            if (snapshot.companion != null)
+            {
+                authoritativeProactiveBehavior = snapshot.companion.proactive_behavior;
+                authoritativeProactiveIntervalSeconds = snapshot.companion.proactive_interval_seconds;
+                latestProactiveEligibility = snapshot.companion.proactive_eligibility;
+                latestProactiveNextSeconds = snapshot.companion.proactive_next_opportunity_seconds;
+                latestProactiveIgnoredStreak = snapshot.companion.proactive_ignored_streak;
+                RefreshProactiveBehaviorUi();
+                AvatarPresentationResolver stateResolver = avatarLoader != null
+                    ? avatarLoader.GetComponent<AvatarPresentationResolver>() : null;
+                authoritativeStatePresentation = snapshot.companion.state_presentation;
+                if (!characterChanged) stateResolver?.Apply(authoritativeStatePresentation);
+            }
 
-            RefreshGeminiModelUi(snapshot.models != null ? snapshot.models.gemini : null);
+            RefreshGeminiModelUi(snapshot.models != null ? snapshot.models.current : null,
+                snapshot.models != null ? snapshot.models.local_runtime : null);
+            ApplyTruthScopeIndicator(
+                snapshot.truth_scope != null ? snapshot.truth_scope.kind : "real_world",
+                snapshot.truth_scope != null ? snapshot.truth_scope.label : string.Empty);
+            ApplyContinuitySnapshot(snapshot.continuity);
+            RetryPendingContinuityControlAfterReconnect();
             UpdatePttIndicator(snapshot.voice != null ? snapshot.voice.state : "ready");
             Debug.Log(
-                "AIFren snapshot received: Gemini=" +
-                (snapshot.models != null && snapshot.models.gemini != null ? snapshot.models.gemini.model : "missing") +
-                ", source=" +
-                (snapshot.models != null && snapshot.models.gemini != null ? snapshot.models.gemini.source : "missing") +
+                "AIFren snapshot received: model=" +
+                (snapshot.models != null && snapshot.models.current != null ? snapshot.models.current.model : "missing") +
+                ", provider=" +
+                (snapshot.models != null && snapshot.models.current != null ? snapshot.models.current.provider : "missing") +
                 ", TTS=" + (snapshot.tts != null ? snapshot.tts.provider : "missing") +
                 ", voice=" + (snapshot.tts != null ? snapshot.tts.voice : "missing") +
                 ", device=" + (snapshot.tts != null ? snapshot.tts.device : "missing") + "."
@@ -1092,26 +1646,122 @@ namespace AIFren.UnityPoc.UI
             RefreshGlobalPttStatus(true);
             if (startupPanel != null) startupPanel.SetActive(false);
 
-            ApplyStatus(
-                snapshot.status != null ? snapshot.status.state : "ready",
-                snapshot.status != null ? snapshot.status.message : "Ready"
-            );
+            if (characterChanged || initialCharacterIdentity)
+                RequestCharacterAvatarPreference(activeCharacterId);
+
+            if (!characterAvatarSwitchInFlight)
+            {
+                ApplyStatus(
+                    snapshot.status != null ? snapshot.status.state : "ready",
+                    snapshot.status != null ? snapshot.status.message : "Ready"
+                );
+            }
         }
 
-        private void AddMessage(string role, string content, string timestamp, bool animateAssistant, bool presentAssistant = true)
+        private void ClearTransientAssistantPresentationForSnapshot()
+        {
+            // A successful character selection is an authoritative session
+            // replacement.  Invalidate every delayed reveal/subtitle path
+            // before the new canonical history is applied, so a prior
+            // character cannot append or present after the switch.
+            pendingAssistantContent = null;
+            assistantStreamVisible = false;
+            assistantStreamPresentationDirty = false;
+            ClearPreparedSubtitlePlans();
+            pendingAssistantReveal = false;
+            pendingSpeechReady = false;
+            pendingSpeechDuration = 0f;
+            subtitleGeneration++;
+            subtitlePages.Clear();
+            subtitlePageWordRanges.Clear();
+            subtitleWordSchedule.Clear();
+            subtitleAwaitingPlayback = false;
+            subtitleSpeechActive = false;
+            subtitlePlaybackGeneration = -1;
+            subtitlePlaybackId = 0;
+            currentAssistantPresentationText = string.Empty;
+            wordReveal.Begin(string.Empty, true);
+            HideHiddenSubtitleImmediately();
+        }
+
+        private void ResetCharacterScopedAvatarPresentation()
+        {
+            // Persistent emotion and manual QA gaze belong to the current
+            // character identity independently from its selected avatar asset.
+            // Do not retain a concrete morph or LookAt target when the
+            // backend has selected a different character.  Ordinary snapshot
+            // refreshes deliberately bypass this method.
+            AvatarExpressionController expressions = avatarLoader != null
+                ? avatarLoader.GetComponent<AvatarExpressionController>()
+                : null;
+            expressions?.ClearExpression();
+
+            AvatarGazeController gaze = avatarLoader != null
+                ? avatarLoader.GetComponent<AvatarGazeController>()
+                : null;
+            gaze?.CenterGaze();
+
+            // The resolver has no gesture queue or durable semantic state.
+            // Clear any active one-shot/reaction without rebinding the shared
+            // avatar selection or altering VRMA retargeting behavior.
+            avatarAnimation?.ClearTransientPresentationForCharacterChange();
+        }
+
+        internal static bool HasCharacterChanged(string previousCharacterId, string nextCharacterId)
+        {
+            return !string.IsNullOrWhiteSpace(previousCharacterId)
+                && !string.IsNullOrWhiteSpace(nextCharacterId)
+                && !string.Equals(previousCharacterId, nextCharacterId, StringComparison.Ordinal);
+        }
+
+        internal static bool IsCharacterAvatarApplyAuthoritative(
+            int requestGeneration,
+            int currentGeneration,
+            string requestCharacterId,
+            string activeCharacterId)
+        {
+            return requestGeneration == currentGeneration
+                && !string.IsNullOrWhiteSpace(requestCharacterId)
+                && string.Equals(requestCharacterId, activeCharacterId, StringComparison.Ordinal);
+        }
+
+        private void AddMessage(
+            string role, string content, string timestamp, bool animateAssistant,
+            bool presentAssistant = true)
+        {
+            AddCanonicalMessage(role, content, timestamp, animateAssistant, presentAssistant, null);
+        }
+
+        private void AddCanonicalMessage(
+            string role, string content, string timestamp, bool animateAssistant,
+            bool presentAssistant, string messageId)
         {
             if (string.IsNullOrWhiteSpace(content))
             {
                 return;
             }
-
-            messages.Add(new ConversationMessage
+            if (!CanonicalMessageProjection.TryAdmit(canonicalMessageIds, messageId))
             {
+                return;
+            }
+
+            ConversationMessage message = new ConversationMessage
+            {
+                message_id = messageId,
                 role = role,
                 content = content,
                 timestamp = timestamp
-            });
-            RebuildHistory();
+            };
+            messages.Add(message);
+            historyIndex.Append(message);
+            if (historyLevel == HistoryNavigationLevel.Messages
+                    && PresentationHistoryTime.TryGetLocalTime(timestamp, out DateTime local)
+                    && selectedHistoryDay.Equals(new HistoryDayKey(local.Year, local.Month, local.Day)))
+            {
+                int count = historyIndex.CountForDay(selectedHistoryDay);
+                selectedHistoryPage = Math.Max(0, (count - 1) / HistoryMessagePageSize);
+            }
+            historyDirty = true;
 
             if (role == "assistant" && presentAssistant)
             {
@@ -1149,7 +1799,6 @@ namespace AIFren.UnityPoc.UI
                 );
             }
             dialogueTextLabel.text = DialoguePresentationParser.FormatVisible(wordReveal.VisibleText, !wordReveal.IsComplete);
-            SyncHiddenDialogueText();
             if (hiddenDialogueScroll != null)
             {
                 Canvas.ForceUpdateCanvases();
@@ -1157,17 +1806,206 @@ namespace AIFren.UnityPoc.UI
             }
             dialogueAutoFollow = true;
             RefreshDialogueScrollableContent();
+            if (wordReveal.IsComplete) FollowScrollIfNearBottom(dialogueScroll);
+        }
+
+        private void FinalizeStreamedAssistantDialogue(string content)
+        {
+            assistantStreamPresentationDirty = false;
+            currentAssistantPresentationText = content ?? string.Empty;
+            dialogueLayoutContent = DialoguePresentationParser.FormatVisible(currentAssistantPresentationText);
+            wordReveal.UpdateText(currentAssistantPresentationText, instantText);
+            assistantStreamVisible = false;
+            RefreshDialogueRevealText(!wordReveal.IsComplete);
+            UpdateDialogueLayout(false);
+            RefreshDialogueScrollableContent();
+            if (dialogueAutoFollow) FollowScrollIfNearBottom(dialogueScroll);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            dialogueCanonicalFinalReceived = true;
+            dialogueMidRevealRecorded = false;
+            dialogueManualBottomRecorded = false;
+            RecordDialogueLayoutState("assistant_final");
+            ScheduleDialogueLayoutFollowup("assistant_final");
+#endif
+        }
+
+        private void RefreshStreamedAssistantDialogue(bool firstDelta)
+        {
+            if (!assistantStreamVisible || string.IsNullOrEmpty(pendingAssistantContent))
+            {
+                assistantStreamPresentationDirty = false;
+                return;
+            }
+            currentAssistantPresentationText = pendingAssistantContent;
+            dialogueLayoutContent = DialoguePresentationParser.FormatVisible(pendingAssistantContent);
+            if (firstDelta)
+            {
+                wordReveal.WordsPerSecond = revealWordsPerSecond;
+                wordReveal.Begin(pendingAssistantContent, instantText);
+                dialogueAutoFollow = true;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                dialogueCanonicalFinalReceived = false;
+                dialogueMidRevealRecorded = false;
+                dialogueManualBottomRecorded = false;
+#endif
+            }
+            else wordReveal.UpdateText(pendingAssistantContent, instantText);
+            RefreshDialogueRevealText(true);
+            UpdateDialogueLayout(firstDelta);
+            RefreshDialogueScrollableContent();
+            if (dialogueAutoFollow && !firstDelta) FollowScrollIfNearBottom(dialogueScroll);
+            assistantStreamPresentationDirty = false;
+            nextAssistantStreamPresentationAt = Time.unscaledTime + AssistantStreamPresentationIntervalSeconds;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (firstDelta)
+            {
+                RecordDialogueLayoutState("first_delta");
+                ScheduleDialogueLayoutFollowup("first_delta");
+            }
+#endif
+        }
+
+        private void RefreshDialogueRevealText(bool revealing)
+        {
+            if (dialogueTextLabel != null)
+                dialogueTextLabel.text = DialoguePresentationParser.FormatVisible(wordReveal.VisibleText, revealing);
         }
 
         private void SkipCurrentReveal()
         {
             if (!wordReveal.IsComplete)
             {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                RecordDialogueLayoutState("skip_before");
+#endif
                 wordReveal.RevealAll();
-                dialogueTextLabel.text = DialoguePresentationParser.FormatVisible(wordReveal.VisibleText, !wordReveal.IsComplete);
-                SyncHiddenDialogueText();
+                RefreshDialogueRevealText(false);
+                // Revealing the tail in one step can add several lines. Keep
+                // the ScrollRect's owned content bounds in sync before moving
+                // to the bottom; otherwise RectMask2D clips the newly visible
+                // final lines against the height of the partial reveal.
+                UpdateDialogueLayout(false);
+                RefreshDialogueScrollableContent();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                developmentFlightRecorder?.Mark("dialogue_skip_follow_requested",
+                    value: dialogueAutoFollow ? 1 : 0);
+#endif
+                if (dialogueAutoFollow) FollowScrollIfNearBottom(dialogueScroll);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                RecordDialogueLayoutState("skip_after");
+                ScheduleDialogueLayoutFollowup("skip_after");
+#endif
             }
         }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        private void ScheduleDialogueLayoutFollowup(string phase)
+        {
+            if (developmentFlightRecorder == null) return;
+            StartCoroutine(RecordDialogueLayoutFollowup(phase,
+                currentAssistantPresentationText ?? string.Empty, wordReveal.WordCount));
+        }
+
+        private IEnumerator RecordDialogueLayoutFollowup(string phase, string expectedText, int expectedTokens)
+        {
+            yield return null;
+            if (!string.Equals(currentAssistantPresentationText, expectedText, StringComparison.Ordinal) ||
+                wordReveal.WordCount != expectedTokens) yield break;
+            RecordDialogueLayoutState(phase + "_frame1");
+            yield return null;
+            yield return null;
+            yield return null;
+            if (!string.Equals(currentAssistantPresentationText, expectedText, StringComparison.Ordinal) ||
+                wordReveal.WordCount != expectedTokens) yield break;
+            RecordDialogueLayoutState(phase + "_frame4");
+        }
+
+        private void RecordDialogueLayoutState(string phase)
+        {
+            if (developmentFlightRecorder == null || dialogueTextLabel == null) return;
+            string prefix = "dialogue_" + phase + "_";
+            RectTransform content = dialogueScroll != null ? dialogueScroll.content : null;
+            float preferredHeight = DialoguePreferredHeight(dialogueTextLabel.text);
+            RectTransform textRect = dialogueTextLabel.rectTransform;
+            Bounds textBounds = dialogueTextLabel.textBounds;
+            Vector3[] viewportCorners = new Vector3[4];
+            Vector3[] contentCorners = new Vector3[4];
+            dialogueViewportRect?.GetWorldCorners(viewportCorners);
+            content?.GetWorldCorners(contentCorners);
+            int lastVisibleCharacter = -1;
+            TMP_TextInfo textInfo = dialogueTextLabel.textInfo;
+            if (textInfo != null)
+            {
+                for (int index = textInfo.characterCount - 1; index >= 0; index--)
+                {
+                    if (!textInfo.characterInfo[index].isVisible) continue;
+                    lastVisibleCharacter = index;
+                    break;
+                }
+            }
+            float lastBottomRelativeToViewport = float.NaN;
+            float lastTopRelativeToViewport = float.NaN;
+            if (lastVisibleCharacter >= 0 && dialogueViewportRect != null)
+            {
+                TMP_CharacterInfo character = textInfo.characterInfo[lastVisibleCharacter];
+                float bottom = textRect.TransformPoint(character.bottomLeft).y;
+                float top = textRect.TransformPoint(character.topRight).y;
+                lastBottomRelativeToViewport = bottom - viewportCorners[0].y;
+                lastTopRelativeToViewport = top - viewportCorners[1].y;
+            }
+            developmentFlightRecorder.Mark(prefix + "canonical_chars",
+                value: (currentAssistantPresentationText ?? string.Empty).Length);
+            developmentFlightRecorder.Mark(prefix + "total_tokens", value: wordReveal.WordCount);
+            developmentFlightRecorder.Mark(prefix + "visible_tokens", value: wordReveal.RevealedTokenCount);
+            developmentFlightRecorder.Mark(prefix + "reveal_complete", value: wordReveal.IsComplete ? 1 : 0);
+            developmentFlightRecorder.Mark(prefix + "tmp_text_chars", value: dialogueTextLabel.text.Length);
+            developmentFlightRecorder.Mark(prefix + "tmp_mesh_chars", value: dialogueTextLabel.textInfo.characterCount);
+            developmentFlightRecorder.Mark(prefix + "max_visible_characters", value: dialogueTextLabel.maxVisibleCharacters);
+            developmentFlightRecorder.Mark(prefix + "preferred_height_x100", value: Mathf.RoundToInt(preferredHeight * 100f));
+            developmentFlightRecorder.Mark(prefix + "rendered_height_x100",
+                value: Mathf.RoundToInt(dialogueTextLabel.renderedHeight * 100f));
+            developmentFlightRecorder.Mark(prefix + "text_bounds_height_x100",
+                value: Mathf.RoundToInt(textBounds.size.y * 100f));
+            developmentFlightRecorder.Mark(prefix + "text_bounds_min_y_x100",
+                value: Mathf.RoundToInt(textBounds.min.y * 100f));
+            developmentFlightRecorder.Mark(prefix + "text_bounds_max_y_x100",
+                value: Mathf.RoundToInt(textBounds.max.y * 100f));
+            developmentFlightRecorder.Mark(prefix + "tmp_rect_height_x100",
+                value: Mathf.RoundToInt(textRect.rect.height * 100f));
+            developmentFlightRecorder.Mark(prefix + "content_height_x100",
+                value: content != null ? Mathf.RoundToInt(content.rect.height * 100f) : -1);
+            developmentFlightRecorder.Mark(prefix + "viewport_height_x100",
+                value: dialogueViewportRect != null ? Mathf.RoundToInt(dialogueViewportRect.rect.height * 100f) : -1);
+            developmentFlightRecorder.Mark(prefix + "viewport_width_x100",
+                value: dialogueViewportRect != null ? Mathf.RoundToInt(dialogueViewportRect.rect.width * 100f) : -1);
+            developmentFlightRecorder.Mark(prefix + "tmp_rect_width_x100",
+                value: Mathf.RoundToInt(textRect.rect.width * 100f));
+            developmentFlightRecorder.Mark(prefix + "tmp_inner_width_x100",
+                value: Mathf.RoundToInt(DialogueInnerTextWidth() * 100f));
+            developmentFlightRecorder.Mark(prefix + "scroll_position_x1000",
+                value: dialogueScroll != null ? Mathf.RoundToInt(dialogueScroll.verticalNormalizedPosition * 1000f) : -1);
+            developmentFlightRecorder.Mark(prefix + "content_anchored_y_x100",
+                value: content != null ? Mathf.RoundToInt(content.anchoredPosition.y * 100f) : -1);
+            developmentFlightRecorder.Mark(prefix + "text_anchored_y_x100",
+                value: Mathf.RoundToInt(textRect.anchoredPosition.y * 100f));
+            developmentFlightRecorder.Mark(prefix + "content_bottom_vs_viewport_x100",
+                value: content != null && dialogueViewportRect != null
+                    ? Mathf.RoundToInt((contentCorners[0].y - viewportCorners[0].y) * 100f) : -1);
+            developmentFlightRecorder.Mark(prefix + "last_char_bottom_vs_viewport_x100",
+                value: float.IsNaN(lastBottomRelativeToViewport)
+                    ? int.MinValue : Mathf.RoundToInt(lastBottomRelativeToViewport * 100f));
+            developmentFlightRecorder.Mark(prefix + "last_char_top_vs_viewport_x100",
+                value: float.IsNaN(lastTopRelativeToViewport)
+                    ? int.MinValue : Mathf.RoundToInt(lastTopRelativeToViewport * 100f));
+            developmentFlightRecorder.Mark(prefix + "vertical_scroll_enabled",
+                value: dialogueScroll != null && dialogueScroll.vertical ? 1 : 0);
+            developmentFlightRecorder.Mark(prefix + "rect_mask_present",
+                value: dialogueViewportRect != null && dialogueViewportRect.GetComponent<RectMask2D>() != null ? 1 : 0);
+            developmentFlightRecorder.Mark(prefix + "auto_follow", value: dialogueAutoFollow ? 1 : 0);
+            developmentFlightRecorder.Mark(prefix + "layout_rebuilding",
+                value: CanvasUpdateRegistry.IsRebuildingLayout() ? 1 : 0);
+        }
+#endif
 
         private void UpdateDialogueLayout(bool scrollToTop)
         {
@@ -1176,10 +2014,9 @@ namespace AIFren.UnityPoc.UI
                 return;
             }
 
-            float width = Mathf.Max(1f, dialogueViewportRect.rect.width - 2f * DialogueHorizontalPadding);
             string measuredContent = string.IsNullOrWhiteSpace(dialogueLayoutContent)
                 ? dialogueTextLabel.text : dialogueLayoutContent;
-            float textHeight = dialogueTextLabel.GetPreferredValues(measuredContent, width, 0f).y;
+            float textHeight = DialoguePreferredHeight(measuredContent);
             bool portrait = currentDisplaySettings != null && PresentationDisplaySettingsPolicy.IsPortrait(
                 currentDisplaySettings.layoutMode, Screen.width, Screen.height);
             float stableHeight = portrait ? DialoguePortraitHeight : DialogueLandscapeHeight;
@@ -1188,7 +2025,7 @@ namespace AIFren.UnityPoc.UI
             Canvas.ForceUpdateCanvases();
             float viewportHeight = Mathf.Max(1f, dialogueViewportRect.rect.height);
             RectTransform textRect = dialogueTextLabel.rectTransform;
-            textRect.sizeDelta = new Vector2(-2f * DialogueHorizontalPadding, Mathf.Max(viewportHeight, textHeight + 2f * DialogueVerticalPadding));
+            textRect.sizeDelta = new Vector2(-2f * DialogueHorizontalPadding, Mathf.Max(viewportHeight, textHeight));
             UpdateDialogueScrollbarVisibility();
 
             if (scrollToTop && dialogueScroll != null)
@@ -1201,15 +2038,28 @@ namespace AIFren.UnityPoc.UI
         private bool RefreshDialogueScrollableContent()
         {
             if (dialogueViewportRect == null || dialogueTextLabel == null) return false;
-            float width = Mathf.Max(1f, dialogueViewportRect.rect.width - 2f * DialogueHorizontalPadding);
-            float preferredHeight = dialogueTextLabel.GetPreferredValues(dialogueTextLabel.text, width, 0f).y;
-            float targetHeight = Mathf.Max(dialogueViewportRect.rect.height, preferredHeight + 2f * DialogueVerticalPadding);
+            float preferredHeight = DialoguePreferredHeight(dialogueTextLabel.text);
+            float targetHeight = Mathf.Max(dialogueViewportRect.rect.height, preferredHeight);
             Vector2 current = dialogueTextLabel.rectTransform.sizeDelta;
             if (Mathf.Abs(current.y - targetHeight) < .5f) return false;
             dialogueTextLabel.rectTransform.sizeDelta = new Vector2(current.x, targetHeight);
             Canvas.ForceUpdateCanvases();
             UpdateDialogueScrollbarVisibility();
             return true;
+        }
+
+        private float DialoguePreferredHeight(string content)
+        {
+            if (dialogueTextLabel == null) return 0f;
+            return dialogueTextLabel.GetPreferredValues(content ?? string.Empty, DialogueInnerTextWidth(), 0f).y;
+        }
+
+        private float DialogueInnerTextWidth()
+        {
+            if (dialogueTextLabel == null) return 1f;
+            RectTransform textRect = dialogueTextLabel.rectTransform;
+            Vector4 margin = dialogueTextLabel.margin;
+            return Mathf.Max(1f, textRect.rect.width - margin.x - margin.z);
         }
 
         private void UpdateDialogueScrollbarVisibility()
@@ -1307,12 +2157,262 @@ namespace AIFren.UnityPoc.UI
 
         }
 
+        private void ApplyTruthScopeIndicator(string kind, string label)
+        {
+            if (truthScopeIndicatorLabel == null) return;
+            string rendered = TruthScopeIndicatorState.DisplayText(kind, label);
+            truthScopeIndicatorLabel.text = rendered;
+            truthScopeIndicatorLabel.gameObject.SetActive(!string.IsNullOrEmpty(rendered));
+        }
+
+        private void ApplyContinuitySnapshot(ContinuitySnapshot snapshot)
+        {
+            if (snapshot == null) return;
+            authoritativeContinuity = snapshot;
+            RefreshContinuityPanel();
+        }
+
+        private void RefreshContinuityPanel()
+        {
+            ContinuitySnapshot snapshot = authoritativeContinuity;
+            RefreshSceneOverlay(snapshot);
+            if (continuityScopeValue != null)
+                continuityScopeValue.text = ContinuityPanelState.ScopeText(snapshot != null ? snapshot.scope : null);
+            if (continuityActivityValue != null)
+                continuityActivityValue.text = ContinuityPanelState.ActivityText(snapshot != null ? snapshot.activity : null);
+            if (continuityCompanionActivityValue != null)
+                continuityCompanionActivityValue.text = ContinuityPanelState.ActivityText(snapshot != null ? snapshot.companion_activity : null);
+            if (continuitySceneValue != null)
+            {
+                ContinuitySceneSubject[] subjects = snapshot != null ? snapshot.scene_subjects : null;
+                continuitySceneValue.text = ContinuityPanelState.SceneText(
+                    subjects, snapshot != null ? snapshot.scene_relations : null,
+                    snapshot != null ? snapshot.capability_effects : null,
+                    snapshot != null ? snapshot.profile_baseline : null);
+                float width = continuitySceneScroll != null && continuitySceneScroll.viewport != null
+                    ? Mathf.Max(120f, continuitySceneScroll.viewport.rect.width - 24f)
+                    : 520f;
+                float preferred = continuitySceneValue.GetPreferredValues(
+                    continuitySceneValue.text, width, 0f).y + 18f;
+                float viewportHeight = continuitySceneScroll != null && continuitySceneScroll.viewport != null
+                    ? continuitySceneScroll.viewport.rect.height : 210f;
+                RectTransform sceneContent = continuitySceneContent != null
+                    ? continuitySceneContent : continuitySceneValue.rectTransform;
+                sceneContent.SetSizeWithCurrentAnchors(
+                    RectTransform.Axis.Vertical, Mathf.Max(viewportHeight, preferred));
+                if (continuitySceneScroll != null)
+                    continuitySceneScroll.verticalNormalizedPosition = 1f;
+            }
+            bool idle = string.IsNullOrEmpty(pendingContinuityCommandId);
+            if (clearContinuityActivityButton != null)
+                clearContinuityActivityButton.interactable = idle && snapshot != null && snapshot.activity != null && snapshot.activity.can_clear;
+            if (leaveContinuityScenarioButton != null)
+                leaveContinuityScenarioButton.interactable = idle && snapshot != null && snapshot.scope != null && snapshot.scope.kind == "scenario";
+            // Keep the authoritative snapshot hot, but do not rebuild this
+            // derived hierarchy while its settings page is hidden.
+            if (continuityThreadsContent == null || settingsPanel == null
+                || !settingsPanel.activeSelf || activeSettingsTab != "Context") return;
+            for (int index = continuityThreadsContent.childCount - 1; index >= 0; index--)
+                Destroy(continuityThreadsContent.GetChild(index).gameObject);
+            ContinuityThread[] threads = ContinuityPanelState.BoundedThreads(snapshot != null ? snapshot.open_threads : null);
+            if (threads.Length == 0)
+            {
+                TMP_Text empty = CreateText(continuityThreadsContent, "No active Open Threads.", 16f, theme.mutedText, TextAlignmentOptions.MidlineLeft);
+                PlaceTop(empty.rectTransform, 0f, 36f);
+            }
+            for (int index = 0; index < threads.Length; index++)
+            {
+                ContinuityThread thread = threads[index];
+                GameObject row = CreatePanel(continuityThreadsContent, "Continuity Thread", theme.surfaceMuted);
+                PlaceTop(row.GetComponent<RectTransform>(), -index * 66f, 58f);
+                string shown = ContinuityPanelState.ThreadPrefix(thread.kind) + ": "
+                    + ContinuityPanelState.Compact(thread.description, 144);
+                TMP_Text label = CreateText(row.transform, shown, 15f, Ink, TextAlignmentOptions.MidlineLeft);
+                Stretch(label.rectTransform, new Vector2(.02f, .08f), new Vector2(.61f, .92f), Vector2.zero, Vector2.zero);
+                label.enableWordWrapping = true;
+                Button resolve = CreateButton(row.transform, "Resolve", Panel);
+                Stretch(resolve.GetComponent<RectTransform>(), new Vector2(.63f, .18f), new Vector2(.80f, .82f), Vector2.zero, Vector2.zero);
+                Button cancel = CreateButton(row.transform, "Cancel", Panel);
+                Stretch(cancel.GetComponent<RectTransform>(), new Vector2(.82f, .18f), new Vector2(.98f, .82f), Vector2.zero, Vector2.zero);
+                string token = thread.action_token;
+                resolve.interactable = idle;
+                cancel.interactable = idle;
+                resolve.onClick.AddListener(() => RequestContinuityControl("resolve_thread", token));
+                cancel.onClick.AddListener(() => RequestContinuityControl("cancel_thread", token));
+            }
+            RectTransform content = continuityThreadsContent as RectTransform;
+            if (content != null) content.sizeDelta = new Vector2(0f, Mathf.Max(52f, threads.Length * 66f));
+        }
+
+        private void BuildSceneOverlay(RectTransform root)
+        {
+            sceneOverlayPanel = CreatePanel(root, "Current Scene Overlay", new Color(.055f, .055f, .10f, .30f));
+            RectTransform panelRect = sceneOverlayPanel.GetComponent<RectTransform>();
+            Stretch(panelRect, new Vector2(.02f, .31f), new Vector2(.285f, .82f), Vector2.zero, Vector2.zero);
+            TMP_Text title = CreateText(sceneOverlayPanel.transform, "CURRENT SCENE", 14f, Accent, TextAlignmentOptions.MidlineLeft);
+            Stretch(title.rectTransform, new Vector2(.055f, .90f), new Vector2(.90f, .985f), Vector2.zero, Vector2.zero);
+            title.fontStyle = FontStyles.Bold;
+
+            GameObject viewport = new GameObject("Scene Overlay Viewport", typeof(RectTransform), typeof(RectMask2D));
+            viewport.transform.SetParent(sceneOverlayPanel.transform, false);
+            RectTransform viewportRect = viewport.GetComponent<RectTransform>();
+            Stretch(viewportRect, new Vector2(.035f, .035f), new Vector2(.955f, .89f), Vector2.zero, Vector2.zero);
+            GameObject content = new GameObject("Scene Overlay Rows", typeof(RectTransform));
+            content.transform.SetParent(viewport.transform, false);
+            RectTransform contentRect = content.GetComponent<RectTransform>();
+            contentRect.anchorMin = new Vector2(0f, 1f);
+            contentRect.anchorMax = new Vector2(1f, 1f);
+            contentRect.pivot = new Vector2(.5f, 1f);
+            contentRect.anchoredPosition = Vector2.zero;
+            contentRect.sizeDelta = new Vector2(0f, 1f);
+            sceneOverlayContent = content.transform;
+            sceneOverlayScroll = sceneOverlayPanel.AddComponent<ScrollRect>();
+            sceneOverlayScroll.viewport = viewportRect;
+            sceneOverlayScroll.content = contentRect;
+            sceneOverlayScroll.horizontal = false;
+            sceneOverlayScroll.vertical = true;
+            sceneOverlayScroll.movementType = ScrollRect.MovementType.Clamped;
+            sceneOverlayScroll.scrollSensitivity = 24f;
+            sceneOverlayPanel.SetActive(false);
+        }
+
+        private void SetSceneOverlayVisible(bool value)
+        {
+            showSceneOverlay = value;
+            PlayerPrefs.SetInt(SceneOverlayPreference, value ? 1 : 0);
+            PlayerPrefs.Save();
+            RefreshSceneOverlay(authoritativeContinuity);
+        }
+
+        private void RefreshSceneOverlay(ContinuitySnapshot snapshot)
+        {
+            if (sceneOverlayPanel == null || sceneOverlayContent == null) return;
+            SceneOverlayRow[] rows = SceneOverlayState.Rows(snapshot);
+            bool normalUiVisible = !interfaceHidden || inputRequested;
+            bool visible = SceneOverlayState.ShouldShow(showSceneOverlay, rows.Length, normalUiVisible);
+            sceneOverlayPanel.SetActive(visible);
+            if (!visible) return;
+            RectTransform panelRect = sceneOverlayPanel.GetComponent<RectTransform>();
+            if (panelRect != null)
+            {
+                bool portrait = Screen.height > Screen.width;
+                panelRect.anchorMin = SceneOverlayState.PanelAnchorMin(portrait);
+                panelRect.anchorMax = SceneOverlayState.PanelAnchorMax(portrait);
+                panelRect.pivot = new Vector2(.5f, 1f);
+                panelRect.sizeDelta = new Vector2(
+                    0f, SceneOverlayState.PanelHeight(rows.Length, Screen.height)
+                );
+            }
+            for (int index = sceneOverlayContent.childCount - 1; index >= 0; index--)
+            {
+                GameObject child = sceneOverlayContent.GetChild(index).gameObject;
+                if (Application.isPlaying) Destroy(child);
+                else DestroyImmediate(child);
+            }
+            bool idle = string.IsNullOrEmpty(pendingContinuityCommandId);
+            for (int index = 0; index < rows.Length; index++)
+            {
+                SceneOverlayRow row = rows[index];
+                Color rowColor = theme.surfaceMuted;
+                rowColor.a = Mathf.Min(rowColor.a, .58f);
+                GameObject surface = CreatePanel(sceneOverlayContent, "Scene Overlay Row", rowColor);
+                PlaceTop(surface.GetComponent<RectTransform>(), -index * 42f, 38f, 0f, 1f);
+                TMP_Text label = CreateText(surface.transform, row.text, 14f, Ink, TextAlignmentOptions.MidlineLeft);
+                Stretch(label.rectTransform, new Vector2(.035f, .06f), new Vector2(.83f, .94f), Vector2.zero, Vector2.zero);
+                label.enableWordWrapping = true;
+                if (!string.IsNullOrEmpty(row.action) && !string.IsNullOrEmpty(row.actionToken))
+                {
+                    Button clear = CreateButton(surface.transform, "×", Panel);
+                    Stretch(clear.GetComponent<RectTransform>(), new Vector2(.85f, .12f), new Vector2(.975f, .88f), Vector2.zero, Vector2.zero);
+                    clear.interactable = idle;
+                    string action = row.action;
+                    string token = row.actionToken;
+                    clear.onClick.AddListener(() => RequestContinuityControl(action, token));
+                }
+            }
+            RectTransform contentRect = sceneOverlayContent as RectTransform;
+            if (contentRect != null)
+                contentRect.sizeDelta = new Vector2(0f, Mathf.Max(1f, rows.Length * 42f));
+            if (sceneOverlayScroll != null) sceneOverlayScroll.verticalNormalizedPosition = 1f;
+        }
+
+        private void RequestContinuityControl(string action, string actionToken = "")
+        {
+            if (client == null || client.State != ConnectionState.Connected
+                || authoritativeContinuity == null || !string.IsNullOrEmpty(pendingContinuityCommandId)) return;
+            BeginPendingContinuityControl(
+                Guid.NewGuid().ToString("D"), action, actionToken,
+                authoritativeContinuity.revision ?? string.Empty);
+            _ = client.ApplyContinuityControlAsync(
+                pendingContinuityCommandId, pendingContinuityAction,
+                pendingContinuityRevision, pendingContinuityActionToken);
+        }
+
+        internal void BeginPendingContinuityControl(
+            string commandId, string action, string actionToken, string revision)
+        {
+            pendingContinuityCommandId = commandId;
+            pendingContinuityAction = action ?? string.Empty;
+            pendingContinuityActionToken = actionToken ?? string.Empty;
+            pendingContinuityRevision = revision ?? string.Empty;
+            pendingContinuityRetrySent = true;
+            // Pending state belongs only to the Context controls. In
+            // particular, it must not enter the conversational Thinking
+            // lifecycle or replace the currently presented dialogue.
+            RefreshContinuityPanel();
+        }
+
+        internal void CompletePendingContinuityControl(ContinuitySnapshot snapshot)
+        {
+            // The authoritative acknowledgement updates only the structured
+            // Context view. It is not a conversational ready/turn event.
+            ApplyContinuitySnapshot(snapshot);
+            ClearPendingContinuityControl();
+        }
+
+        internal void ApplyAuthoritativeContinuityChange(string commandId, ContinuitySnapshot snapshot)
+        {
+            // Immersive overlay mutations publish their authoritative snapshot
+            // before Gemma reacts. Accept that boundary immediately so another
+            // X can cancel stale prose and submit against the new revision.
+            if (string.Equals(pendingContinuityAction, "interact_scene_relation", StringComparison.Ordinal)
+                && !string.IsNullOrEmpty(commandId)
+                && string.Equals(commandId, pendingContinuityCommandId, StringComparison.Ordinal))
+            {
+                CompletePendingContinuityControl(snapshot);
+                return;
+            }
+            ApplyContinuitySnapshot(snapshot);
+        }
+
+        private void RetryPendingContinuityControlAfterReconnect()
+        {
+            if (client == null || client.State != ConnectionState.Connected
+                || string.IsNullOrEmpty(pendingContinuityCommandId) || pendingContinuityRetrySent) return;
+            pendingContinuityRetrySent = true;
+            _ = client.ApplyContinuityControlAsync(
+                pendingContinuityCommandId, pendingContinuityAction,
+                pendingContinuityRevision, pendingContinuityActionToken);
+        }
+
+        private void ClearPendingContinuityControl()
+        {
+            pendingContinuityCommandId = null;
+            pendingContinuityAction = null;
+            pendingContinuityActionToken = null;
+            pendingContinuityRevision = null;
+            pendingContinuityRetrySent = false;
+            RefreshContinuityPanel();
+        }
+
         private void UpdateBackendDisconnectWarning()
         {
             if (client == null || client.State == lastObservedConnectionState) return;
             lastObservedConnectionState = client.State;
             if (client.State == ConnectionState.Disconnected || client.State == ConnectionState.Error)
             {
+                pendingContinuityRetrySent = false;
+                ClearPendingModelSettings();
                 string reason = !string.IsNullOrWhiteSpace(client.LastDisconnectReason)
                     ? client.LastDisconnectReason
                     : client.LastError;
@@ -1436,12 +2536,24 @@ namespace AIFren.UnityPoc.UI
                 return;
             }
 
+            pttThinkingPresentation.CaptureBeforeThinking(wordReveal.VisibleText);
             thinkingElapsed = 0f;
             wordReveal.Begin("Thinking.", true);
             dialogueTextLabel.text = DialoguePresentationParser.FormatVisible(wordReveal.VisibleText, !wordReveal.IsComplete);
-            SyncHiddenDialogueText();
             // Thinking is presentation state, not a new dialogue measurement.
             // Preserve the current card geometry until the actual reply arrives.
+        }
+
+        private void RestoreDialogueAfterPttEndedWithoutTurn(string previousDialogue)
+        {
+            currentAssistantPresentationText = previousDialogue ?? string.Empty;
+            dialogueLayoutContent = DialoguePresentationParser.FormatVisible(currentAssistantPresentationText);
+            wordReveal.Begin(currentAssistantPresentationText, true);
+            RefreshDialogueRevealText(false);
+            UpdateDialogueLayout(false);
+            RefreshDialogueScrollableContent();
+            if (dialogueAutoFollow)
+                FollowScrollIfNearBottom(dialogueScroll);
         }
 
         private void UpdatePttIndicator(string state)
@@ -1479,7 +2591,10 @@ namespace AIFren.UnityPoc.UI
             {
                 modalScrim.transform.SetAsLastSibling();
                 historyPanel.transform.SetAsLastSibling();
-                RebuildHistory();
+                if (historyLevel == HistoryNavigationLevel.Messages
+                        && historyIndex.CountForDay(selectedHistoryDay) == 0)
+                    SelectLatestHistoryDay();
+                RefreshHistoryIfVisible();
                 if (historyScroll != null) historyScroll.verticalNormalizedPosition = 0f;
             }
         }
@@ -1526,6 +2641,7 @@ namespace AIFren.UnityPoc.UI
                 pendingDisplaySettings = currentDisplaySettings.Clone();
                 RefreshDisplaySettingsUi();
                 ConfigureSettingsPanelForCurrentOrientation();
+                if (activeSettingsTab == "Context") RefreshContinuityPanel();
                 Debug.Log("AIFren Settings requested a fresh backend snapshot for live model status.");
                 _ = client?.RequestSnapshotAsync();
                 modalScrim.transform.SetAsLastSibling();
@@ -1653,7 +2769,7 @@ namespace AIFren.UnityPoc.UI
             }
             foreach (TextMeshProUGUI text in FindObjectsOfType<TextMeshProUGUI>(true))
             {
-                if (text == hiddenDialogueText || hiddenSubtitleBackings.Contains(text)) continue;
+                if (text == hiddenDialogueText || text == hiddenSubtitleMeasurementText) continue;
                 if (text == backendWarningLabel)
                 {
                     text.color = new Color(1f, .20f, .24f, 1f);
@@ -1770,11 +2886,14 @@ namespace AIFren.UnityPoc.UI
 
         private void UpdateUnityPushToTalk()
         {
-            // Focused Unity input is always the primary path. The optional
+            // Unity-delivered input is always the primary path. The optional
             // OS-wide listener is layered on top in the backend; PushToTalk's
             // lock de-duplicates the matching global/local press or release.
-            // Do not disable the reliable focused path merely because the
-            // optional listener happens to be active.
+            // UI visibility and Application.isFocused are not polling gates:
+            // hidden-overlay transitions can report focus inconsistently even
+            // while the player still delivers the configured key. Actual
+            // focus/pause loss is handled by the callbacks below, which safely
+            // releases any active local press.
             if (rebindingPushToTalk || settingsPanel == null || settingsPanel.activeSelf || client == null ||
                 client.State != ConnectionState.Connected)
             {
@@ -1782,22 +2901,21 @@ namespace AIFren.UnityPoc.UI
                 return;
             }
 
-            // Background execution keeps Unity updating, but this polling path
-            // remains intentionally window-focused. When unfocused, the
-            // backend's OS-level listener owns the configured global binding;
-            // it avoids a duplicate frontend WebSocket press and works while
-            // another application has focus.
-            if (!unityPttPressed && PresentationPttInputPolicy.ShouldStart(
-                Application.isFocused, Input.GetKeyDown(pushToTalkKey)))
+            // When Unity does not deliver the binding (normally because a
+            // different application owns keyboard input), the backend's
+            // OS-level listener remains the independent global path.
+            if (!unityPttPressed && PresentationPttInputPolicy.ShouldStart(Input.GetKeyDown(pushToTalkKey)))
             {
                 unityPttPressed = true;
                 restoreMessageInputAfterPtt = messageInput != null && messageInput.isFocused;
                 Debug.Log("[AIFren PTT] Focused press detected; inputFocused=" + restoreMessageInputAfterPtt + ".");
                 presentationAudio?.PlayInterrupt();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                developmentFlightRecorder?.Mark("ptt_press");
+#endif
                 _ = client.SetPushToTalkPressedAsync(true);
             }
-            else if (PresentationPttInputPolicy.ShouldRelease(
-                unityPttPressed, Application.isFocused, Input.GetKey(pushToTalkKey)))
+            else if (PresentationPttInputPolicy.ShouldRelease(unityPttPressed, Input.GetKey(pushToTalkKey)))
             {
                 ReleaseUnityPushToTalk();
             }
@@ -1811,6 +2929,9 @@ namespace AIFren.UnityPoc.UI
             }
 
             unityPttPressed = false;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            developmentFlightRecorder?.Mark("ptt_release");
+#endif
             Debug.Log("[AIFren PTT] Releasing focused press; client=" +
                 (client != null ? client.State.ToString() : "missing") + ".");
             if (client != null && client.State == ConnectionState.Connected)
@@ -1910,9 +3031,34 @@ namespace AIFren.UnityPoc.UI
 
         private void SetInstantText(bool value)
         {
+            bool refreshActivePresentation = InstantTextRequiresPresentationRefresh(
+                value, assistantStreamPresentationDirty, wordReveal.IsComplete);
             instantText = value;
             PlayerPrefs.SetInt(InstantTextPreference, value ? 1 : 0);
             PlayerPrefs.Save();
+            // Show all canonical text received so far. Future stream deltas
+            // use the same flag and appear immediately as they arrive.
+            if (refreshActivePresentation)
+            {
+                // IsComplete describes the last coalesced buffer, not pending
+                // provider deltas. Flush those first even when every older
+                // word was already visible, then reveal the resulting buffer.
+                if (assistantStreamPresentationDirty) RefreshStreamedAssistantDialogue(false);
+                if (!wordReveal.IsComplete)
+                {
+                    wordReveal.RevealAll();
+                    RefreshDialogueRevealText(assistantStreamVisible);
+                    UpdateDialogueLayout(false);
+                    RefreshDialogueScrollableContent();
+                    if (dialogueAutoFollow) FollowScrollIfNearBottom(dialogueScroll);
+                }
+            }
+        }
+
+        internal static bool InstantTextRequiresPresentationRefresh(
+            bool enabled, bool streamPresentationDirty, bool revealComplete)
+        {
+            return enabled && (streamPresentationDirty || !revealComplete);
         }
 
         private void UpdateVolumeLabel(float value)
@@ -1940,6 +3086,10 @@ namespace AIFren.UnityPoc.UI
             avatarAnimation = avatarLoader != null
                 ? avatarLoader.GetComponent<AvatarAnimationController>()
                 : null;
+            AvatarPresentationResolver stateResolver = avatarLoader != null
+                ? avatarLoader.GetComponent<AvatarPresentationResolver>()
+                : null;
+            stateResolver?.Apply(authoritativeStatePresentation);
             if (!useDirectAvatarPresentation && avatarSurface != null)
             {
                 avatarSurface.gameObject.SetActive(true);
@@ -1998,81 +3148,282 @@ namespace AIFren.UnityPoc.UI
 
         private void RebuildHistory()
         {
-            if (historyContent == null)
-            {
-                return;
-            }
-
+            if (historyContent == null) return;
             bool followLatest = IsNearBottom(historyScroll);
-            for (int index = historyContent.childCount - 1; index >= 0; index--)
-            {
-                Destroy(historyContent.GetChild(index).gameObject);
-            }
-
-            Canvas.ForceUpdateCanvases();
+            ResetHistoryRowPool();
             float y = -8f;
-            string activeDate = null;
-            bool hasUndatedEntries = false;
-            for (int index = 0; index < messages.Count; index++)
+            if (historyIndex.RenderableCount == 0)
             {
-                ConversationMessage message = messages[index];
-                string dateHeading = FormatHistoryDate(message.timestamp);
-                if (dateHeading != activeDate)
+                AddHistoryTextRow("No renderable conversation messages.", 16f, theme.mutedText,
+                    TextAlignmentOptions.MidlineLeft, ref y, 34f);
+            }
+            else if (historyLevel == HistoryNavigationLevel.Years)
+            {
+                foreach (int year in historyIndex.Years())
                 {
-                    activeDate = dateHeading;
-                    if (!string.IsNullOrEmpty(activeDate))
-                    {
-                        TMP_Text heading = CreateText(historyContent, "<b>" + activeDate + "</b>  ─────────", 15f, theme.sectionHeader, TextAlignmentOptions.MidlineLeft);
-                        RectTransform headingRect = heading.rectTransform;
-                        headingRect.anchorMin = new Vector2(0f, 1f);
-                        headingRect.anchorMax = new Vector2(1f, 1f);
-                        headingRect.pivot = new Vector2(.5f, 1f);
-                        headingRect.anchoredPosition = new Vector2(0f, y);
-                        headingRect.sizeDelta = new Vector2(-28f, 28f);
-                        y -= 34f;
-                    }
-                    else if (!hasUndatedEntries)
-                    {
-                        hasUndatedEntries = true;
-                        TMP_Text heading = CreateText(historyContent, "Older history — date unavailable", 15f, theme.mutedText, TextAlignmentOptions.MidlineLeft);
-                        RectTransform headingRect = heading.rectTransform;
-                        headingRect.anchorMin = new Vector2(0f, 1f);
-                        headingRect.anchorMax = new Vector2(1f, 1f);
-                        headingRect.pivot = new Vector2(.5f, 1f);
-                        headingRect.anchoredPosition = new Vector2(0f, y);
-                        headingRect.sizeDelta = new Vector2(-20f, 24f);
-                        y -= 30f;
-                    }
+                    string label = year > 0 ? year.ToString(CultureInfo.InvariantCulture) : "Date unavailable";
+                    AddHistoryNavigationRow(
+                        label + "  ·  " + historyIndex.CountForYear(year) + " messages",
+                        () => SelectHistoryYear(year), ref y);
                 }
-                bool isUser = message.role == "user";
-                TMP_Text bubble = CreateText(
-                    historyContent,
-                    isUser ? "You" : characterName,
-                    19f,
-                    theme.text,
-                    TextAlignmentOptions.TopLeft
-                );
-                RectTransform bubbleRect = bubble.rectTransform;
-                bubbleRect.anchorMin = new Vector2(0f, 1f);
-                bubbleRect.anchorMax = new Vector2(1f, 1f);
-                bubbleRect.pivot = new Vector2(0.5f, 1f);
-                bubbleRect.anchoredPosition = new Vector2(0f, y);
-                bubbleRect.sizeDelta = new Vector2(-28f, 28f);
-                string timestamp = FormatHistoryTimestamp(message.timestamp);
-                string speakerColor = "#" + ColorUtility.ToHtmlStringRGB(isUser ? theme.userText : theme.sectionHeader);
-                string timestampColor = "#" + ColorUtility.ToHtmlStringRGB(theme.mutedText);
-                bubble.text = string.IsNullOrEmpty(timestamp)
-                    ? $"<b><color={speakerColor}>{(isUser ? "You" : characterName)}</color></b>\n{message.content}"
-                    : $"<b><color={speakerColor}>{(isUser ? "You" : characterName)}</color></b>  <size=65%><color={timestampColor}>{timestamp}</color></size>\n{message.content}";
-                float height = Mathf.Max(54f, bubble.preferredHeight + 14f);
-                bubbleRect.sizeDelta = new Vector2(-28f, height);
-                y -= height + 12f;
+            }
+            else if (historyLevel == HistoryNavigationLevel.Months)
+            {
+                foreach (int month in historyIndex.Months(selectedHistoryYear))
+                {
+                    int captured = month;
+                    string label = CultureInfo.CurrentCulture.DateTimeFormat.GetMonthName(month);
+                    AddHistoryNavigationRow(
+                        label + "  ·  " + historyIndex.CountForMonth(selectedHistoryYear, month) + " messages",
+                        () => SelectHistoryMonth(captured), ref y);
+                }
+            }
+            else if (historyLevel == HistoryNavigationLevel.Days)
+            {
+                foreach (HistoryDayKey day in historyIndex.Days(selectedHistoryYear, selectedHistoryMonth))
+                {
+                    HistoryDayKey captured = day;
+                    string label = day.IsDated
+                        ? new DateTime(day.Year, day.Month, day.Day).ToString("dddd, MMMM d")
+                        : "Older history — date unavailable";
+                    AddHistoryNavigationRow(
+                        label + "  ·  " + historyIndex.CountForDay(day) + " messages",
+                        () => SelectHistoryDay(captured), ref y);
+                }
+            }
+            else
+            {
+                int total = historyIndex.CountForDay(selectedHistoryDay);
+                int pageCount = Math.Max(1, (total + HistoryMessagePageSize - 1) / HistoryMessagePageSize);
+                selectedHistoryPage = Math.Max(0, Math.Min(pageCount - 1, selectedHistoryPage));
+                HistoryMessagePage page = historyIndex.Page(
+                    selectedHistoryDay, selectedHistoryPage, HistoryMessagePageSize);
+                string date = selectedHistoryDay.IsDated
+                    ? new DateTime(selectedHistoryDay.Year, selectedHistoryDay.Month, selectedHistoryDay.Day)
+                        .ToString("dddd, MMMM d, yyyy")
+                    : "Older history — date unavailable";
+                AddHistoryTextRow(
+                    "<b>" + date + "</b>  ·  page " + (page.PageIndex + 1) + " of "
+                    + Math.Max(1, page.PageCount), 15f, theme.sectionHeader,
+                    TextAlignmentOptions.MidlineLeft, ref y, 30f);
+                if (page.PageCount > 1)
+                {
+                    AddHistoryPageControls(page, ref y);
+                }
+                float availableWidth = historyScroll != null && historyScroll.viewport != null
+                    ? Mathf.Max(220f, historyScroll.viewport.rect.width - 42f) : 620f;
+                foreach (ConversationMessage message in page.Messages)
+                {
+                    if (message == null || string.IsNullOrWhiteSpace(message.content)) continue;
+                    bool isUser = message.role == "user";
+                    TMP_Text bubble = AcquireHistoryText();
+                    bubble.fontSize = 18f;
+                    bubble.color = theme.text;
+                    bubble.alignment = TextAlignmentOptions.TopLeft;
+                    bubble.enableWordWrapping = true;
+                    bubble.overflowMode = TextOverflowModes.Overflow;
+                    bubble.lineSpacing = -3f;
+                    bubble.paragraphSpacing = -4f;
+                    string timestamp = FormatHistoryTimestamp(message.timestamp);
+                    string speakerColor = "#" + ColorUtility.ToHtmlStringRGB(
+                        isUser ? theme.userText : theme.sectionHeader);
+                    string timestampColor = "#" + ColorUtility.ToHtmlStringRGB(theme.mutedText);
+                    bubble.text = string.IsNullOrEmpty(timestamp)
+                        ? $"<b><color={speakerColor}>{(isUser ? "You" : characterName)}</color></b>\n{message.content}"
+                        : $"<b><color={speakerColor}>{(isUser ? "You" : characterName)}</color></b>  <size=65%><color={timestampColor}>{timestamp}</color></size>\n{message.content}";
+                    float height = Mathf.Max(46f,
+                        bubble.GetPreferredValues(bubble.text, availableWidth, 0f).y + 8f);
+                    PlaceHistoryRow(bubble.rectTransform, y, height, 14f, 28f);
+                    y -= height + 6f;
+                }
             }
 
             RectTransform contentRect = historyContent as RectTransform;
             contentRect.sizeDelta = new Vector2(0f, Mathf.Max(20f, -y));
+            if (historyScroll != null) historyScroll.content = contentRect;
+            UpdateHistoryNavigationHeader();
             Canvas.ForceUpdateCanvases();
-            if (followLatest) historyScroll.verticalNormalizedPosition = 0f;
+            if (historyScroll != null && (followLatest || historyLevel != HistoryNavigationLevel.Messages))
+                historyScroll.verticalNormalizedPosition = historyLevel == HistoryNavigationLevel.Messages ? 0f : 1f;
+            historyDirty = false;
+        }
+
+        private void ResetHistoryRowPool()
+        {
+            activeHistoryTextRows = 0;
+            activeHistoryButtonRows = 0;
+            foreach (TMP_Text row in historyTextRows) if (row != null) row.gameObject.SetActive(false);
+            foreach (Button row in historyButtonRows) if (row != null) row.gameObject.SetActive(false);
+        }
+
+        private TMP_Text AcquireHistoryText()
+        {
+            TMP_Text value;
+            if (activeHistoryTextRows < historyTextRows.Count)
+                value = historyTextRows[activeHistoryTextRows];
+            else
+            {
+                value = CreateText(historyContent, string.Empty, 16f, theme.text, TextAlignmentOptions.TopLeft);
+                historyTextRows.Add(value);
+            }
+            activeHistoryTextRows++;
+            value.gameObject.SetActive(true);
+            return value;
+        }
+
+        private Button AcquireHistoryButton()
+        {
+            Button value;
+            if (activeHistoryButtonRows < historyButtonRows.Count)
+                value = historyButtonRows[activeHistoryButtonRows];
+            else
+            {
+                value = CreateButton(historyContent, string.Empty, Panel);
+                historyButtonRows.Add(value);
+            }
+            activeHistoryButtonRows++;
+            value.gameObject.SetActive(true);
+            value.onClick.RemoveAllListeners();
+            return value;
+        }
+
+        private void AddHistoryTextRow(
+            string text, float size, Color color, TextAlignmentOptions alignment,
+            ref float y, float height)
+        {
+            TMP_Text row = AcquireHistoryText();
+            row.text = text;
+            row.fontSize = size;
+            row.color = color;
+            row.alignment = alignment;
+            row.enableWordWrapping = true;
+            PlaceHistoryRow(row.rectTransform, y, height, 14f, 24f);
+            y -= height + 6f;
+        }
+
+        private void AddHistoryNavigationRow(string label, Action onClick, ref float y)
+        {
+            Button row = AcquireHistoryButton();
+            SetTopControlLabel(row, label);
+            row.onClick.AddListener(() => onClick());
+            PlaceHistoryRow(row.GetComponent<RectTransform>(), y, 42f, 14f, 26f);
+            y -= 48f;
+        }
+
+        private void AddHistoryPageControls(HistoryMessagePage page, ref float y)
+        {
+            Button older = AcquireHistoryButton();
+            SetTopControlLabel(older, "Older page");
+            older.interactable = page.PageIndex > 0;
+            older.onClick.AddListener(() => ChangeHistoryPage(-1));
+            PlaceHistoryRow(older.GetComponent<RectTransform>(), y, 38f, 14f, 0f, .02f, .49f);
+            Button newer = AcquireHistoryButton();
+            SetTopControlLabel(newer, "Newer page");
+            newer.interactable = page.PageIndex + 1 < page.PageCount;
+            newer.onClick.AddListener(() => ChangeHistoryPage(1));
+            PlaceHistoryRow(newer.GetComponent<RectTransform>(), y, 38f, 0f, 26f, .51f, .98f);
+            y -= 44f;
+        }
+
+        private static void PlaceHistoryRow(
+            RectTransform row, float y, float height, float left, float right,
+            float minX = 0f, float maxX = 1f)
+        {
+            row.anchorMin = new Vector2(minX, 1f);
+            row.anchorMax = new Vector2(maxX, 1f);
+            row.pivot = new Vector2(.5f, 1f);
+            row.anchoredPosition = new Vector2(0f, y);
+            row.sizeDelta = new Vector2(-(left + right), height);
+        }
+
+        private void SelectLatestHistoryDay()
+        {
+            if (!historyIndex.TryLatestDay(out HistoryDayKey day)) return;
+            selectedHistoryDay = day;
+            selectedHistoryYear = day.Year;
+            selectedHistoryMonth = day.Month;
+            int count = historyIndex.CountForDay(day);
+            selectedHistoryPage = Math.Max(0, (count - 1) / HistoryMessagePageSize);
+            historyLevel = HistoryNavigationLevel.Messages;
+        }
+
+        private void SelectHistoryYear(int year)
+        {
+            selectedHistoryYear = year;
+            selectedHistoryMonth = 0;
+            historyLevel = year <= 0 ? HistoryNavigationLevel.Days : HistoryNavigationLevel.Months;
+            historyDirty = true;
+            RebuildHistory();
+        }
+
+        private void SelectHistoryMonth(int month)
+        {
+            selectedHistoryMonth = month;
+            historyLevel = HistoryNavigationLevel.Days;
+            historyDirty = true;
+            RebuildHistory();
+        }
+
+        private void SelectHistoryDay(HistoryDayKey day)
+        {
+            selectedHistoryDay = day;
+            selectedHistoryYear = day.Year;
+            selectedHistoryMonth = day.Month;
+            int count = historyIndex.CountForDay(day);
+            selectedHistoryPage = Math.Max(0, (count - 1) / HistoryMessagePageSize);
+            historyLevel = HistoryNavigationLevel.Messages;
+            historyDirty = true;
+            RebuildHistory();
+        }
+
+        private void ChangeHistoryPage(int delta)
+        {
+            selectedHistoryPage = Math.Max(0, selectedHistoryPage + delta);
+            historyDirty = true;
+            RebuildHistory();
+        }
+
+        private void NavigateHistoryBack()
+        {
+            if (historyLevel == HistoryNavigationLevel.Messages)
+                historyLevel = HistoryNavigationLevel.Days;
+            else if (historyLevel == HistoryNavigationLevel.Days)
+                historyLevel = selectedHistoryYear <= 0
+                    ? HistoryNavigationLevel.Years : HistoryNavigationLevel.Months;
+            else if (historyLevel == HistoryNavigationLevel.Months)
+                historyLevel = HistoryNavigationLevel.Years;
+            historyDirty = true;
+            RebuildHistory();
+        }
+
+        private void UpdateHistoryNavigationHeader()
+        {
+            if (historyBackButton != null)
+            {
+                historyBackButton.gameObject.SetActive(historyLevel != HistoryNavigationLevel.Years);
+                historyBackButton.interactable = historyLevel != HistoryNavigationLevel.Years;
+            }
+            if (historyPathLabel == null) return;
+            if (historyLevel == HistoryNavigationLevel.Years) historyPathLabel.text = "Years";
+            else if (historyLevel == HistoryNavigationLevel.Months)
+                historyPathLabel.text = selectedHistoryYear.ToString(CultureInfo.InvariantCulture);
+            else if (historyLevel == HistoryNavigationLevel.Days)
+                historyPathLabel.text = selectedHistoryYear > 0
+                    ? selectedHistoryYear + " / " + CultureInfo.CurrentCulture.DateTimeFormat.GetMonthName(selectedHistoryMonth)
+                    : "Date unavailable";
+            else historyPathLabel.text = selectedHistoryDay.IsDated
+                ? new DateTime(selectedHistoryDay.Year, selectedHistoryDay.Month, selectedHistoryDay.Day).ToString("yyyy / MMMM / d")
+                : "Date unavailable";
+        }
+
+        private void RefreshHistoryIfVisible()
+        {
+            if (!historyDirty || historyPanel == null || !historyPanel.activeInHierarchy)
+            {
+                return;
+            }
+
+            RebuildHistory();
         }
 
         private static string FormatHistoryTimestamp(string value)
@@ -2198,6 +3549,21 @@ namespace AIFren.UnityPoc.UI
             backendWarningLabel.overflowMode = TextOverflowModes.Overflow;
             backendWarningLabel.raycastTarget = false;
             backendWarningLabel.gameObject.SetActive(false);
+            // Backend truth scope stays available independently of normal UI
+            // visibility, but occupies a subtle safe-margin corner.
+            truthScopeIndicatorLabel = CreateText(
+                root, string.Empty, 14f, new Color(.90f, .86f, .96f, .74f),
+                TextAlignmentOptions.BottomLeft);
+            truthScopeIndicatorLabel.gameObject.name = "RP Truth Scope Indicator";
+            truthScopeIndicatorLabel.outlineColor = TruthScopeIndicatorState.OutlineColor();
+            truthScopeIndicatorLabel.outlineWidth = TruthScopeIndicatorState.OutlineWidth;
+            truthScopeIndicatorLabel.UpdateMeshPadding();
+            LayoutTruthScopeIndicator();
+            truthScopeIndicatorLabel.enableWordWrapping = false;
+            truthScopeIndicatorLabel.overflowMode = TextOverflowModes.Ellipsis;
+            truthScopeIndicatorLabel.raycastTarget = false;
+            truthScopeIndicatorLabel.gameObject.SetActive(false);
+            BuildSceneOverlay(root);
             backendReconnectButton = CreateButton(root, "Reconnect", Panel);
             backendReconnectButton.gameObject.name = "Backend Reconnect";
             Stretch(backendReconnectButton.GetComponent<RectTransform>(), new Vector2(.42f, .815f), new Vector2(.58f, .85f), Vector2.zero, Vector2.zero);
@@ -2265,6 +3631,14 @@ namespace AIFren.UnityPoc.UI
                 if (Input.GetMouseButton(0) || Mathf.Abs(Input.mouseScrollDelta.y) > .001f)
                 {
                     dialogueAutoFollow = IsNearBottom(dialogueScroll);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                    if (dialogueAutoFollow && !dialogueManualBottomRecorded)
+                    {
+                        dialogueManualBottomRecorded = true;
+                        RecordDialogueLayoutState("manual_bottom");
+                        ScheduleDialogueLayoutFollowup("manual_bottom");
+                    }
+#endif
                 }
             });
             dialogueScrollbar = AddThinScrollbar(dialogueCard.transform, dialogueScroll, .976f, .984f);
@@ -2294,6 +3668,7 @@ namespace AIFren.UnityPoc.UI
             hiddenDialogueViewportObject.transform.SetParent(root, false);
             hiddenDialogueViewport = hiddenDialogueViewportObject.GetComponent<RectTransform>();
             LayoutHiddenSubtitleRegion();
+            LayoutTruthScopeIndicator();
             hiddenDialogueCanvasGroup = hiddenDialogueViewportObject.GetComponent<CanvasGroup>();
             hiddenDialogueCanvasGroup.alpha = 0f; hiddenDialogueCanvasGroup.interactable = false; hiddenDialogueCanvasGroup.blocksRaycasts = false;
             // The reserved region is deliberately top-aligned: revealing a
@@ -2307,36 +3682,38 @@ namespace AIFren.UnityPoc.UI
             hiddenDialogueText.margin = new Vector4(18f, 12f, 18f, 12f);
             hiddenDialogueText.overflowMode = TextOverflowModes.Masking;
             Stretch(hiddenDialogueText.rectTransform, Vector2.zero, Vector2.one, new Vector2(18f, 10f), new Vector2(-18f, -10f));
-            // Deterministic fansub-style edge: four tiny black text copies
-            // behind the pink front glyphs. They share the same CanvasGroup,
-            // reveal text, sizing and layout, so no TMP material outline is
-            // relied upon for visible contrast.
-            // Keep the backing copies tightly and symmetrically around the
-            // foreground glyphs. A larger one-pixel offset read as duplicate
-            // lettering rather than a clean subtitle edge at player scale.
-            foreach (Vector2 offset in new[] { new Vector2(-.45f, 0f), new Vector2(.45f, 0f), new Vector2(0f, -.45f), new Vector2(0f, .45f) })
-            {
-                TMP_Text backing = CreateText(hiddenDialogueViewport, string.Empty, 35f, Color.black, TextAlignmentOptions.Top);
-                backing.fontStyle = FontStyles.Bold; backing.enableWordWrapping = true; backing.raycastTarget = false;
-                backing.lineSpacing = -5f; backing.paragraphSpacing = -3f; backing.margin = new Vector4(18f, 12f, 18f, 12f);
-                Stretch(backing.rectTransform, Vector2.zero, Vector2.one, new Vector2(18f, 10f), new Vector2(-18f, -10f));
-                backing.rectTransform.anchoredPosition = offset;
-                backing.transform.SetAsFirstSibling();
-                Material backingMaterial = new Material(backing.fontSharedMaterial) { name = "AIFren Hidden Subtitle Black Backing" };
-                backing.fontMaterial = backingMaterial;
-                if (backingMaterial.HasProperty(ShaderUtilities.ID_FaceColor)) backingMaterial.SetColor(ShaderUtilities.ID_FaceColor, Color.black);
-                backing.color = Color.black;
-                hiddenSubtitleBackings.Add(backing);
-                hiddenSubtitleBackingMaterials.Add(backingMaterial);
-            }
-            Shadow hiddenDialogueShadow = hiddenDialogueText.gameObject.AddComponent<Shadow>();
-            hiddenDialogueShadow.effectColor = new Color(0f, 0f, 0f, .72f);
-            hiddenDialogueShadow.effectDistance = new Vector2(1.25f, -1.25f);
+            // Page fitting is isolated from the visible TMP. Changing the
+            // visible font size for GetPreferredValues dirtied its current
+            // mesh and moved that rebuild onto later audio chunk boundaries.
+            hiddenSubtitleMeasurementText = CreateText(hiddenDialogueViewport, string.Empty, 23f,
+                Color.clear, TextAlignmentOptions.Top);
+            hiddenSubtitleMeasurementText.enableWordWrapping = true;
+            hiddenSubtitleMeasurementText.fontStyle = FontStyles.Bold;
+            hiddenSubtitleMeasurementText.lineSpacing = -5f;
+            hiddenSubtitleMeasurementText.paragraphSpacing = -3f;
+            hiddenSubtitleMeasurementText.margin = new Vector4(18f, 12f, 18f, 12f);
+            Stretch(hiddenSubtitleMeasurementText.rectTransform, Vector2.zero, Vector2.one,
+                new Vector2(18f, 10f), new Vector2(-18f, -10f));
+            hiddenSubtitleMeasurementText.gameObject.SetActive(false);
+            // One TMP owns both face and edge presentation through its private
+            // SDF material. No backing text hierarchy or UI shadow geometry is
+            // needed; the inactive TMP above remains measurement-only.
             EnsureHiddenSubtitlePresentation();
-            hiddenDialogueViewportObject.SetActive(false);
             hiddenSubtitlePresenter = new HiddenSubtitlePresenter(
                 new TmpHiddenSubtitleRenderTarget(hiddenDialogueViewportObject, hiddenDialogueCanvasGroup,
-                    hiddenDialogueViewport, hiddenDialogueText, hiddenSubtitleBackings));
+                    hiddenDialogueViewport, hiddenDialogueText, hiddenSubtitleMeasurementText));
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            hiddenSubtitlePresenter.PageActivated += page =>
+            {
+                developmentFrameProfiler?.Mark("subtitle_page_activated:" + page);
+                developmentFlightRecorder?.SetSubtitlePage(page);
+            };
+            hiddenSubtitlePresenter.WordPresented += word =>
+            {
+                developmentFrameProfiler?.Mark("subtitle_word_presented:" + word);
+                developmentFlightRecorder?.SetSubtitleWord(word);
+            };
+#endif
 
             modalScrim = CreatePanel(root, "Modal Scrim", new Color(0f, 0f, 0f, 0.70f));
             Stretch(modalScrim.GetComponent<RectTransform>(), Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
@@ -2369,9 +3746,14 @@ namespace AIFren.UnityPoc.UI
             GameObject panel = CreatePanel(root, "Conversation History", new Color(0.055f, 0.05f, 0.11f, 0.96f));
             Stretch(panel.GetComponent<RectTransform>(), new Vector2(0.12f, 0.16f), new Vector2(0.88f, 0.84f), Vector2.zero, Vector2.zero);
             TMP_Text title = CreateText(panel.transform, "Conversation history", 22f, Ink, TextAlignmentOptions.MidlineLeft);
-            Stretch(title.rectTransform, new Vector2(0.06f, 0.89f), new Vector2(0.72f, 0.98f), Vector2.zero, Vector2.zero);
+            Stretch(title.rectTransform, new Vector2(0.06f, 0.89f), new Vector2(0.34f, 0.98f), Vector2.zero, Vector2.zero);
+            historyPathLabel = CreateText(panel.transform, string.Empty, 14f, theme.mutedText, TextAlignmentOptions.MidlineLeft);
+            Stretch(historyPathLabel.rectTransform, new Vector2(.34f, .89f), new Vector2(.64f, .98f), Vector2.zero, Vector2.zero);
+            historyBackButton = CreateButton(panel.transform, "Back", Panel);
+            Stretch(historyBackButton.GetComponent<RectTransform>(), new Vector2(.65f, .89f), new Vector2(.75f, .98f), Vector2.zero, Vector2.zero);
+            historyBackButton.onClick.AddListener(NavigateHistoryBack);
             Button closeButton = CreateButton(panel.transform, "Close", new Color(0.22f, 0.19f, 0.31f, 1f));
-            Stretch(closeButton.GetComponent<RectTransform>(), new Vector2(0.76f, 0.89f), new Vector2(0.94f, 0.98f), Vector2.zero, Vector2.zero);
+            Stretch(closeButton.GetComponent<RectTransform>(), new Vector2(0.78f, 0.89f), new Vector2(0.94f, 0.98f), Vector2.zero, Vector2.zero);
             closeButton.onClick.AddListener(CloseHistoryPanel);
 
             GameObject viewport = CreatePanel(panel.transform, "Viewport", new Color(0f, 0f, 0f, 0.18f));
@@ -2447,6 +3829,10 @@ namespace AIFren.UnityPoc.UI
             consoleLines.Clear();
             if (lines != null) consoleLines.AddRange(lines.Where(line => !string.IsNullOrWhiteSpace(line)));
             if (consoleContent == null || consoleText == null) return;
+            // Diagnostics are requested when the modal opens. If an older
+            // backend sends an unsolicited refresh while it is closed, retain
+            // the bounded lines but do no TMP/layout/canvas work.
+            if (consolePanel == null || !consolePanel.activeInHierarchy) return;
             consoleText.text = consoleLines.Count > 0
                 ? string.Join("\n", consoleLines)
                 : "No backend diagnostics have been received yet.";
@@ -2607,7 +3993,7 @@ namespace AIFren.UnityPoc.UI
             Button closeButton = CreateButton(panel.transform, "Close", new Color(0.22f, 0.19f, 0.31f, 1f));
             Stretch(closeButton.GetComponent<RectTransform>(), new Vector2(0.79f, 0.915f), new Vector2(0.945f, 0.98f), Vector2.zero, Vector2.zero);
             closeButton.onClick.AddListener(CloseSettingsPanel);
-            string[] tabs = { "Display", "Models", "Audio", "Dialogue", "Controls", "Appearance", "Advanced" };
+            string[] tabs = { "Display", "Character", "Context", "Models", "Audio", "Dialogue", "Controls", "Appearance", "Advanced" };
             for (int index = 0; index < tabs.Length; index++)
             {
                 string tab = tabs[index];
@@ -2645,15 +4031,94 @@ namespace AIFren.UnityPoc.UI
             PlaceTop(cancelDisplayButton.GetComponent<RectTransform>(), y, 44f, .52f, 1f - SettingsOuterMargin);
             cancelDisplayButton.onClick.AddListener(CancelPendingDisplaySettings);
 
+            Transform characterSettings = settingsTabContent["Character"]; y = -18f;
+            AddSettingsHeading(characterSettings, "CHARACTER", ref y);
+            currentCharacterValue = AddSettingsValue(characterSettings, "Current", ref y);
+            TMP_Text switchHint = CreateText(characterSettings, "Choose a character below. Each character remembers its avatar; background and voice remain global.", 15f, new Color(.72f, .72f, .82f, 1f), TextAlignmentOptions.MidlineLeft);
+            PlaceTop(switchHint.rectTransform, y, 32f); y -= 38f;
+            GameObject characterListViewport = CreatePanel(characterSettings, "Character List Viewport", theme.surfaceMuted);
+            PlaceTop(characterListViewport.GetComponent<RectTransform>(), y, 150f);
+            characterListViewport.AddComponent<RectMask2D>();
+            GameObject characterList = new GameObject("Character List", typeof(RectTransform));
+            characterList.transform.SetParent(characterListViewport.transform, false);
+            RectTransform characterListRect = characterList.GetComponent<RectTransform>();
+            characterListRect.anchorMin = new Vector2(0f, 1f);
+            characterListRect.anchorMax = new Vector2(1f, 1f);
+            characterListRect.pivot = new Vector2(.5f, 1f);
+            characterListRect.sizeDelta = new Vector2(0f, 150f);
+            ScrollRect characterListScroll = characterListViewport.AddComponent<ScrollRect>();
+            characterListScroll.viewport = characterListViewport.GetComponent<RectTransform>();
+            characterListScroll.content = characterListRect;
+            characterListScroll.horizontal = false;
+            characterListScroll.vertical = true;
+            characterListScroll.movementType = ScrollRect.MovementType.Clamped;
+            characterListScroll.scrollSensitivity = 28f;
+            characterListContent = characterList.transform;
+            y -= 160f;
+            AddSettingsHeading(characterSettings, "NEW CHARACTER", ref y);
+            TMP_Text nameLabel = CreateText(characterSettings, "Display name", 18f, Ink, TextAlignmentOptions.MidlineLeft);
+            PlaceTop(nameLabel.rectTransform, y, 30f, SettingsOuterMargin, SettingsLabelColumnEnd);
+            newCharacterNameInput = CreateInputField(characterSettings);
+            PlaceTop(newCharacterNameInput.GetComponent<RectTransform>(), y, 38f, SettingsControlColumnStart, 1f - SettingsOuterMargin);
+            y -= 48f;
+            TMP_Text personalityLabel = CreateText(characterSettings, "Personality", 18f, Ink, TextAlignmentOptions.MidlineLeft);
+            PlaceTop(personalityLabel.rectTransform, y, 30f, SettingsOuterMargin, SettingsLabelColumnEnd);
+            newCharacterPersonalityInput = CreateInputField(characterSettings);
+            newCharacterPersonalityInput.lineType = TMP_InputField.LineType.MultiLineNewline;
+            PlaceTop(newCharacterPersonalityInput.GetComponent<RectTransform>(), y, 88f, SettingsControlColumnStart, 1f - SettingsOuterMargin);
+            y -= 98f;
+            Button createCharacterButton = CreateButton(characterSettings, "Create Character", Accent);
+            PlaceTop(createCharacterButton.GetComponent<RectTransform>(), y, StandardControlHeight);
+            createCharacterButton.onClick.AddListener(CreateCharacterFromSettings);
+
+            Transform context = settingsTabContent["Context"]; y = -18f;
+            AddSettingsHeading(context, "CURRENT CONTEXT", ref y);
+            TMP_Text contextHint = CreateText(context,
+                "A compact view of backend-owned current continuity. These controls preserve conversation history.",
+                15f, theme.mutedText, TextAlignmentOptions.MidlineLeft);
+            PlaceTop(contextHint.rectTransform, y, 50f); contextHint.enableWordWrapping = true; y -= 58f;
+            continuityScopeValue = AddSettingsValue(context, "Truth scope", ref y);
+            leaveContinuityScenarioButton = CreateButton(context, "Return to Real World", Panel);
+            PlaceTop(leaveContinuityScenarioButton.GetComponent<RectTransform>(), y, StandardControlHeight);
+            leaveContinuityScenarioButton.onClick.AddListener(() => RequestContinuityControl("leave_scenario")); y -= 52f;
+            continuityActivityValue = AddSettingsValue(context, "User activity", ref y);
+            clearContinuityActivityButton = CreateButton(context, "Clear Current Activity", Panel);
+            PlaceTop(clearContinuityActivityButton.GetComponent<RectTransform>(), y, StandardControlHeight);
+            clearContinuityActivityButton.onClick.AddListener(() => RequestContinuityControl("clear_activity")); y -= 62f;
+            continuityCompanionActivityValue = AddSettingsValue(context, "Companion activity", ref y);
+            sceneOverlayToggle = CreateToggle(context, "Show compact scene overlay", showSceneOverlay);
+            PlaceTop(sceneOverlayToggle.GetComponent<RectTransform>(), y, 34f);
+            sceneOverlayToggle.onValueChanged.AddListener(SetSceneOverlayVisible);
+            y -= 42f;
+            continuitySceneValue = AddSceneDetailsView(context, ref y, 230f);
+            proactiveIntervalButton = CreateButton(context, "Proactive: 1 h", Panel);
+            PlaceTop(proactiveIntervalButton.GetComponent<RectTransform>(), y, 38f);
+            proactiveIntervalButton.onClick.AddListener(CycleProactiveInterval); y -= 48f;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            proactiveEligibilityValue = AddSettingsValue(context, "Proactive eligibility", ref y);
+#endif
+            AddSettingsHeading(context, "OPEN THREADS", ref y);
+            GameObject threadArea = new GameObject("Continuity Threads", typeof(RectTransform));
+            threadArea.transform.SetParent(context, false);
+            RectTransform threadRect = threadArea.GetComponent<RectTransform>();
+            PlaceTop(threadRect, y, 420f);
+            continuityThreadsContent = threadArea.transform;
+            ((RectTransform)context).sizeDelta = new Vector2(0f, 1240f);
+            RefreshProactiveBehaviorUi();
+            RefreshContinuityPanel();
+
             Transform models = settingsTabContent["Models"]; y = -18f;
-            AddSettingsHeading(models, "GEMINI", ref y);
+            AddSettingsHeading(models, "MODEL", ref y);
             geminiProviderStatus = AddSettingsValue(models, "Provider", ref y);
             geminiModelValue = AddSettingsValue(models, "Current model", ref y);
-            TMP_Text keyLabel = CreateText(models, "Gemini API key", 18f, Ink, TextAlignmentOptions.MidlineLeft); PlaceTop(keyLabel.rectTransform, y, 34f, SettingsOuterMargin, SettingsLabelColumnEnd);
+            TMP_Text modeLabel = CreateText(models, "Mode", 18f, Ink, TextAlignmentOptions.MidlineLeft); PlaceTop(modeLabel.rectTransform, y, 34f, SettingsOuterMargin, SettingsLabelColumnEnd);
+            onlineModelModeButton = CreateButton(models, "Online", Panel); PlaceTop(onlineModelModeButton.GetComponent<RectTransform>(), y, 38f, SettingsControlColumnStart, .65f); onlineModelModeButton.onClick.AddListener(() => SelectModelMode("online"));
+            localModelModeButton = CreateButton(models, "Local", Panel); PlaceTop(localModelModeButton.GetComponent<RectTransform>(), y, 38f, .65f, .96f); localModelModeButton.onClick.AddListener(() => SelectModelMode("local")); y -= 48f;
+            TMP_Text keyLabel = CreateText(models, "Model API Key", 18f, Ink, TextAlignmentOptions.MidlineLeft); PlaceTop(keyLabel.rectTransform, y, 34f, SettingsOuterMargin, SettingsLabelColumnEnd);
             geminiApiKeyInput = CreateInputField(models); geminiApiKeyInput.contentType = TMP_InputField.ContentType.Password; geminiApiKeyInput.characterLimit = 512; PlaceTop(geminiApiKeyInput.GetComponent<RectTransform>(), y, 38f, SettingsControlColumnStart, .77f);
             if (geminiApiKeyInput.placeholder is TMP_Text keyPlaceholder)
             {
-                keyPlaceholder.text = "Enter Gemini API key";
+                keyPlaceholder.text = "Online provider key";
                 keyPlaceholder.enableWordWrapping = false;
                 keyPlaceholder.enableAutoSizing = true;
                 keyPlaceholder.fontSizeMin = 13f;
@@ -2667,16 +4132,33 @@ namespace AIFren.UnityPoc.UI
                 geminiApiKeyInput.textComponent.fontSizeMax = 17f;
             }
             Button showKeyButton = CreateButton(models, "Show", Panel); PlaceTop(showKeyButton.GetComponent<RectTransform>(), y, 38f, .78f, .87f); showKeyButton.onClick.AddListener(() => ToggleGeminiKeyVisibility(showKeyButton));
-            Button saveKeyButton = CreateButton(models, "Save", Accent); PlaceTop(saveKeyButton.GetComponent<RectTransform>(), y, 38f, .88f, .96f); saveKeyButton.onClick.AddListener(SaveGeminiApiKey); y -= 52f;
-            Button clearKeyButton = CreateButton(models, "Clear saved API key", Panel); PlaceTop(clearKeyButton.GetComponent<RectTransform>(), y, StandardControlHeight); clearKeyButton.onClick.AddListener(ClearGeminiApiKey);
+            Button saveKeyButton = CreateButton(models, "Save", Accent); PlaceTop(saveKeyButton.GetComponent<RectTransform>(), y, 38f, .88f, .96f); saveKeyButton.onClick.AddListener(SaveOnlineModelSettings); y -= 52f;
+            onlineModelControls.Add(keyLabel.gameObject); onlineModelControls.Add(geminiApiKeyInput.gameObject); onlineModelControls.Add(showKeyButton.gameObject); onlineModelControls.Add(saveKeyButton.gameObject);
+            TMP_Text localModelHeading = CreateText(models, "LOCAL MODEL", 16f, Accent, TextAlignmentOptions.MidlineLeft); PlaceTop(localModelHeading.rectTransform, y, 30f); y -= 38f;
+            localSelectedModelValue = AddSettingsValue(models, "Selected model", ref y);
+            localRuntimeStatusValue = AddSettingsValue(models, "Local model status", ref y);
+            localComputeValue = AddSettingsValue(models, "Compute", ref y);
+            localContextCapacityValue = AddSettingsValue(models, "Context capacity", ref y);
+            localModelSelectionValue = AddSettingsChoice(models, "Model", ref y, OpenLocalModelPicker);
+            startLocalModelButton = CreateButton(models, "Start Local Model", Accent); PlaceTop(startLocalModelButton.GetComponent<RectTransform>(), y, StandardControlHeight); startLocalModelButton.onClick.AddListener(StartLocalModel); y -= 52f;
+            stopLocalModelButton = CreateButton(models, "Stop Local Model", Panel); PlaceTop(stopLocalModelButton.GetComponent<RectTransform>(), y, StandardControlHeight); stopLocalModelButton.onClick.AddListener(StopLocalModel); y -= 52f;
+            Button discoverLocalButton = CreateButton(models, "Discover / Refresh Models", Panel); PlaceTop(discoverLocalButton.GetComponent<RectTransform>(), y, StandardControlHeight); discoverLocalButton.onClick.AddListener(DiscoverLocalModels); y -= 52f;
+            localAutoStartToggle = CreateToggle(models, "Start local model with AIFren", false); PlaceTop(localAutoStartToggle.GetComponent<RectTransform>(), y, 34f); localAutoStartToggle.onValueChanged.AddListener(SetLocalAutoStart); y -= 48f;
+            TMP_Text endpointLabel = CreateText(models, "Advanced endpoint", 18f, Ink, TextAlignmentOptions.MidlineLeft); PlaceTop(endpointLabel.rectTransform, y, 34f, SettingsOuterMargin, SettingsLabelColumnEnd);
+            localEndpointInput = CreateInputField(models); localEndpointInput.text = "http://127.0.0.1:8000/v1"; PlaceTop(localEndpointInput.GetComponent<RectTransform>(), y, 38f, SettingsControlColumnStart, .96f); y -= 48f;
+            Button applyLocalButton = CreateButton(models, "Apply endpoint", Panel); PlaceTop(applyLocalButton.GetComponent<RectTransform>(), y, StandardControlHeight); applyLocalButton.onClick.AddListener(SaveLocalModelSettings); y -= 52f;
+            localModelControls.Add(localModelHeading.gameObject); localModelControls.Add(SettingsValueLabel(localSelectedModelValue)); localModelControls.Add(localSelectedModelValue.gameObject); localModelControls.Add(SettingsValueLabel(localRuntimeStatusValue)); localModelControls.Add(localRuntimeStatusValue.gameObject); localModelControls.Add(SettingsValueLabel(localComputeValue)); localModelControls.Add(localComputeValue.gameObject); localModelControls.Add(SettingsValueLabel(localContextCapacityValue)); localModelControls.Add(localContextCapacityValue.gameObject); localModelControls.Add(localModelSelectionValue.transform.parent.gameObject); localModelControls.Add(startLocalModelButton.gameObject); localModelControls.Add(stopLocalModelButton.gameObject); localModelControls.Add(discoverLocalButton.gameObject); localModelControls.Add(localAutoStartToggle.gameObject); localModelControls.Add(endpointLabel.gameObject); localModelControls.Add(localEndpointInput.gameObject); localModelControls.Add(applyLocalButton.gameObject);
+            Button clearKeyButton = CreateButton(models, "Clear saved API key", Panel); PlaceTop(clearKeyButton.GetComponent<RectTransform>(), y, StandardControlHeight); clearKeyButton.onClick.AddListener(ClearGeminiApiKey); onlineModelControls.Add(clearKeyButton.gameObject);
             y -= 62f;
             AddSettingsHeading(models, "TEXT TO SPEECH", ref y);
             ttsProviderValue = AddSettingsValue(models, "Provider", ref y);
             ttsVoiceValue = AddSettingsValue(models, "Voice", ref y);
             ttsDeviceValue = AddSettingsValue(models, "Device", ref y);
+            ((RectTransform)models).sizeDelta = new Vector2(0f, 1160f);
 
             Transform audio = settingsTabContent["Audio"]; y = -18f;
             AddSettingsHeading(audio, "SPEECH", ref y); volumeLabel = AddSettingsValue(audio, "TTS volume", ref y); volumeSlider = CreateSlider(audio, 0f, 1f, 1f); PlaceTop(volumeSlider.GetComponent<RectTransform>(), y, 30f); volumeSlider.onValueChanged.AddListener(SetVolume); AddPointerUpHandler(volumeSlider.gameObject, FlushTtsVolume); y -= 46f;
+            earlySpeechToggle = CreateToggle(audio, "Speak while response is generating", true); PlaceTop(earlySpeechToggle.GetComponent<RectTransform>(), y, 34f); earlySpeechToggle.onValueChanged.AddListener(SetEarlySpeech); y -= 42f;
             Button stopSpeechButton = CreateButton(audio, "Stop speaking", Panel); PlaceTop(stopSpeechButton.GetComponent<RectTransform>(), y, StandardControlHeight); stopSpeechButton.onClick.AddListener(StopSpeech); y -= 58f;
             AddSettingsHeading(audio, "PRESENTATION AUDIO", ref y); sfxMuteToggle = CreateToggle(audio, "Mute UI SFX", presentationAudio == null || presentationAudio.SfxMuted); PlaceTop(sfxMuteToggle.GetComponent<RectTransform>(), y, 34f); sfxMuteToggle.onValueChanged.AddListener(value => presentationAudio?.SetSfxMuted(value)); y -= 42f;
             sfxVolumeSlider = CreateSlider(audio, 0f, 1f, presentationAudio == null ? .45f : presentationAudio.SfxVolume); PlaceTop(sfxVolumeSlider.GetComponent<RectTransform>(), y, 30f); sfxVolumeSlider.onValueChanged.AddListener(value => presentationAudio?.SetSfxVolume(value)); y -= 46f;
@@ -2698,7 +4180,14 @@ namespace AIFren.UnityPoc.UI
             AddSettingsHeading(appearance, "AVATAR MODEL", ref y);
             avatarModelValue = AddSettingsValue(appearance, "Current model", ref y);
             Button changeModelButton = CreateButton(appearance, "Change Model…", Panel); PlaceTop(changeModelButton.GetComponent<RectTransform>(), y, StandardControlHeight, .55f, .74f); changeModelButton.onClick.AddListener(OpenModelLibrary);
-            Button resetModelButton = CreateButton(appearance, "Reset to Default", Panel); PlaceTop(resetModelButton.GetComponent<RectTransform>(), y, StandardControlHeight, .76f, .95f); resetModelButton.onClick.AddListener(() => ResetAvatarModel()); y -= 52f;
+            Button resetModelButton = CreateButton(appearance, "Reset to Default", Panel); PlaceTop(resetModelButton.GetComponent<RectTransform>(), y, StandardControlHeight, .76f, .95f); resetModelButton.onClick.AddListener(() => RequestBundledAvatarModel()); y -= 52f;
+            AddSettingsHeading(appearance, "AVATAR LIGHTING", ref y);
+            avatarLightingValue = AddSettingsValue(appearance, "Brightness", ref y);
+            avatarLightingSlider = CreateSlider(appearance, 0f, 2f, avatarLightingMultiplier);
+            PlaceTop(avatarLightingSlider.GetComponent<RectTransform>(), y, 30f);
+            avatarLightingSlider.onValueChanged.AddListener(SetAvatarLighting);
+            RefreshAvatarLightingLabel();
+            y -= 52f;
             AddSettingsHeading(appearance, "AVATAR VIEW", ref y);
             Button avatarViewButton = CreateButton(appearance, "Edit Avatar View", Panel);
             PlaceTop(avatarViewButton.GetComponent<RectTransform>(), y, StandardControlHeight);
@@ -2721,9 +4210,68 @@ namespace AIFren.UnityPoc.UI
             antiAliasingValue = AddSettingsChoice(advanced, "Anti-aliasing", ref y, CycleAntiAliasing);
             SetPttAutoSend(pttAutoSend);
             SetRevealSpeed(revealWordsPerSecond);
+            RefreshModelModeControls();
             RefreshDisplaySettingsUi();
             SelectSettingsTab(activeSettingsTab);
             return panel;
+        }
+
+        private void RefreshCharacterSettings()
+        {
+            if (currentCharacterValue != null)
+            {
+                currentCharacterValue.text = string.IsNullOrWhiteSpace(characterName) ? "Loading…" : characterName;
+            }
+            if (characterListContent == null) return;
+            for (int index = characterListContent.childCount - 1; index >= 0; index--)
+            {
+                Destroy(characterListContent.GetChild(index).gameObject);
+            }
+            for (int index = 0; index < availableCharacters.Count; index++)
+            {
+                CharacterSummary summary = availableCharacters[index];
+                string label = (summary.is_active ? "Current · " : "Switch to · ") + summary.display_name;
+                Button button = CreateButton(characterListContent, label, summary.is_active ? Accent : Panel);
+                PlaceTop(button.GetComponent<RectTransform>(), -index * 42f, 34f);
+                button.interactable = !summary.is_active && !characterSwitchInFlight;
+                string selectedId = summary.character_id;
+                button.onClick.AddListener(() => RequestCharacterSwitch(selectedId));
+            }
+            RectTransform listRect = characterListContent as RectTransform;
+            if (listRect != null)
+            {
+                listRect.sizeDelta = new Vector2(0f, Mathf.Max(150f, availableCharacters.Count * 42f));
+            }
+        }
+
+        private void RequestCharacterSwitch(string characterId)
+        {
+            if (client == null || string.IsNullOrWhiteSpace(characterId) || characterSwitchInFlight) return;
+            characterSwitchInFlight = true;
+            RefreshCharacterSettings();
+            ApplyStatus("thinking", "Switching character…");
+            _ = client.SelectCharacterAsync(characterId);
+        }
+
+        private void CreateCharacterFromSettings()
+        {
+            if (client == null || newCharacterNameInput == null) return;
+            string displayName = newCharacterNameInput.text == null ? string.Empty : newCharacterNameInput.text.Trim();
+            if (string.IsNullOrWhiteSpace(displayName))
+            {
+                ApplyStatus("error", "A character display name is required.");
+                return;
+            }
+            string personality = newCharacterPersonalityInput != null ? newCharacterPersonalityInput.text : string.Empty;
+            if (string.IsNullOrWhiteSpace(personality))
+            {
+                ApplyStatus("error", "A personality prompt is required.");
+                return;
+            }
+            ApplyStatus("thinking", "Creating character…");
+            _ = client.CreateCharacterAsync(displayName, personality);
+            newCharacterNameInput.text = string.Empty;
+            if (newCharacterPersonalityInput != null) newCharacterPersonalityInput.text = string.Empty;
         }
 
         private GameObject CreateSettingsTabPage(Transform parent, string name)
@@ -2766,28 +4314,198 @@ namespace AIFren.UnityPoc.UI
                 TMP_Text label = item.Value.GetComponentInChildren<TMP_Text>();
                 if (label != null) label.color = item.Key == tab ? Color.white : theme.text;
             }
+            if (tab == "Context" && settingsPanel != null && settingsPanel.activeSelf)
+                RefreshContinuityPanel();
         }
 
-        private void RefreshGeminiModelUi(GeminiModelSnapshot gemini)
+        private void RefreshGeminiModelUi(ModelSettingsSnapshot model, LocalModelRuntimeSnapshot runtime = null)
         {
             if (geminiProviderStatus == null || geminiModelValue == null) return;
-            if (gemini == null)
+            if (model == null)
             {
                 geminiProviderStatus.text = "Unavailable";
-                geminiModelValue.text = "Unknown";
+                geminiModelValue.text = "—";
                 return;
             }
-            string source = string.IsNullOrWhiteSpace(gemini.source) ? "unknown source" : gemini.source.Replace("_", " ");
-            geminiProviderStatus.text = gemini.configured ? "Configured · " + source : "Missing API key";
-            geminiModelValue.text = string.IsNullOrWhiteSpace(gemini.model) ? "Unknown" : gemini.model;
+            string mode = NormalizeModelMode(model.mode);
+            // A delayed pre-save snapshot must not undo a visible mode choice.
+            if (!string.IsNullOrEmpty(pendingModelMode) && mode != pendingModelMode) return;
+
+            authoritativeModelSettings = model;
+            localModelRuntime = runtime;
+            authoritativeModelMode = mode;
+            selectedModelMode = mode;
+            if (mode == pendingModelMode) pendingModelMode = null;
+
+            string availability = string.IsNullOrWhiteSpace(model.availability) ? "configured" : model.availability;
+            if (!model.configured || availability == "unconfigured")
+            {
+                geminiProviderStatus.text = "Not configured";
+                geminiModelValue.text = "—";
+            }
+            else if (mode == "local")
+            {
+                string runtimeState = runtime != null ? runtime.state : "off";
+                bool ready = string.Equals(runtimeState, "ready", StringComparison.OrdinalIgnoreCase);
+                bool external = runtime != null && string.Equals(runtime.ownership, "external", StringComparison.OrdinalIgnoreCase);
+                bool mismatch = string.Equals(runtimeState, "mismatch", StringComparison.OrdinalIgnoreCase);
+                geminiProviderStatus.text = ready ? (external ? "Local (external)" : "Local") : mismatch ? "Local model mismatch" :
+                    (runtimeState == "error" || availability == "unavailable" ? "Local unavailable" : "Local");
+                geminiModelValue.text = (ready || mismatch) && runtime != null && !string.IsNullOrWhiteSpace(runtime.active_model)
+                    ? runtime.active_model : "—";
+            }
+            else
+            {
+                string provider = string.IsNullOrWhiteSpace(model.provider) ? "Online" : model.provider.Replace("_", " ");
+                geminiProviderStatus.text = availability == "unavailable" ? "Online unavailable" : "Online · " + provider;
+                geminiModelValue.text = string.IsNullOrWhiteSpace(model.model) ? "—" : model.model;
+            }
+            if (localEndpointInput != null && !string.IsNullOrWhiteSpace(model.endpoint) && mode == "local") localEndpointInput.text = model.endpoint;
+            SetLocalModelOptions(runtime != null ? runtime.installed_models : null);
+            if (pendingLocalAutoStart.HasValue && pendingLocalAutoStart.Value == model.local_auto_start)
+                pendingLocalAutoStart = null;
+            if (localAutoStartToggle != null && !pendingLocalAutoStart.HasValue)
+                localAutoStartToggle.SetIsOnWithoutNotify(model.local_auto_start);
+            // Mode visibility first; runtime ownership then decides whether
+            // Start or Stop is actually available. This prevents both buttons
+            // reappearing when a snapshot refreshes the Local page.
+            RefreshModelModeControls();
+            RefreshLocalRuntimeUi();
+        }
+
+        public static string NormalizeModelMode(string mode)
+        {
+            return string.Equals(mode, "local", StringComparison.OrdinalIgnoreCase) ? "local" : "online";
+        }
+
+        private void SelectModelMode(string mode)
+        {
+            string selected = NormalizeModelMode(mode);
+            if (selected == selectedModelMode && string.IsNullOrEmpty(pendingModelMode)) return;
+            if (client == null || client.State != ConnectionState.Connected)
+            {
+                ApplyStatus("error", "Connect to the backend before changing Model mode.");
+                return;
+            }
+            selectedModelMode = selected;
+            pendingModelMode = selected;
+            RefreshModelModeControls();
+            ApplyStatus("thinking", "Saving " + (selected == "local" ? "Local" : "Online") + " model mode...");
+            _ = client.SetModelModeAsync(selected);
+        }
+
+        private void RestoreAuthoritativeModelSettingsAfterFailure()
+        {
+            bool restoreModel = !string.IsNullOrEmpty(pendingModelMode) || pendingLocalAutoStart.HasValue;
+            if (restoreModel)
+            {
+                ClearPendingModelSettings();
+                selectedModelMode = authoritativeModelMode;
+                if (authoritativeModelSettings != null) RefreshGeminiModelUi(authoritativeModelSettings, localModelRuntime);
+                else RefreshModelModeControls();
+            }
+            if (pendingEarlySpeech.HasValue)
+            {
+                pendingEarlySpeech = null;
+                if (earlySpeechToggle != null)
+                    earlySpeechToggle.SetIsOnWithoutNotify(authoritativeEarlySpeech);
+            }
+        }
+
+        private void ClearPendingModelSettings()
+        {
+            pendingModelMode = null;
+            pendingLocalAutoStart = null;
+        }
+
+        private void RefreshModelModeControls()
+        {
+            bool local = selectedModelMode == "local";
+            foreach (GameObject control in onlineModelControls) if (control != null) control.SetActive(!local);
+            foreach (GameObject control in localModelControls) if (control != null) control.SetActive(local);
+            SetModelModeButtonAppearance(onlineModelModeButton, !local);
+            SetModelModeButtonAppearance(localModelModeButton, local);
+        }
+
+        private void SetModelModeButtonAppearance(Button button, bool selected)
+        {
+            if (button == null) return;
+            Image image = button.GetComponent<Image>();
+            if (image != null) image.color = selected ? Accent : Panel;
+            TMP_Text label = button.GetComponentInChildren<TMP_Text>();
+            if (label != null) label.color = selected ? Color.white : Ink;
         }
 
         private void RefreshTtsModelUi(TtsSnapshot tts)
         {
-            if (ttsProviderValue == null || tts == null) return;
-            ttsProviderValue.text = string.IsNullOrWhiteSpace(tts.provider) ? "Unavailable" : tts.provider;
+            if (tts == null) return;
+            authoritativeEarlySpeech = tts.early_speech_configured;
+            if (pendingEarlySpeech.HasValue && pendingEarlySpeech.Value == tts.early_speech_configured)
+                pendingEarlySpeech = null;
+            if (earlySpeechToggle != null)
+            {
+                if (!pendingEarlySpeech.HasValue)
+                    earlySpeechToggle.SetIsOnWithoutNotify(tts.early_speech_overridden
+                        ? tts.early_speech : tts.early_speech_configured);
+                earlySpeechToggle.interactable = tts.early_speech_supported && !tts.early_speech_overridden;
+                TMP_Text label = earlySpeechToggle.GetComponentInChildren<TMP_Text>();
+                if (label != null)
+                    label.text = tts.early_speech_overridden
+                        ? "Speak while response is generating (developer override)"
+                        : "Speak while response is generating";
+            }
+            if (ttsProviderValue == null) return;
+            ttsProviderValue.text = string.IsNullOrWhiteSpace(tts.provider) ? "Unavailable" : tts.provider +
+                (string.IsNullOrWhiteSpace(tts.fallback_reason) ? string.Empty : " (fallback active)");
             ttsVoiceValue.text = string.IsNullOrWhiteSpace(tts.voice) ? "Default" : tts.voice;
             ttsDeviceValue.text = string.IsNullOrWhiteSpace(tts.device) ? "Automatic" : tts.device;
+        }
+
+        private void SetEarlySpeech(bool enabled)
+        {
+            if (client == null || client.State != ConnectionState.Connected)
+            {
+                if (earlySpeechToggle != null)
+                    earlySpeechToggle.SetIsOnWithoutNotify(authoritativeEarlySpeech);
+                ApplyStatus("error", "Connect to the backend before changing Early speech.");
+                return;
+            }
+            pendingEarlySpeech = enabled;
+            ApplyStatus("thinking", "Saving Early speech setting...");
+            _ = client.SetKokoroEarlySpeechAsync(enabled);
+        }
+
+        private void CycleProactiveInterval()
+        {
+            if (client == null || client.State != ConnectionState.Connected)
+            {
+                RefreshProactiveBehaviorUi();
+                ApplyStatus("error", "Connect to the backend before changing proactive behavior.");
+                return;
+            }
+            int index = Array.IndexOf(ProactiveIntervals, authoritativeProactiveIntervalSeconds);
+            int selected = ProactiveIntervals[(index < 0 ? 0 : index + 1) % ProactiveIntervals.Length];
+            ApplyStatus("thinking", "Saving proactive behavior setting...");
+            _ = client.SetProactiveIntervalAsync(selected);
+        }
+
+        private static string ProactiveIntervalLabel(int seconds)
+        {
+            if (seconds <= 0) return "Off";
+            if (seconds < 60) return seconds + " sec";
+            if (seconds < 3600) return (seconds / 60) + " min";
+            return (seconds / 3600) + " h";
+        }
+
+        private void RefreshProactiveBehaviorUi()
+        {
+            if (proactiveIntervalButton != null)
+                SetTopControlLabel(proactiveIntervalButton, "Proactive: " + ProactiveIntervalLabel(authoritativeProactiveIntervalSeconds));
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (proactiveEligibilityValue != null)
+                proactiveEligibilityValue.text = ContinuityPanelState.ProactiveEligibilityText(
+                    latestProactiveEligibility, latestProactiveNextSeconds, latestProactiveIgnoredStreak);
+#endif
         }
 
         private void ToggleGeminiKeyVisibility(Button button)
@@ -2800,19 +4518,158 @@ namespace AIFren.UnityPoc.UI
             SetTopControlLabel(button, showGeminiApiKey ? "Hide" : "Show");
         }
 
-        private void SaveGeminiApiKey()
+        private void SaveOnlineModelSettings()
         {
             if (client == null || geminiApiKeyInput == null) return;
-            _ = client.SetGeminiApiKeyAsync(geminiApiKeyInput.text);
+            selectedModelMode = "online";
+            pendingModelMode = "online";
+            RefreshModelModeControls();
+            _ = client.SetOnlineModelSettingsAsync(geminiApiKeyInput.text);
             geminiApiKeyInput.text = string.Empty;
-            ApplyStatus("ready", "Saving Gemini configuration...");
+            ApplyStatus("ready", "Saving model configuration...");
         }
 
         private void ClearGeminiApiKey()
         {
             if (client == null) return;
-            _ = client.SetGeminiApiKeyAsync(string.Empty);
-            ApplyStatus("ready", "Clearing saved Gemini configuration...");
+            selectedModelMode = "online";
+            pendingModelMode = "online";
+            RefreshModelModeControls();
+            _ = client.SetOnlineModelSettingsAsync(string.Empty);
+            ApplyStatus("ready", "Clearing saved model key...");
+        }
+
+        private void SaveLocalModelSettings()
+        {
+            if (client == null || localEndpointInput == null) return;
+            selectedModelMode = "local";
+            pendingModelMode = "local";
+            RefreshModelModeControls();
+            _ = client.SetLocalModelSettingsAsync(localEndpointInput.text,
+                authoritativeModelSettings != null ? authoritativeModelSettings.selected_model : string.Empty);
+            ApplyStatus("ready", "Saving local model settings...");
+        }
+
+        private void DiscoverLocalModels()
+        {
+            if (client == null || localEndpointInput == null) return;
+            _ = client.DiscoverLocalModelsAsync(localEndpointInput.text);
+            ApplyStatus("thinking", "Discovering local models...");
+        }
+
+        private void SetLocalModelOptions(LocalModelOption[] options)
+        {
+            if (options != null)
+            {
+                localModelOptions.Clear();
+                localModelOptions.AddRange(options);
+            }
+            if (localModelSelectionValue == null) return;
+            string selected = authoritativeModelSettings != null ? authoritativeModelSettings.selected_model : string.Empty;
+            LocalModelOption option = localModelOptions.Find(item => item != null && item.identifier == selected);
+            localModelSelectionValue.text = option != null ? option.display_name + "  ▼" :
+                (localModelOptions.Count == 0 ? "No installed models — Refresh" : "Select a model  ▼");
+        }
+
+        private void OpenLocalModelPicker()
+        {
+            if (localModelOptions.Count == 0)
+            {
+                ApplyStatus("error", "No managed local models found. Refresh Models first.");
+                return;
+            }
+            if (localModelPickerPanel == null)
+            {
+                localModelPickerPanel = CreatePanel(settingsPanel.transform, "Local Model Picker", new Color(.10f, .08f, .16f, .99f));
+                Stretch(localModelPickerPanel.GetComponent<RectTransform>(), new Vector2(.18f, .25f), new Vector2(.82f, .75f), Vector2.zero, Vector2.zero);
+                TMP_Text title = CreateText(localModelPickerPanel.transform, "Select Local Model", 22f, Ink, TextAlignmentOptions.Center);
+                Stretch(title.rectTransform, new Vector2(.08f, .84f), new Vector2(.92f, .96f), Vector2.zero, Vector2.zero);
+            }
+            for (int index = localModelPickerPanel.transform.childCount - 1; index >= 0; index--)
+            {
+                Transform child = localModelPickerPanel.transform.GetChild(index);
+                if (child.gameObject.name != "Text") Destroy(child.gameObject);
+            }
+            float y = -68f;
+            foreach (LocalModelOption option in localModelOptions)
+            {
+                Button choice = CreateButton(localModelPickerPanel.transform, option.display_name, Panel);
+                PlaceTop(choice.GetComponent<RectTransform>(), y, 38f, .09f, .91f);
+                LocalModelOption captured = option;
+                choice.onClick.AddListener(() => SelectLocalModel(captured));
+                y -= 46f;
+            }
+            Button cancel = CreateButton(localModelPickerPanel.transform, "Cancel", Panel);
+            Stretch(cancel.GetComponent<RectTransform>(), new Vector2(.30f, .07f), new Vector2(.70f, .18f), Vector2.zero, Vector2.zero);
+            cancel.onClick.AddListener(() => localModelPickerPanel.SetActive(false));
+            localModelPickerPanel.SetActive(true);
+            localModelPickerPanel.transform.SetAsLastSibling();
+        }
+
+        private void SelectLocalModel(LocalModelOption selected)
+        {
+            if (client == null || selected == null) return;
+            if (localModelPickerPanel != null) localModelPickerPanel.SetActive(false);
+            if (authoritativeModelSettings != null) authoritativeModelSettings.selected_model = selected.identifier;
+            SetLocalModelOptions(null);
+            ApplyStatus("thinking", "Selecting local model...");
+            _ = client.SetLocalModelSettingsAsync(localEndpointInput != null ? localEndpointInput.text : string.Empty, selected.identifier);
+        }
+
+        private void StartLocalModel()
+        {
+            if (client == null) return;
+            ApplyStatus("thinking", "Starting local model...");
+            _ = client.StartLocalModelAsync();
+        }
+
+        private void StopLocalModel()
+        {
+            if (client == null) return;
+            ApplyStatus("thinking", "Stopping local model...");
+            _ = client.StopLocalModelAsync();
+        }
+
+        private void SetLocalAutoStart(bool enabled)
+        {
+            if (client == null || client.State != ConnectionState.Connected)
+            {
+                if (localAutoStartToggle != null && authoritativeModelSettings != null)
+                    localAutoStartToggle.SetIsOnWithoutNotify(authoritativeModelSettings.local_auto_start);
+                ApplyStatus("error", "Connect to the backend before changing local model auto-start.");
+                return;
+            }
+            pendingLocalAutoStart = enabled;
+            ApplyStatus("thinking", "Saving local model auto-start...");
+            _ = client.SetLocalAutoStartAsync(enabled);
+        }
+
+        private void RefreshLocalRuntimeUi()
+        {
+            if (localSelectedModelValue != null)
+                localSelectedModelValue.text = authoritativeModelSettings != null && !string.IsNullOrWhiteSpace(authoritativeModelSettings.selected_model)
+                    ? authoritativeModelSettings.selected_model : "—";
+            if (localRuntimeStatusValue != null)
+            {
+                string state = localModelRuntime != null ? localModelRuntime.state : "off";
+                string ownership = localModelRuntime != null ? localModelRuntime.ownership : "none";
+                string detail = localModelRuntime != null ? localModelRuntime.error : string.Empty;
+                localRuntimeStatusValue.text = state == "ready" ? (ownership == "external" ? "Ready (external)" : "Ready") :
+                    (state == "starting" ? "Starting..." : state == "switching" ? "Switching..." :
+                    (state == "mismatch" ? "Model mismatch" + (string.IsNullOrEmpty(detail) ? "" : ": " + detail) :
+                    (state == "error" ? "Error" + (string.IsNullOrEmpty(detail) ? "" : ": " + detail) : "Off")));
+            }
+            if (localComputeValue != null) localComputeValue.text = localModelRuntime != null && !string.IsNullOrWhiteSpace(localModelRuntime.compute)
+                ? localModelRuntime.compute : "—";
+            if (localContextCapacityValue != null) localContextCapacityValue.text = localModelRuntime != null && localModelRuntime.effective_context_tokens > 0
+                ? localModelRuntime.effective_context_tokens.ToString() + " tokens" : "—";
+            string runtimeState = localModelRuntime != null ? localModelRuntime.state : "off";
+            string runtimeOwnership = localModelRuntime != null ? localModelRuntime.ownership : "none";
+            bool ownedReady = runtimeState == "ready" && runtimeOwnership == "managed";
+            bool externalReady = runtimeState == "ready" && runtimeOwnership == "external";
+            bool transition = runtimeState == "starting" || runtimeState == "switching";
+            if (startLocalModelButton != null) startLocalModelButton.gameObject.SetActive(!ownedReady && !externalReady && !transition && runtimeState != "mismatch");
+            if (stopLocalModelButton != null) stopLocalModelButton.gameObject.SetActive(ownedReady);
         }
 
         private void AddSettingsHeading(Transform parent, string heading, ref float y)
@@ -2830,6 +4687,62 @@ namespace AIFren.UnityPoc.UI
             PlaceTop(value.rectTransform, y, 34f, .56f, 1f - SettingsOuterMargin);
             y -= 40f;
             return value;
+        }
+
+        private TMP_Text AddSettingsMultilineValue(Transform parent, string label, ref float y, float maximumHeight)
+        {
+            TMP_Text labelText = CreateText(parent, label, 18f, Ink, TextAlignmentOptions.TopLeft);
+            PlaceTop(labelText.rectTransform, y, maximumHeight, SettingsOuterMargin, .34f);
+            TMP_Text value = CreateText(parent, string.Empty, 16f, Ink, TextAlignmentOptions.TopRight);
+            PlaceTop(value.rectTransform, y, maximumHeight, .36f, 1f - SettingsOuterMargin);
+            value.enableWordWrapping = true;
+            value.overflowMode = TextOverflowModes.Ellipsis;
+            y -= maximumHeight + 8f;
+            return value;
+        }
+
+        private TMP_Text AddSceneDetailsView(Transform parent, ref float y, float visibleHeight)
+        {
+            TMP_Text label = CreateText(parent, "Scene details", 18f, Ink, TextAlignmentOptions.MidlineLeft);
+            PlaceTop(label.rectTransform, y, 30f, SettingsOuterMargin, 1f - SettingsOuterMargin);
+            y -= 34f;
+            GameObject frame = CreatePanel(parent, "Scene Details", new Color(0f, 0f, 0f, .18f));
+            PlaceTop(frame.GetComponent<RectTransform>(), y, visibleHeight,
+                SettingsOuterMargin, 1f - SettingsOuterMargin);
+            GameObject viewport = new GameObject(
+                "Scene Details Viewport", typeof(RectTransform), typeof(RectMask2D));
+            viewport.transform.SetParent(frame.transform, false);
+            Stretch(viewport.GetComponent<RectTransform>(), Vector2.zero, new Vector2(.965f, 1f),
+                new Vector2(8f, 6f), new Vector2(-4f, -6f));
+            TMP_Text value = CreateText(
+                viewport.transform, string.Empty, 15f, Ink, TextAlignmentOptions.TopLeft);
+            value.enableWordWrapping = true;
+            value.overflowMode = TextOverflowModes.Overflow;
+            value.lineSpacing = -2f;
+            RectTransform content = value.rectTransform;
+            content.anchorMin = new Vector2(0f, 1f);
+            content.anchorMax = new Vector2(1f, 1f);
+            content.pivot = new Vector2(.5f, 1f);
+            content.anchoredPosition = Vector2.zero;
+            content.sizeDelta = new Vector2(-12f, visibleHeight);
+            continuitySceneScroll = frame.AddComponent<ScrollRect>();
+            continuitySceneScroll.viewport = viewport.GetComponent<RectTransform>();
+            continuitySceneScroll.content = content;
+            continuitySceneScroll.horizontal = false;
+            continuitySceneScroll.vertical = true;
+            continuitySceneScroll.movementType = ScrollRect.MovementType.Clamped;
+            continuitySceneScroll.scrollSensitivity = 28f;
+            AddThinScrollbar(frame.transform, continuitySceneScroll, .971f, .986f);
+            continuitySceneContent = content;
+            y -= visibleHeight + 10f;
+            return value;
+        }
+
+        private static GameObject SettingsValueLabel(TMP_Text value)
+        {
+            if (value == null || value.transform.parent == null) return null;
+            int index = value.transform.GetSiblingIndex();
+            return index > 0 ? value.transform.parent.GetChild(index - 1).gameObject : null;
         }
 
         private TMP_Text AddSettingsChoice(Transform parent, string label, ref float y, Action onClick)
@@ -2971,8 +4884,7 @@ namespace AIFren.UnityPoc.UI
                 return "Bundled avatar";
             ManagedAssetRecord record = managedAssetLibrary?.Assets(ManagedAssetLibrary.ModelKind)
                 .Find(asset => asset.path == avatarLoader.ActiveModelPath);
-            return record != null && !string.IsNullOrWhiteSpace(record.displayName)
-                ? record.displayName : "Imported avatar";
+            return ManagedAssetLibrary.DisplayName(record, "Imported avatar");
         }
 
         private string FriendlyBackgroundName()
@@ -3172,14 +5084,8 @@ namespace AIFren.UnityPoc.UI
                 Transform child = tiles.GetChild(index);
                 child.gameObject.SetActive(false);
                 child.SetParent(null);
-                if (Application.isPlaying)
-                {
-                    Destroy(child.gameObject);
-                }
-                else
-                {
-                    DestroyImmediate(child.gameObject);
-                }
+                if (Application.isPlaying) Destroy(child.gameObject);
+                else DestroyImmediate(child.gameObject);
             }
             return position;
         }
@@ -3197,9 +5103,10 @@ namespace AIFren.UnityPoc.UI
             modelLibraryPanel = CreatePanel(parent, "Avatar Model Library", new Color(.08f,.06f,.13f,.98f));
             Stretch(modelLibraryPanel.GetComponent<RectTransform>(), new Vector2(.12f,.14f),new Vector2(.88f,.86f),Vector2.zero,Vector2.zero);
             TMP_Text title=CreateText(modelLibraryPanel.transform,"Avatar Model",24f,Ink,TextAlignmentOptions.MidlineLeft); Stretch(title.rectTransform,new Vector2(.06f,.87f),new Vector2(.34f,.96f),Vector2.zero,Vector2.zero);
-            Button import=CreateButton(modelLibraryPanel.transform,"Import",Panel); Stretch(import.GetComponent<RectTransform>(),new Vector2(.36f,.87f),new Vector2(.52f,.96f),Vector2.zero,Vector2.zero); import.onClick.AddListener(ChangeAvatarModel);
-            Button back=CreateButton(modelLibraryPanel.transform,"Back",Panel); Stretch(back.GetComponent<RectTransform>(),new Vector2(.76f,.87f),new Vector2(.94f,.96f),Vector2.zero,Vector2.zero); back.onClick.AddListener(()=>{selectedModelAssets.Clear();modelLibraryPanel.SetActive(false);});
-            deleteModelAssetsButton=CreateButton(modelLibraryPanel.transform,"Delete Selected",new Color(.42f,.16f,.22f,1f)); Stretch(deleteModelAssetsButton.GetComponent<RectTransform>(),new Vector2(.54f,.87f),new Vector2(.74f,.96f),Vector2.zero,Vector2.zero); deleteModelAssetsButton.onClick.AddListener(OpenModelDeleteConfirmation);
+            Button import=CreateButton(modelLibraryPanel.transform,"Import",Panel); Stretch(import.GetComponent<RectTransform>(),new Vector2(.35f,.87f),new Vector2(.48f,.96f),Vector2.zero,Vector2.zero); import.onClick.AddListener(ChangeAvatarModel);
+            renameModelAssetButton=CreateButton(modelLibraryPanel.transform,"Rename",Panel); Stretch(renameModelAssetButton.GetComponent<RectTransform>(),new Vector2(.49f,.87f),new Vector2(.61f,.96f),Vector2.zero,Vector2.zero); renameModelAssetButton.onClick.AddListener(()=>OpenAssetRenameDialog(ManagedAssetLibrary.ModelKind));
+            deleteModelAssetsButton=CreateButton(modelLibraryPanel.transform,"Delete Selected",new Color(.42f,.16f,.22f,1f)); Stretch(deleteModelAssetsButton.GetComponent<RectTransform>(),new Vector2(.62f,.87f),new Vector2(.79f,.96f),Vector2.zero,Vector2.zero); deleteModelAssetsButton.onClick.AddListener(OpenModelDeleteConfirmation);
+            Button back=CreateButton(modelLibraryPanel.transform,"Back",Panel); Stretch(back.GetComponent<RectTransform>(),new Vector2(.80f,.87f),new Vector2(.94f,.96f),Vector2.zero,Vector2.zero); back.onClick.AddListener(()=>{selectedModelAssets.Clear();modelLibraryPanel.SetActive(false);});
             modelLibraryTiles=CreateLibraryTileGrid(modelLibraryPanel.transform,"Model Library Tiles");
             deleteModelAssetsButton.transform.SetAsLastSibling();
             LogDeleteHeaderState("model", deleteModelAssetsButton, selectedModelAssets.Count, "created");
@@ -3209,11 +5116,13 @@ namespace AIFren.UnityPoc.UI
         private void BuildModelLibraryTiles()
         {
             float scrollPosition=ClearLibraryTiles(modelLibraryTiles);
-            Button bundled=CreateButton(modelLibraryTiles,"Bundled avatar",Panel); AddModelTilePreview(bundled, null); bundled.onClick.AddListener(()=>{selectedModelAssets.Clear(); ResetAvatarModel(); RefreshModelLibrarySelection();});
+            string bundledThumbnailPath = managedAssetLibrary.BundledAvatarThumbnailPath();
+            Button bundled=CreateButton(modelLibraryTiles,"Bundled avatar",Panel); AddModelTilePreview(bundled, bundledThumbnailPath); bundled.onClick.AddListener(()=>{selectedModelAssets.Clear(); RequestBundledAvatarModel(); RefreshModelLibrarySelection();});
+            if (VrmThumbnailGenerator.NeedsGeneration(bundledThumbnailPath)) _=EnsureBundledAvatarThumbnailAsync();
             List<ManagedAssetRecord> records = managedAssetLibrary.Assets(ManagedAssetLibrary.ModelKind);
             records.Sort((left, right) => { int name = string.Compare(left.displayName, right.displayName, StringComparison.OrdinalIgnoreCase); return name != 0 ? name : string.CompareOrdinal(left.id, right.id); });
             Dictionary<string, int> nameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach(ManagedAssetRecord asset in records) { ManagedAssetRecord selected=asset; string baseName=string.IsNullOrWhiteSpace(asset.displayName)?"Imported model":asset.displayName; nameCounts.TryGetValue(baseName,out int occurrence); occurrence++; nameCounts[baseName]=occurrence; string visibleName=occurrence==1?baseName:baseName+" ("+occurrence+")"; Button tile=CreateButton(modelLibraryTiles,visibleName,Panel); AddModelTilePreview(tile, asset.thumbnailPath); tile.gameObject.name="Managed Model "+asset.id; tile.onClick.AddListener(()=>{if(Input.GetKey(KeyCode.LeftControl)||Input.GetKey(KeyCode.RightControl)){ToggleModelDeletionSelection(selected.id);return;}SelectOnlyModelForDeletion(selected.id);RequestManagedAvatarModel(selected);}); if(VrmThumbnailGenerator.NeedsGeneration(managedAssetLibrary.ThumbnailPath(asset.id))) _=EnsureModelThumbnailAsync(asset,modelApplyGeneration); }
+            foreach(ManagedAssetRecord asset in records) { ManagedAssetRecord selected=asset; string baseName=ManagedAssetLibrary.DisplayName(asset,"Imported model"); nameCounts.TryGetValue(baseName,out int occurrence); occurrence++; nameCounts[baseName]=occurrence; string visibleName=occurrence==1?baseName:baseName+" ("+occurrence+")"; Button tile=CreateButton(modelLibraryTiles,visibleName,Panel); AddModelTilePreview(tile, asset.thumbnailPath); tile.gameObject.name="Managed Model "+asset.id; tile.onClick.AddListener(()=>{if(Input.GetKey(KeyCode.LeftControl)||Input.GetKey(KeyCode.RightControl)){ToggleModelDeletionSelection(selected.id);return;}SelectOnlyModelForDeletion(selected.id);RequestManagedAvatarModel(selected);}); if(VrmThumbnailGenerator.NeedsGeneration(managedAssetLibrary.ThumbnailPath(asset.id))) _=EnsureModelThumbnailAsync(asset,modelApplyGeneration); }
             RestoreLibraryScroll(modelLibraryTiles,scrollPosition); RefreshModelLibrarySelection();
         }
 
@@ -3228,10 +5137,25 @@ namespace AIFren.UnityPoc.UI
             try { if (!string.IsNullOrWhiteSpace(thumbnailPath) && System.IO.File.Exists(thumbnailPath)) { Texture2D texture=new Texture2D(2,2); if(ImageConversion.LoadImage(texture,System.IO.File.ReadAllBytes(thumbnailPath),false)) { preview.texture=texture; preview.color=Color.white; } } } catch { }
         }
 
-        private static void PositionLibraryTileLabel(Button tile)
+        private void PositionLibraryTileLabel(Button tile)
         {
             TMP_Text label = tile.GetComponentInChildren<TMP_Text>();
-            if (label != null) { label.raycastTarget = false; label.enableWordWrapping = false; label.overflowMode = TextOverflowModes.Ellipsis; label.enableAutoSizing = true; label.fontSizeMin = 12f; label.fontSizeMax = 17f; Stretch(label.rectTransform, new Vector2(.07f,.06f), new Vector2(.93f,.25f), Vector2.zero, Vector2.zero); }
+            if (label == null) return;
+            Transform existingBacking = tile.transform.Find("Tile Caption Backing");
+            Image backing = existingBacking != null ? existingBacking.GetComponent<Image>() :
+                CreateImage(tile.transform, "Tile Caption Backing", new Color(.02f,.02f,.06f,.72f));
+            backing.raycastTarget = false;
+            Stretch(backing.rectTransform, new Vector2(.04f,.035f), new Vector2(.96f,.27f), Vector2.zero, Vector2.zero);
+            label.raycastTarget = false;
+            label.enableWordWrapping = false;
+            label.overflowMode = TextOverflowModes.Ellipsis;
+            label.enableAutoSizing = true;
+            label.fontSizeMin = 12f;
+            label.fontSizeMax = 17f;
+            Stretch(label.rectTransform, new Vector2(.07f,.06f), new Vector2(.93f,.25f), Vector2.zero, Vector2.zero);
+            // Keep the caption over an imported texture regardless of child
+            // creation order, so renamed background labels remain readable.
+            label.transform.SetAsLastSibling();
         }
         private void ToggleModelDeletionSelection(string assetId)
         {
@@ -3246,24 +5170,65 @@ namespace AIFren.UnityPoc.UI
             Debug.Log("[AIFren Asset Library] model regular-click selection id=" + assetId + " count=1");
             RefreshModelLibrarySelection();
         }
-        private void RequestManagedAvatarModel(ManagedAssetRecord asset, bool removeOnFailure = false)
+        private void RequestManagedAvatarModel(
+            ManagedAssetRecord asset,
+            bool removeOnFailure = false,
+            bool persistSelection = true,
+            string characterId = null)
         {
             if (asset == null || string.IsNullOrWhiteSpace(asset.id)) return;
             if (!modelApplyInProgress && avatarLoader != null && avatarLoader.ActiveModelPath == asset.path)
             {
                 // Repeatedly clicking the already active card is deliberately
-                // idempotent: keep its delete-selection state, but do not load.
+                // idempotent. An explicit user selection still establishes
+                // this character's preference without reloading the VRM.
+                if (persistSelection) PersistAvatarSelection(characterId ?? activeCharacterId, asset);
                 RefreshModelLibrarySelection();
                 return;
             }
-            if (modelApplyInProgress &&
-                (modelApplyInFlightId == asset.id || (pendingModelApply != null && pendingModelApply.id == asset.id)))
-                return;
-
             pendingModelApply = asset;
+            pendingBundledModelApply = false;
             pendingModelApplyRemoveOnFailure = removeOnFailure;
+            pendingModelApplyPersistsSelection = persistSelection;
+            pendingModelApplyCharacterId = characterId ?? activeCharacterId;
             modelApplyGeneration++;
             if (!modelApplyInProgress) _ = ProcessManagedAvatarModelRequestsAsync();
+        }
+
+        private void RequestBundledAvatarModel(bool persistSelection = true, string characterId = null)
+        {
+            pendingModelApply = null;
+            pendingBundledModelApply = true;
+            pendingModelApplyRemoveOnFailure = false;
+            pendingModelApplyPersistsSelection = persistSelection;
+            pendingModelApplyCharacterId = characterId ?? activeCharacterId;
+            modelApplyGeneration++;
+            if (!modelApplyInProgress) _ = ProcessManagedAvatarModelRequestsAsync();
+        }
+
+        private void RequestCharacterAvatarPreference(string characterId)
+        {
+            if (avatarLoader == null || managedAssetLibrary == null || string.IsNullOrWhiteSpace(characterId)) return;
+            CharacterAvatarPreference.Resolution desired = CharacterAvatarPreference.Resolve(
+                characterId,
+                managedAssetLibrary,
+                PlayerPrefs.GetString(AvatarLoader.CustomModelPathPreference, string.Empty));
+            bool alreadyLoaded = desired.IsBundled
+                ? string.IsNullOrWhiteSpace(avatarLoader.ActiveModelPath) || avatarLoader.ActiveModelPath == "Bundled model"
+                : desired.Asset != null && avatarLoader.ActiveModelPath == desired.Asset.path;
+            if (alreadyLoaded && !modelApplyInProgress)
+            {
+                characterAvatarSwitchInFlight = false;
+                avatarLoader.SetAvatarVisible(true);
+                avatarLoader.GetComponent<AvatarPresentationResolver>()?.Apply(authoritativeStatePresentation);
+                return;
+            }
+
+            characterAvatarSwitchInFlight = true;
+            avatarLoader.SetAvatarVisible(false);
+            ApplyStatus("connecting", "Loading character avatar…");
+            if (desired.IsBundled) RequestBundledAvatarModel(false, characterId);
+            else RequestManagedAvatarModel(desired.Asset, false, false, characterId);
         }
 
         private async Task ProcessManagedAvatarModelRequestsAsync()
@@ -3271,35 +5236,56 @@ namespace AIFren.UnityPoc.UI
             modelApplyInProgress = true;
             try
             {
-                while (pendingModelApply != null)
+                while (pendingModelApply != null || pendingBundledModelApply)
                 {
                     ManagedAssetRecord asset = pendingModelApply;
+                    bool bundled = pendingBundledModelApply;
                     bool removeOnFailure = pendingModelApplyRemoveOnFailure;
+                    bool persistSelection = pendingModelApplyPersistsSelection;
+                    string requestCharacterId = pendingModelApplyCharacterId;
                     int request = modelApplyGeneration;
                     pendingModelApply = null;
+                    pendingBundledModelApply = false;
                     pendingModelApplyRemoveOnFailure = false;
-                    modelApplyInFlightId = asset.id;
+                    pendingModelApplyPersistsSelection = true;
+                    pendingModelApplyCharacterId = null;
+                    modelApplyInFlightId = bundled ? ManagedAssetLibrary.BundledAvatarThumbnailId : asset.id;
                     ApplyStatus("connecting", "Loading visual avatar model...");
-                    bool loaded = avatarLoader != null && await avatarLoader.LoadAvatarFromPathAsync(asset.path);
+                    bool loaded = avatarLoader != null && (bundled
+                        ? avatarLoader.LoadConfiguredAvatar()
+                        : await avatarLoader.LoadAvatarFromPathAsync(asset.path));
 
                     // A later click supersedes every UI/state side effect from
                     // this completion. The loop will then load only the latest
                     // pending asset, rather than racing parallel avatar swaps.
-                    if (request != modelApplyGeneration) continue;
+                    if (!IsCharacterAvatarApplyAuthoritative(
+                            request, modelApplyGeneration, requestCharacterId, activeCharacterId)) continue;
                     if (!loaded)
                     {
-                        if (removeOnFailure) managedAssetLibrary.Delete(ManagedAssetLibrary.ModelKind, new[] { asset.id });
+                        if (removeOnFailure && asset != null)
+                            managedAssetLibrary.Delete(ManagedAssetLibrary.ModelKind, new[] { asset.id });
+                        if (!persistSelection && avatarLoader != null)
+                            loaded = avatarLoader.LoadConfiguredAvatar();
+                    }
+                    if (!loaded)
+                    {
+                        avatarLoader?.SetAvatarVisible(true);
+                        characterAvatarSwitchInFlight = false;
                         ApplyStatus("error", avatarLoader != null ? avatarLoader.LastError : "Avatar loader is unavailable.");
                         if (modelLibraryPanel != null && modelLibraryPanel.activeInHierarchy) BuildModelLibraryTiles();
                         continue;
                     }
-                    PlayerPrefs.SetString(AvatarLoader.CustomModelPathPreference, asset.path);
-                    managedAssetLibrary.SetDisplayName(asset.id, avatarLoader.LastLoadedModelName);
-                    PlayerPrefs.Save();
+                    if (persistSelection)
+                    {
+                        if (bundled) PersistBundledAvatarSelection(requestCharacterId);
+                        else PersistAvatarSelection(requestCharacterId, asset);
+                    }
+                    avatarLoader?.SetAvatarVisible(true);
+                    characterAvatarSwitchInFlight = false;
                     ApplyStatus("ready", "Visual avatar model loaded.");
                     RefreshModelLibrarySelection();
                     RefreshDisplaySettingsUi();
-                    _ = EnsureModelThumbnailAsync(asset, request);
+                    if (asset != null) _ = EnsureModelThumbnailAsync(asset, request);
                 }
             }
             finally
@@ -3309,7 +5295,25 @@ namespace AIFren.UnityPoc.UI
                 RefreshModelLibrarySelection();
             }
         }
-        private void RefreshModelLibrarySelection(){ if(modelLibraryPanel==null)return; string active=avatarLoader!=null?avatarLoader.ActiveModelPath:string.Empty; foreach(Button tile in modelLibraryPanel.GetComponentsInChildren<Button>(true)){bool imported=tile.gameObject.name.StartsWith("Managed Model ");bool bundled=tile.gameObject.name=="Bundled avatar";if(!imported&&!bundled)continue;bool selected=imported&&selectedModelAssets.Contains(tile.gameObject.name.Substring("Managed Model ".Length));bool on=imported?active==managedAssetLibrary.Assets(ManagedAssetLibrary.ModelKind).Find(x=>tile.gameObject.name=="Managed Model "+x.id)?.path:bundled&&(string.IsNullOrEmpty(active)||active=="Bundled model");SetLibraryTileVisual(tile,on,selected);} UpdateDeleteSelectedHeader(deleteModelAssetsButton,selectedModelAssets.Count); LogDeleteHeaderState("model",deleteModelAssetsButton,selectedModelAssets.Count,"refresh"); }
+
+        private static void PersistAvatarSelection(string characterId, ManagedAssetRecord asset)
+        {
+            if (asset == null) return;
+            if (!string.IsNullOrWhiteSpace(characterId))
+                CharacterAvatarPreference.SetManaged(characterId, asset.id);
+            // Retain the former global choice as the fallback for existing
+            // characters that have no explicit character preference yet.
+            PlayerPrefs.SetString(AvatarLoader.CustomModelPathPreference, asset.path);
+            PlayerPrefs.Save();
+        }
+
+        private static void PersistBundledAvatarSelection(string characterId)
+        {
+            if (!string.IsNullOrWhiteSpace(characterId))
+                CharacterAvatarPreference.SetBundled(characterId);
+            AvatarLoader.ClearCustomModelPathPreference();
+        }
+        private void RefreshModelLibrarySelection(){ if(modelLibraryPanel==null)return; string active=avatarLoader!=null?avatarLoader.ActiveModelPath:string.Empty; foreach(Button tile in modelLibraryPanel.GetComponentsInChildren<Button>(true)){bool imported=tile.gameObject.name.StartsWith("Managed Model ");bool bundled=tile.gameObject.name=="Bundled avatar";if(!imported&&!bundled)continue;bool selected=imported&&selectedModelAssets.Contains(tile.gameObject.name.Substring("Managed Model ".Length));bool on=imported?active==managedAssetLibrary.Assets(ManagedAssetLibrary.ModelKind).Find(x=>tile.gameObject.name=="Managed Model "+x.id)?.path:bundled&&(string.IsNullOrEmpty(active)||active=="Bundled model");SetLibraryTileVisual(tile,on,selected);} UpdateDeleteSelectedHeader(deleteModelAssetsButton,selectedModelAssets.Count); UpdateRenameHeader(renameModelAssetButton, selectedModelAssets.Count); LogDeleteHeaderState("model",deleteModelAssetsButton,selectedModelAssets.Count,"refresh"); }
 
         private void OpenModelDeleteConfirmation()
         {
@@ -3329,30 +5333,60 @@ namespace AIFren.UnityPoc.UI
             string activePath=avatarLoader!=null?avatarLoader.ActiveModelPath:string.Empty;
             bool activeWasDeleted=false;
             foreach(ManagedAssetRecord asset in managedAssetLibrary.Assets(ManagedAssetLibrary.ModelKind)) if(selectedModelAssets.Contains(asset.id)&&asset.path==activePath){activeWasDeleted=true;break;}
-            if(activeWasDeleted && !ResetAvatarModel()) return;
+            if(activeWasDeleted) RequestBundledAvatarModel();
+            foreach (string assetId in selectedModelAssets)
+                CharacterAvatarPreference.RepairDeletedAsset(
+                    availableCharacters.Select(item => item.character_id), assetId);
             managedAssetLibrary.Delete(ManagedAssetLibrary.ModelKind, selectedModelAssets); selectedModelAssets.Clear();
             if(modelDeleteConfirmPanel!=null)modelDeleteConfirmPanel.SetActive(false);
             BuildModelLibraryTiles(); RefreshDisplaySettingsUi();
         }
 
-        private async void ChangeAvatarModel()
+        private void ChangeAvatarModel()
         {
-            string path = await LinuxNativeFilePicker.PickAsync("Choose VRM avatar", "VRM models | *.vrm");
-            if (string.IsNullOrWhiteSpace(path)) return;
-            if (!string.Equals(System.IO.Path.GetExtension(path), ".vrm", StringComparison.OrdinalIgnoreCase))
+            StartCoroutine(ChangeAvatarModelRoutine());
+        }
+
+        private IEnumerator ChangeAvatarModelRoutine()
+        {
+            Task<LinuxNativeFilePicker.Result> pickerTask = LinuxNativeFilePicker.PickAsync(
+                "Choose VRM avatar",
+                LinuxNativeFilePicker.AvatarModelFilters);
+            yield return new WaitUntil(() => pickerTask.IsCompleted);
+            LinuxNativeFilePicker.Result result = pickerTask.Result;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            LogNativePickerTiming("avatar", result);
+#endif
+            if (!string.IsNullOrWhiteSpace(result.error))
             {
-                ApplyStatus("error", "Choose a .vrm avatar model.");
-                return;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                Debug.LogError("[AIFren Picker] " + result.error);
+#endif
+                yield break;
             }
+            string path = result.path;
+            if (string.IsNullOrWhiteSpace(path)) yield break;
             LinuxNativeFilePicker.Remember(path);
             if (!managedAssetLibrary.TryImport(path, ManagedAssetLibrary.ModelKind, out ManagedAssetRecord asset, out string importError))
             {
-                ApplyStatus("error", "Could not import VRM: " + importError); return;
+                ApplyStatus("error", importError); yield break;
             }
             SelectOnlyModelForDeletion(asset.id);
             if (modelLibraryPanel != null && modelLibraryPanel.activeInHierarchy) BuildModelLibraryTiles();
             RequestManagedAvatarModel(asset, true);
         }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        private static void LogNativePickerTiming(string kind, LinuxNativeFilePicker.Result result)
+        {
+            double launch = LinuxNativeFilePicker.ElapsedMilliseconds(result.requestedAt, result.processStartedAt);
+            double completed = LinuxNativeFilePicker.ElapsedMilliseconds(result.processStartedAt, result.completedAt);
+            Debug.Log("[AIFren Picker] " + kind + " process launch=" +
+                (launch >= 0d ? launch.ToString("0") : "n/a") + "ms, return=" +
+                (completed >= 0d ? completed.ToString("0") : "n/a") + "ms, result=" +
+                (string.IsNullOrWhiteSpace(result.path) ? "cancelled-or-failed" : "selected") + ".");
+        }
+#endif
 
         private async Task EnsureModelThumbnailAsync(ManagedAssetRecord asset, int request)
         {
@@ -3373,17 +5407,22 @@ namespace AIFren.UnityPoc.UI
             finally { thumbnailGenerationInFlight.Remove(asset.id); }
         }
 
-        private bool ResetAvatarModel()
+        private async Task EnsureBundledAvatarThumbnailAsync()
         {
-            if (avatarLoader == null || !avatarLoader.LoadConfiguredAvatar())
+            const string thumbnailId = ManagedAssetLibrary.BundledAvatarThumbnailId;
+            if (!thumbnailGenerationInFlight.Add(thumbnailId)) return;
+            try
             {
-                ApplyStatus("error", avatarLoader != null ? avatarLoader.LastError : "Avatar loader is unavailable.");
-                return false;
+                AvatarConfiguration configuration = AvatarConfiguration.Load();
+                GameObject bundledPrefab = Resources.Load<GameObject>(configuration.avatarResourcePath);
+                string thumbnailPath = managedAssetLibrary.BundledAvatarThumbnailPath();
+                if (bundledPrefab != null && await VrmThumbnailGenerator.TryGenerateFromPrefabAsync(bundledPrefab, thumbnailPath))
+                {
+                    if (modelLibraryPanel != null && modelLibraryPanel.activeInHierarchy)
+                        BuildModelLibraryTiles();
+                }
             }
-            AvatarLoader.ClearCustomModelPathPreference();
-            ApplyStatus("ready", "Bundled visual avatar restored.");
-            RefreshDisplaySettingsUi();
-            return true;
+            finally { thumbnailGenerationInFlight.Remove(thumbnailId); }
         }
 
         private void CreateBackgroundLibraryPanel(Transform parent)
@@ -3393,14 +5432,17 @@ namespace AIFren.UnityPoc.UI
             TMP_Text title = CreateText(backgroundLibraryPanel.transform, "Viewer Background", 24f, Ink, TextAlignmentOptions.MidlineLeft);
             Stretch(title.rectTransform, new Vector2(.06f, .87f), new Vector2(.34f, .96f), Vector2.zero, Vector2.zero);
             Button import = CreateButton(backgroundLibraryPanel.transform, "Import", Panel);
-            Stretch(import.GetComponent<RectTransform>(), new Vector2(.36f, .87f), new Vector2(.52f, .96f), Vector2.zero, Vector2.zero);
+            Stretch(import.GetComponent<RectTransform>(), new Vector2(.35f, .87f), new Vector2(.48f, .96f), Vector2.zero, Vector2.zero);
             import.onClick.AddListener(ChangeCustomBackground);
-            Button back = CreateButton(backgroundLibraryPanel.transform, "Back", Panel);
-            Stretch(back.GetComponent<RectTransform>(), new Vector2(.76f, .87f), new Vector2(.94f, .96f), Vector2.zero, Vector2.zero);
-            back.onClick.AddListener(() => { selectedBackgroundAssets.Clear(); backgroundLibraryPanel.SetActive(false); });
+            renameBackgroundAssetButton = CreateButton(backgroundLibraryPanel.transform, "Rename", Panel);
+            Stretch(renameBackgroundAssetButton.GetComponent<RectTransform>(), new Vector2(.49f, .87f), new Vector2(.61f, .96f), Vector2.zero, Vector2.zero);
+            renameBackgroundAssetButton.onClick.AddListener(() => OpenAssetRenameDialog(ManagedAssetLibrary.BackgroundKind));
             deleteBackgroundAssetsButton = CreateButton(backgroundLibraryPanel.transform, "Delete Selected", new Color(.42f,.16f,.22f,1f));
-            Stretch(deleteBackgroundAssetsButton.GetComponent<RectTransform>(), new Vector2(.54f,.87f), new Vector2(.74f,.96f), Vector2.zero, Vector2.zero);
+            Stretch(deleteBackgroundAssetsButton.GetComponent<RectTransform>(), new Vector2(.62f,.87f), new Vector2(.79f,.96f), Vector2.zero, Vector2.zero);
             deleteBackgroundAssetsButton.onClick.AddListener(OpenBackgroundDeleteConfirmation);
+            Button back = CreateButton(backgroundLibraryPanel.transform, "Back", Panel);
+            Stretch(back.GetComponent<RectTransform>(), new Vector2(.80f, .87f), new Vector2(.94f, .96f), Vector2.zero, Vector2.zero);
+            back.onClick.AddListener(() => { selectedBackgroundAssets.Clear(); backgroundLibraryPanel.SetActive(false); });
             AvatarViewerBackground[] builtIns = { AvatarViewerBackground.LightNeutral, AvatarViewerBackground.NeutralGrey, AvatarViewerBackground.Bedroom };
             backgroundLibraryTiles = CreateLibraryTileGrid(backgroundLibraryPanel.transform, "Background Library Tiles");
             // The delete action is a header action, never part of the clipped
@@ -3500,7 +5542,7 @@ namespace AIFren.UnityPoc.UI
 
         private static string DisambiguatedManagedName(ManagedAssetRecord asset, Dictionary<string, int> counts, string fallback)
         {
-            string name = string.IsNullOrWhiteSpace(asset.displayName) ? fallback : asset.displayName;
+            string name = ManagedAssetLibrary.DisplayName(asset, fallback);
             counts.TryGetValue(name, out int occurrence);
             occurrence++;
             counts[name] = occurrence;
@@ -3549,6 +5591,7 @@ namespace AIFren.UnityPoc.UI
                 SetLibraryTileVisual(tile, active, selected);
             }
             UpdateDeleteSelectedHeader(deleteBackgroundAssetsButton, selectedBackgroundAssets.Count);
+            UpdateRenameHeader(renameBackgroundAssetButton, selectedBackgroundAssets.Count);
             LogDeleteHeaderState("background", deleteBackgroundAssetsButton, selectedBackgroundAssets.Count, "refresh");
         }
 
@@ -3580,6 +5623,77 @@ namespace AIFren.UnityPoc.UI
                 caption.text = "Delete Selected (" + count + ")";
             }
             button.interactable = count > 0;
+        }
+
+        private static void UpdateRenameHeader(Button button, int count)
+        {
+            if (button == null) return;
+            button.gameObject.SetActive(true);
+            button.interactable = count == 1;
+        }
+
+        private void OpenAssetRenameDialog(string kind)
+        {
+            HashSet<string> selection = kind == ManagedAssetLibrary.ModelKind
+                ? selectedModelAssets : selectedBackgroundAssets;
+            if (selection.Count != 1) return;
+            string id = selection.First();
+            ManagedAssetRecord asset = managedAssetLibrary.Assets(kind).Find(item => item.id == id);
+            if (asset == null) return;
+
+            if (assetRenamePanel == null)
+            {
+                Transform parent = settingsPanel != null ? settingsPanel.transform : transform;
+                assetRenamePanel = CreatePanel(parent, "Rename Imported Asset", new Color(.08f,.06f,.13f,.99f));
+                Stretch(assetRenamePanel.GetComponent<RectTransform>(), new Vector2(.28f,.36f), new Vector2(.72f,.64f), Vector2.zero, Vector2.zero);
+                TMP_Text title = CreateText(assetRenamePanel.transform, "Rename", 22f, Ink, TextAlignmentOptions.Center);
+                title.gameObject.name = "Title";
+                Stretch(title.rectTransform, new Vector2(.08f,.69f), new Vector2(.92f,.89f), Vector2.zero, Vector2.zero);
+                assetRenameInput = CreateInputField(assetRenamePanel.transform);
+                assetRenameInput.characterLimit = 120;
+                Stretch(assetRenameInput.GetComponent<RectTransform>(), new Vector2(.09f,.45f), new Vector2(.91f,.63f), Vector2.zero, Vector2.zero);
+                assetRenameMessage = CreateText(assetRenamePanel.transform, string.Empty, 15f, new Color(.96f,.63f,.70f,1f), TextAlignmentOptions.Center);
+                Stretch(assetRenameMessage.rectTransform, new Vector2(.09f,.34f), new Vector2(.91f,.43f), Vector2.zero, Vector2.zero);
+                Button cancel = CreateButton(assetRenamePanel.transform, "Cancel", Panel);
+                Stretch(cancel.GetComponent<RectTransform>(), new Vector2(.09f,.11f), new Vector2(.46f,.28f), Vector2.zero, Vector2.zero);
+                cancel.onClick.AddListener(CloseAssetRenameDialog);
+                Button save = CreateButton(assetRenamePanel.transform, "Save", Accent);
+                Stretch(save.GetComponent<RectTransform>(), new Vector2(.54f,.11f), new Vector2(.91f,.28f), Vector2.zero, Vector2.zero);
+                save.onClick.AddListener(SaveAssetRename);
+                assetRenamePanel.SetActive(false);
+            }
+
+            renameAssetKind = kind;
+            renameAssetId = asset.id;
+            assetRenamePanel.transform.Find("Title").GetComponent<TMP_Text>().text =
+                "Rename " + (kind == ManagedAssetLibrary.ModelKind ? "Model" : "Background");
+            assetRenameInput.SetTextWithoutNotify(asset.displayName ?? string.Empty);
+            assetRenameMessage.text = string.Empty;
+            assetRenamePanel.SetActive(true);
+            assetRenamePanel.transform.SetAsLastSibling();
+            assetRenameInput.ActivateInputField();
+        }
+
+        private void CloseAssetRenameDialog()
+        {
+            if (assetRenamePanel != null) assetRenamePanel.SetActive(false);
+            renameAssetKind = null;
+            renameAssetId = null;
+        }
+
+        private void SaveAssetRename()
+        {
+            if (!managedAssetLibrary.TryRename(renameAssetKind, renameAssetId,
+                    assetRenameInput != null ? assetRenameInput.text : string.Empty, out string error))
+            {
+                if (assetRenameMessage != null) assetRenameMessage.text = error;
+                return;
+            }
+            bool model = renameAssetKind == ManagedAssetLibrary.ModelKind;
+            CloseAssetRenameDialog();
+            if (model) BuildModelLibraryTiles();
+            else BuildBackgroundLibraryTiles(new[] { AvatarViewerBackground.LightNeutral, AvatarViewerBackground.NeutralGrey, AvatarViewerBackground.Bedroom });
+            RefreshDisplaySettingsUi();
         }
 
         private static void LogDeleteHeaderState(string library, Button button, int count, string phase)
@@ -3629,10 +5743,25 @@ namespace AIFren.UnityPoc.UI
             ApplyAvatarViewerBackground(); BuildBackgroundLibraryTiles(new[] { AvatarViewerBackground.LightNeutral, AvatarViewerBackground.NeutralGrey, AvatarViewerBackground.Bedroom }); RefreshDisplaySettingsUi();
         }
 
-        private async void ChangeCustomBackground()
+        private void ChangeCustomBackground()
         {
-            string path = await LinuxNativeFilePicker.PickAsync("Choose viewer background", "Images | *.png *.jpg *.jpeg");
-            if (string.IsNullOrWhiteSpace(path)) return;
+            StartCoroutine(ChangeCustomBackgroundRoutine());
+        }
+
+        private IEnumerator ChangeCustomBackgroundRoutine()
+        {
+            Task<LinuxNativeFilePicker.Result> pickerTask = LinuxNativeFilePicker.PickAsync("Choose viewer background", "Images | *.png *.jpg *.jpeg");
+            yield return new WaitUntil(() => pickerTask.IsCompleted);
+            LinuxNativeFilePicker.Result result = pickerTask.Result;
+            if (!string.IsNullOrWhiteSpace(result.error))
+            {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                Debug.LogError("[AIFren Picker] " + result.error);
+#endif
+                yield break;
+            }
+            string path = result.path;
+            if (string.IsNullOrWhiteSpace(path)) yield break;
             LinuxNativeFilePicker.Remember(path);
             string extension = System.IO.Path.GetExtension(path);
             if (!string.Equals(extension, ".png", StringComparison.OrdinalIgnoreCase) &&
@@ -3640,12 +5769,12 @@ namespace AIFren.UnityPoc.UI
                 !string.Equals(extension, ".jpeg", StringComparison.OrdinalIgnoreCase))
             {
                 ApplyStatus("error", "Choose a PNG or JPEG viewer background.");
-                return;
+                yield break;
             }
             if (!managedAssetLibrary.TryImport(path, ManagedAssetLibrary.BackgroundKind, out ManagedAssetRecord asset, out string importError))
             {
                 ApplyStatus("error", "Could not import background: " + importError);
-                return;
+                yield break;
             }
             avatarViewerBackgroundState.SetCustomPath(AvatarViewPortrait, asset.path, true);
             avatarViewerBackgroundState.Set(AvatarViewPortrait, AvatarViewerBackground.CustomImage, true);
@@ -3661,7 +5790,6 @@ namespace AIFren.UnityPoc.UI
             PlayerPrefs.SetInt(ShowDialogueWhenHiddenPreference, value ? 1 : 0);
             PlayerPrefs.Save();
             if (!value) HideHiddenSubtitleImmediately();
-            SyncHiddenDialogueText();
         }
 
         private void SetAlwaysOnTop(bool value)
@@ -3692,90 +5820,6 @@ namespace AIFren.UnityPoc.UI
             Debug.Log("[AIFren Window] " + detail);
         }
 
-        private void SyncHiddenDialogueText(bool prepareWhileInactive = false)
-        {
-            // HiddenSubtitlePresenter is the sole production owner of this
-            // visual tree. Retain the legacy method only until its callers are
-            // removed from unrelated normal-dialogue refresh paths.
-            if (hiddenSubtitlePresenter != null) return;
-            if (hiddenDialogueText == null || hiddenDialogueViewport == null) return;
-            // This is an independent spoken-text subtitle, never a copy of
-            // the visible dialogue card. Emotes remain visible in the card but
-            // are deliberately omitted here.
-            string page = subtitlePages.Count == 0 ? string.Empty :
-                subtitlePages[Mathf.Clamp(subtitlePageIndex, 0, subtitlePages.Count - 1)];
-            // Keep the complete escaped page as ordinary TMP text. Word
-            // visibility is applied to its mesh below, never encoded in the
-            // string, so control tags cannot leak or change layout.
-            string fullPage = DialoguePresentationParser.FormatSubtitleText(page);
-            if (hiddenDialogueText.text != fullPage) hiddenDialogueText.text = fullPage;
-            float width = Mathf.Max(1f, hiddenDialogueViewport.rect.width - 36f);
-            float viewportHeight = Mathf.Max(1f, hiddenDialogueViewport.rect.height - 20f);
-            const float defaultSize = 35f;
-            const float minimumSize = 23f;
-            float size = defaultSize;
-            float preferredHeight = 0f;
-            for (; size >= minimumSize; size -= 1f)
-            {
-                hiddenDialogueText.fontSize = size;
-                preferredHeight = hiddenDialogueText.GetPreferredValues(fullPage, width, 0f).y;
-                if (preferredHeight <= viewportHeight) break;
-            }
-            hiddenDialogueText.fontSize = Mathf.Max(minimumSize, size);
-            foreach (TMP_Text backing in hiddenSubtitleBackings)
-            {
-                if (backing == null) continue;
-                backing.text = hiddenDialogueText.text;
-                backing.fontSize = hiddenDialogueText.fontSize;
-                backing.fontStyle = hiddenDialogueText.fontStyle;
-                backing.alignment = hiddenDialogueText.alignment;
-                backing.color = Color.black;
-            }
-            // Normal dialogue updates also call this method. Do not rebuild
-            // five inactive subtitle meshes for every ordinary word reveal.
-            // The root is alpha-zero before activation and receives a mesh
-            // update on the first subtitle fade frame.
-            if (!prepareWhileInactive && !hiddenDialogueViewport.gameObject.activeInHierarchy)
-            {
-                if (hiddenDialogueScrollbar != null) hiddenDialogueScrollbar.gameObject.SetActive(false);
-                return;
-            }
-            ApplyHiddenSubtitleWordVisibility(hiddenDialogueText);
-            foreach (TMP_Text backing in hiddenSubtitleBackings)
-                if (backing != null) ApplyHiddenSubtitleWordVisibility(backing);
-            if (hiddenDialogueScrollbar != null) hiddenDialogueScrollbar.gameObject.SetActive(false);
-        }
-
-        private void ApplyHiddenSubtitleWordVisibility(TMP_Text text)
-        {
-            text.ForceMeshUpdate();
-            TMP_TextInfo info = text.textInfo;
-            int wordIndex = -1;
-            bool inWord = false;
-            int revealed = hiddenSubtitleReveal.RevealedTokenCount;
-            byte newestAlpha = (byte)Mathf.RoundToInt(Mathf.Clamp01(hiddenSubtitleReveal.LatestTokenAlpha) * 255f);
-            for (int index = 0; index < info.characterCount; index++)
-            {
-                TMP_CharacterInfo character = info.characterInfo[index];
-                bool whitespace = char.IsWhiteSpace(character.character);
-                if (whitespace) inWord = false;
-                else if (!inWord) { wordIndex++; inWord = true; }
-
-                byte alpha = wordIndex < revealed - 1 ? (byte)255 :
-                    wordIndex == revealed - 1 ? newestAlpha : (byte)0;
-                if (!character.isVisible || character.materialReferenceIndex < 0) continue;
-                Color32[] colors = info.meshInfo[character.materialReferenceIndex].colors32;
-                int vertex = character.vertexIndex;
-                for (int offset = 0; offset < 4; offset++)
-                {
-                    Color32 color = colors[vertex + offset];
-                    color.a = alpha;
-                    colors[vertex + offset] = color;
-                }
-            }
-            text.UpdateVertexData(TMP_VertexDataUpdateFlags.Colors32);
-        }
-
         private void EnsureHiddenSubtitlePresentation()
         {
             if (hiddenDialogueText == null) return;
@@ -3793,19 +5837,42 @@ namespace AIFren.UnityPoc.UI
             if (hiddenSubtitleMaterial.HasProperty(ShaderUtilities.ID_FaceColor))
                 hiddenSubtitleMaterial.SetColor(ShaderUtilities.ID_FaceColor, Color.white);
             if (hiddenSubtitleMaterial.HasProperty(ShaderUtilities.ID_OutlineColor))
-                hiddenSubtitleMaterial.SetColor(ShaderUtilities.ID_OutlineColor, Color.black);
+            {
+                hiddenSubtitleMaterial.EnableKeyword(ShaderUtilities.Keyword_Outline);
+                hiddenSubtitleMaterial.SetColor(ShaderUtilities.ID_OutlineColor, new Color(0f, 0f, 0f, 1f));
+            }
             if (hiddenSubtitleMaterial.HasProperty(ShaderUtilities.ID_OutlineWidth))
-                hiddenSubtitleMaterial.SetFloat(ShaderUtilities.ID_OutlineWidth, .09f);
+                hiddenSubtitleMaterial.SetFloat(ShaderUtilities.ID_OutlineWidth, .28f);
             if (hiddenSubtitleMaterial.HasProperty(ShaderUtilities.ID_OutlineSoftness))
-                hiddenSubtitleMaterial.SetFloat(ShaderUtilities.ID_OutlineSoftness, 0f);
-            foreach (Material backingMaterial in hiddenSubtitleBackingMaterials)
-                if (backingMaterial != null && backingMaterial.HasProperty(ShaderUtilities.ID_FaceColor))
-                    backingMaterial.SetColor(ShaderUtilities.ID_FaceColor, Color.black);
+                hiddenSubtitleMaterial.SetFloat(ShaderUtilities.ID_OutlineSoftness, .025f);
+            // Use TMP's ordinary single-renderer outline properties as the
+            // public presentation contract too. UpdateMeshPadding is required
+            // after widening an SDF material or the edge can be clipped away
+            // by geometry generated with the old padding.
+            hiddenDialogueText.outlineColor = new Color32(0, 0, 0, 255);
+            hiddenDialogueText.outlineWidth = .28f;
+            // A subtle same-material underlay closes thin diagonal gaps in the
+            // outline against bright avatar/background detail. It does not
+            // create another TMP renderer or independent visibility state.
+            if (hiddenSubtitleMaterial.HasProperty(ShaderUtilities.ID_UnderlayColor))
+            {
+                hiddenSubtitleMaterial.EnableKeyword(ShaderUtilities.Keyword_Underlay);
+                hiddenSubtitleMaterial.SetColor(ShaderUtilities.ID_UnderlayColor, new Color(0f, 0f, 0f, .78f));
+                hiddenSubtitleMaterial.SetFloat(ShaderUtilities.ID_UnderlayOffsetX, .18f);
+                hiddenSubtitleMaterial.SetFloat(ShaderUtilities.ID_UnderlayOffsetY, -.18f);
+                hiddenSubtitleMaterial.SetFloat(ShaderUtilities.ID_UnderlayDilate, .18f);
+                hiddenSubtitleMaterial.SetFloat(ShaderUtilities.ID_UnderlaySoftness, .08f);
+            }
+            hiddenDialogueText.UpdateMeshPadding();
         }
 
         private void LogHiddenSubtitleState(string phase)
         {
-            if (!Debug.isDebugBuild || hiddenDialogueText == null || hiddenDialogueCanvasGroup == null) return;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (!verboseSubtitleDiagnostics || hiddenDialogueText == null || hiddenDialogueCanvasGroup == null) return;
+#else
+            return;
+#endif
             Material material = hiddenDialogueText.fontMaterial;
             string properties = material != null && material.HasProperty(ShaderUtilities.ID_OutlineWidth)
                 ? " face=" + material.GetColor(ShaderUtilities.ID_FaceColor) + " outline=" + material.GetColor(ShaderUtilities.ID_OutlineColor) +
@@ -3819,57 +5886,227 @@ namespace AIFren.UnityPoc.UI
                 " position=" + hiddenDialogueText.rectTransform.anchoredPosition + " size=" + hiddenDialogueText.rectTransform.rect.size +
                 " font=" + (hiddenDialogueText.font != null ? hiddenDialogueText.font.name : "<none>") +
                 " material=" + (material != null ? material.name : "<none>") + " shader=" + (material != null ? material.shader.name : "<none>") + properties);
-            if (hiddenSubtitleBackings.Count > 0 && hiddenSubtitleBackings[0] != null)
-            {
-                Material backing = hiddenSubtitleBackings[0].fontMaterial;
-                Debug.Log("[AIFren Subtitle] backing color=" + hiddenSubtitleBackings[0].color +
-                    " material=" + (backing != null ? backing.name : "<none>") +
-                    " face=" + (backing != null && backing.HasProperty(ShaderUtilities.ID_FaceColor) ? backing.GetColor(ShaderUtilities.ID_FaceColor).ToString() : "<none>"));
-            }
         }
 
-        private void BeginSubtitleResponse(string rawResponse)
+        private void BeginSubtitleResponse(string rawResponse, PreparedSubtitlePlan prepared = null)
         {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            developmentFrameProfiler?.Mark("subtitle_begin_prepare");
+#endif
             subtitleGeneration++;
-            if (subtitlePresentationCoroutine != null) StopCoroutine(subtitlePresentationCoroutine);
-            HideHiddenSubtitleImmediately();
-            string spokenSubtitleText = DialoguePresentationParser.SpokenText(rawResponse);
-            subtitlePages.Clear();
-            subtitlePages.AddRange(SubtitlePagination.Split(DialoguePresentationParser.SubtitleSourceText(rawResponse)));
-            subtitlePageWordRanges.Clear();
-            subtitlePageWordRanges.AddRange(SubtitleTimingPlan.BuildPageWordRanges(subtitlePages));
-            if (!SubtitleTimingPlan.TryValidatePagesMatchCanonicalText(
-                spokenSubtitleText, subtitlePages, subtitlePageWordRanges, DialoguePresentationParser.SpokenText, out string ownershipError))
+            PreparedSubtitlePlan plan = prepared ?? BuildSubtitlePlan(rawResponse);
+            if (plan == null)
             {
-                Debug.LogError("[AIFren Subtitle] invalid page ownership; refusing hidden subtitle: " + ownershipError);
+                // Invalid input cannot inherit an older render session.
+                hiddenSubtitlePresenter?.Cancel();
                 return;
             }
+            string spokenSubtitleText = plan.Spoken;
+            subtitlePages.Clear();
+            subtitlePages.AddRange(plan.Pages);
+            foreach (string page in plan.Pages) hiddenSubtitlePresenter?.Preload(page);
+            subtitlePageWordRanges.Clear();
+            subtitlePageWordRanges.AddRange(plan.Ranges);
             LogSubtitlePageOwnership(spokenSubtitleText);
-            subtitlePageIndex = 0;
-            hiddenSubtitleReveal.Begin(string.Empty, true);
             subtitleSpeechActive = false;
             subtitlePlaybackGeneration = -1;
             subtitleAwaitingPlayback = true;
-            subtitlePlaybackStartedSignal = false;
-            subtitlePlaybackStoppedSignal = false;
             subtitlePlaybackId = 0;
             subtitleSpeechDuration = 0f;
-            subtitleTimingUsesPlaybackClock = false;
-            subtitlePresentationStartedAt = 0f;
             subtitlePlaybackStartedAt = 0f;
             ConfigureSubtitleTimingPlan(0f, false, null);
-            subtitleFirstWordLogged = false;
-            currentAssistantPresentationText = rawResponse ?? string.Empty;
             int generation = subtitleGeneration;
-            Debug.Log("[AIFren Subtitle] prepared generation=" + generation + " pages=" + subtitlePages.Count + " enabled=" + showDialogueWhenHidden + " hidden=" + interfaceHidden);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (verboseSubtitleDiagnostics)
+#endif
+                Debug.Log("[AIFren Subtitle] activated generation=" + generation + " pages=" + subtitlePages.Count +
+                    " precompute=" + plan.PreparationMilliseconds.ToString("F2") + "ms enabled=" +
+                    showDialogueWhenHidden + " hidden=" + interfaceHidden);
+            // Begin atomically replaces the prior session while preserving
+            // plain page layout prepared by chunk_queued.
             hiddenSubtitlePresenter?.Begin(new SubtitleSession(
                 new List<string>(subtitlePages), new List<SubtitlePageWordRange>(subtitlePageWordRanges),
                 new List<float>(subtitleWordSchedule), generation, Time.unscaledTime));
+            // A response may finish while the ordinary card is already shown,
+            // without passing through TransitionUiVisibility. A temporary peek
+            // suppresses this session for later restoration; committed Show
+            // owns the normal dialogue and cancels hidden-subtitle presentation.
+            if (!interfaceHidden)
+            {
+                if (temporarilyRevealed) SuppressHiddenSubtitleForUiReveal();
+                else HideHiddenSubtitleImmediately();
+            }
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            developmentFrameProfiler?.Mark("subtitle_ready:pages=" + subtitlePages.Count);
+#endif
+        }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        private IEnumerator BeginDevelopmentProfileQa()
+        {
+            // A fixed launch delay previously let the first QA response race
+            // the avatar's asynchronous import/final-layout collections. Wait
+            // for the actual production-ready boundary so those costs remain
+            // separately attributable from first speech presentation.
+            float avatarDeadline = Time.realtimeSinceStartup + 20f;
+            while ((avatarAnimation == null || avatarPresentationInitialization != null) &&
+                   Time.realtimeSinceStartup < avatarDeadline)
+                yield return null;
+            yield return new WaitForSecondsRealtime(.5f);
+            interfaceHidden = true;
+            showDialogueWhenHidden = true;
+            inputRequested = false;
+            RefreshPresentationVisibility();
+            yield return new WaitForSecondsRealtime(.35f);
+            developmentFrameProfiler?.Begin("portrait_hidden_ui_avatar_subtitles_kokoro");
+            developmentFrameProfiler?.Mark("portrait_hidden_ready");
+            developmentProfileScenarioIndex = 0;
+            instantTextToggle.SetIsOnWithoutNotify(true);
+            SetInstantText(true);
+            developmentFrameProfiler?.Mark("instant_on_before_response");
+            _ = client.RunDevelopmentPresentationQaAsync(DevelopmentProfileScenarioName());
+        }
+
+        private IEnumerator AdvanceDevelopmentProfileQa()
+        {
+            yield return new WaitForSecondsRealtime(.75f);
+            developmentProfileAdvancePending = false;
+            if (developmentProfileScenarioIndex == 0)
+            {
+                // Exact regression: response one retires, a temporary peek
+                // completes with no active subtitle session, then response two
+                // must begin renderable without another transition.
+                yield return RunDevelopmentTemporaryPeek("between_responses", 0f);
+            }
+            developmentProfileScenarioIndex++;
+            if (developmentProfileScenarioIndex >= developmentProfileScenarios.Length)
+            {
+                yield return new WaitForSecondsRealtime(1f);
+                developmentFrameProfiler?.Finish();
+                yield break;
+            }
+            // Warm and long runs start paced. The warm stream toggles Instant
+            // Text on and back off through the actual controller binding.
+            instantTextToggle.SetIsOnWithoutNotify(false);
+            SetInstantText(false);
+            developmentFrameProfiler?.Mark("scenario_request:" + DevelopmentProfileScenarioName());
+            _ = client.RunDevelopmentPresentationQaAsync(DevelopmentProfileScenarioName());
+        }
+
+        private IEnumerator RunDevelopmentTemporaryPeek(string label, float delaySeconds)
+        {
+            if (delaySeconds > 0f) yield return new WaitForSecondsRealtime(delaySeconds);
+            developmentFrameProfiler?.Mark("temporary_peek_begin:" + label +
+                ":active=" + (hiddenSubtitlePresenter != null && hiddenSubtitlePresenter.IsActive));
+            interfaceHidden = false;
+            edgeRevealActive = true;
+            temporarilyRevealed = true;
+            RefreshPresentationVisibility();
+            yield return new WaitForSecondsRealtime(.55f);
+            interfaceHidden = true;
+            edgeRevealActive = false;
+            temporarilyRevealed = false;
+            RefreshPresentationVisibility();
+            yield return new WaitForSecondsRealtime(.35f);
+            bool presenterActive = hiddenSubtitlePresenter != null && hiddenSubtitlePresenter.IsActive;
+            bool presenterSuppressed = hiddenSubtitlePresenter != null && hiddenSubtitlePresenter.IsSuppressed;
+            bool renderable = hiddenDialogueText != null && hiddenDialogueText.enabled;
+            developmentFrameProfiler?.Mark("temporary_peek_end:" + label +
+                ":active=" + presenterActive + ":suppressed=" + presenterSuppressed +
+                ":renderable=" + renderable);
+        }
+
+        private string DevelopmentProfileScenarioName()
+        {
+            return developmentProfileScenarioIndex >= 0 && developmentProfileScenarioIndex < developmentProfileScenarios.Length
+                ? developmentProfileScenarios[developmentProfileScenarioIndex] : "none";
+        }
+#endif
+
+        private bool HiddenSubtitlePageFits(string page)
+        {
+            TMP_Text measurement = hiddenSubtitleMeasurementText != null
+                ? hiddenSubtitleMeasurementText : hiddenDialogueText;
+            if (measurement == null || hiddenDialogueViewport == null) return true;
+            string formatted = DialoguePresentationParser.FormatSubtitleText(page);
+            float width = Mathf.Max(1f, hiddenDialogueViewport.rect.width - 36f);
+            float height = Mathf.Max(1f, hiddenDialogueViewport.rect.height - 20f);
+            float previousSize = measurement.fontSize;
+            measurement.fontSize = 23f;
+            float preferredHeight = measurement.GetPreferredValues(formatted, width, 0f).y;
+            measurement.fontSize = previousSize;
+            return preferredHeight <= height + .5f;
+        }
+
+        private PreparedSubtitlePlan BuildSubtitlePlan(string rawResponse)
+        {
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            string source = rawResponse ?? string.Empty;
+            DialogueDocument semantics = DialoguePresentationParser.ParseDocument(source);
+            string spoken = semantics.SpokenText;
+            List<string> pages = SubtitlePagination.Split(
+                semantics.SubtitleSourceText, 28, HiddenSubtitlePageFits);
+            List<SubtitlePageWordRange> ranges = SubtitleTimingPlan.BuildPageWordRanges(
+                pages, DialoguePresentationParser.SpokenText);
+            if (!SubtitleTimingPlan.TryValidatePagesMatchCanonicalText(
+                spoken, pages, ranges, DialoguePresentationParser.SpokenText, out string ownershipError))
+            {
+                Debug.LogError("[AIFren Subtitle] invalid page ownership; refusing hidden subtitle: " + ownershipError);
+                return null;
+            }
+            timer.Stop();
+            return new PreparedSubtitlePlan
+            {
+                Source = source,
+                Spoken = spoken,
+                Pages = pages,
+                Ranges = ranges,
+                PreparationMilliseconds = (float)timer.Elapsed.TotalMilliseconds,
+            };
+        }
+
+        private static string SubtitlePlanKey(int turnId, int chunkIndex) => turnId + ":" + chunkIndex;
+
+        private void CachePreparedSubtitlePlan(int turnId, int chunkIndex, string source)
+        {
+            if (string.IsNullOrWhiteSpace(source)) return;
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            PreparedSubtitlePlan plan = BuildSubtitlePlan(source);
+            if (plan == null) return;
+            string key = SubtitlePlanKey(turnId, chunkIndex);
+            if (!preparedSubtitlePlans.ContainsKey(key)) preparedSubtitlePlanOrder.Enqueue(key);
+            preparedSubtitlePlans[key] = plan;
+            foreach (string page in plan.Pages) hiddenSubtitlePresenter?.Preload(page);
+            timer.Stop();
+            plan.PreparationMilliseconds = (float)timer.Elapsed.TotalMilliseconds;
+            while (preparedSubtitlePlanOrder.Count > PreparedSubtitlePlanLimit)
+                preparedSubtitlePlans.Remove(preparedSubtitlePlanOrder.Dequeue());
+            Debug.Log("[AIFren Timing] subtitle chunk precomputed turn=" + turnId + " chunk=" + chunkIndex +
+                " in " + plan.PreparationMilliseconds.ToString("F2") + "ms.");
+        }
+
+        private PreparedSubtitlePlan TakePreparedSubtitlePlan(int turnId, int chunkIndex, string source)
+        {
+            string key = SubtitlePlanKey(turnId, chunkIndex);
+            if (!preparedSubtitlePlans.TryGetValue(key, out PreparedSubtitlePlan plan) ||
+                !string.Equals(plan.Source, source ?? string.Empty, StringComparison.Ordinal)) return null;
+            preparedSubtitlePlans.Remove(key);
+            return plan;
+        }
+
+        private void ClearPreparedSubtitlePlans()
+        {
+            preparedSubtitlePlans.Clear();
+            preparedSubtitlePlanOrder.Clear();
         }
 
         private void LogSubtitlePageOwnership(string spokenText)
         {
-            if (!Debug.isDebugBuild) return;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (!verboseSubtitleDiagnostics) return;
+#else
+            return;
+#endif
             List<string> allWords = SubtitleTimingPlan.TokenizeWords(spokenText);
             for (int pageIndex = 0; pageIndex < subtitlePages.Count; pageIndex++)
             {
@@ -3885,116 +6122,6 @@ namespace AIFren.UnityPoc.UI
         private void UpdateSubtitlePaging()
         {
             hiddenSubtitlePresenter?.Tick(Time.unscaledTime, interfaceHidden, showDialogueWhenHidden);
-        }
-
-        private IEnumerator RunHiddenSubtitle(int generation)
-        {
-            Debug.Log("[AIFren Subtitle] coroutine started generation=" + generation + " waiting playback_started");
-            // Let ordinary TTS claim the presentation first; otherwise use
-            // the same deterministic fallback lifecycle after a short wait.
-            float waitUntil = Time.unscaledTime + .9f;
-            while (generation == subtitleGeneration && !subtitlePlaybackStartedSignal && Time.unscaledTime < waitUntil)
-                yield return null;
-            if (generation != subtitleGeneration || subtitlePages.Count == 0) { Debug.LogWarning("[AIFren Subtitle] coroutine aborted before start generation=" + generation); yield break; }
-
-            if (!subtitlePlaybackStartedSignal) Debug.Log("[AIFren Subtitle] fallback timeout generation=" + generation);
-
-            subtitleAwaitingPlayback = false;
-            // Do not abandon a prepared response if an edge reveal or UI
-            // transition briefly makes the interface visible. It becomes
-            // eligible as soon as the user hides the normal UI again.
-            while (generation == subtitleGeneration && (!interfaceHidden || !showDialogueWhenHidden)) yield return null;
-            if (generation != subtitleGeneration) yield break;
-            subtitlePresentationStartedAt = Time.unscaledTime;
-            // Do not begin the root fade against an empty mesh. This waits
-            // only for the first scheduled word (with the fixed lead), never
-            // invents an early reveal or pauses the playback clock.
-            while (generation == subtitleGeneration && !subtitlePlaybackStoppedSignal &&
-                subtitleWordSchedule.Count > 0 && GetSubtitleDueWordCount() == 0)
-                yield return null;
-            if (generation != subtitleGeneration || subtitlePlaybackStoppedSignal) yield break;
-            hiddenSubtitlePageState = HiddenSubtitlePageState.PreparingNextPage;
-            PrepareSubtitlePageForFadeIn(0, true);
-            CommitSubtitlePageForFadeIn();
-            EnsureHiddenSubtitlePresentation();
-            Debug.Log("[AIFren Subtitle] root activated generation=" + generation + " alpha=" + hiddenDialogueCanvasGroup.alpha);
-            if (!subtitleFirstWordLogged)
-            {
-                subtitleFirstWordLogged = true;
-                Debug.Log("[AIFren Timing] first hidden subtitle word prepared; response-to-first=" +
-                    (Time.unscaledTime - subtitleResponseReceivedAt).ToString("F3") + "s");
-            }
-            yield return null;
-            yield return FadeSubtitle(generation, 0f, 1f, .32f, true);
-            if (generation != subtitleGeneration) yield break;
-            hiddenSubtitlePageState = HiddenSubtitlePageState.ShowingPage;
-
-            for (int page = 0; page < subtitlePages.Count; page++)
-            {
-                subtitlePageIndex = page;
-                if (page > 0)
-                {
-                    // A short shared-CanvasGroup transition keeps completed
-                    // pages from snapping into the next page. No transition
-                    // can run until the current WordReveal has completed.
-                    hiddenSubtitlePageState = HiddenSubtitlePageState.FadingOut;
-                    yield return FadeSubtitle(generation, hiddenDialogueCanvasGroup.alpha, 0f, HiddenSubtitlePageFadeOutSeconds);
-                    if (generation != subtitleGeneration) yield break;
-                    if (subtitlePlaybackStoppedSignal) break;
-                    hiddenSubtitlePageState = HiddenSubtitlePageState.PreparingNextPage;
-                    PrepareSubtitlePageForFadeIn(page, false);
-                    CommitSubtitlePageForFadeIn();
-                    hiddenSubtitlePageState = HiddenSubtitlePageState.FadingIn;
-                    yield return FadeSubtitle(generation, 0f, 1f, HiddenSubtitlePageFadeInSeconds, true);
-                    if (generation != subtitleGeneration) yield break;
-                    hiddenSubtitlePageState = HiddenSubtitlePageState.ShowingPage;
-                }
-                while (generation == subtitleGeneration &&
-                    !IsSubtitlePageVisuallyComplete(page))
-                {
-                    AdvanceSubtitleReveal();
-                    SyncHiddenDialogueText();
-                    if (subtitlePlaybackStoppedSignal) break;
-                    yield return null;
-                }
-                if (generation != subtitleGeneration) yield break;
-                if (subtitlePlaybackStoppedSignal || page == subtitlePages.Count - 1) break;
-                // The page is now a closed visual unit: its final word is due
-                // and fully visible, so proceed directly into the existing
-                // short transition without adding a separate hold timer.
-                if (subtitlePlaybackStoppedSignal) break;
-            }
-
-            // A live TTS response holds its final page until stop; fallback
-            // holds briefly and always expires.
-            if (!subtitlePlaybackStoppedSignal && subtitlePlaybackStartedSignal)
-            {
-                float safetyUntil = Time.unscaledTime + Mathf.Max(1.5f, subtitleSpeechDuration);
-                while (generation == subtitleGeneration && !subtitlePlaybackStoppedSignal && Time.unscaledTime < safetyUntil) yield return null;
-            }
-            if (generation != subtitleGeneration) yield break;
-            yield return new WaitForSecondsRealtime(.12f);
-            if (generation != subtitleGeneration) yield break;
-            yield return FadeSubtitle(generation, hiddenDialogueCanvasGroup.alpha, 0f, .45f);
-            if (generation != subtitleGeneration) yield break;
-            hiddenDialogueText.text = string.Empty;
-            hiddenDialogueViewport.gameObject.SetActive(false);
-            subtitlePresentationCoroutine = null;
-        }
-
-        private IEnumerator FadeSubtitle(int generation, float from, float to, float duration, bool revealDuringFade = false)
-        {
-            for (float elapsed = 0f; generation == subtitleGeneration && elapsed < duration; elapsed += Time.unscaledDeltaTime)
-            {
-                hiddenDialogueCanvasGroup.alpha = Mathf.Lerp(from, to, elapsed / duration);
-                if (revealDuringFade)
-                {
-                    AdvanceSubtitleReveal();
-                    SyncHiddenDialogueText();
-                }
-                yield return null;
-            }
-            if (generation == subtitleGeneration) hiddenDialogueCanvasGroup.alpha = to;
         }
 
         private void ConfigureSubtitleTimingPlan(float durationSeconds, bool playbackClock, float[] alignedWordStarts)
@@ -4022,115 +6149,23 @@ namespace AIFren.UnityPoc.UI
             float rawFinalWordTimestamp = subtitleWordSchedule.Count > 0
                 ? subtitleWordSchedule[subtitleWordSchedule.Count - 1] : 0f;
             SubtitleTimingPlan.ApplyLead(subtitleWordSchedule, HiddenSubtitleLeadSeconds);
-            subtitleTimingUsesPlaybackClock = playbackClock && durationSeconds > 0f;
             LogSubtitleTimingDiagnostics(durationSeconds, validAlignment, rawFinalWordTimestamp);
-            Debug.Log("[AIFren Subtitle] immutable timing plan=" + subtitleWordSchedule.Count +
-                " words; duration=" + durationSeconds.ToString("F2") + "; playbackClock=" + subtitleTimingUsesPlaybackClock +
-                "; source=" + (validAlignment ? "Kokoro token timestamps" : "weighted fallback") +
-                "; lead=" + HiddenSubtitleLeadSeconds.ToString("F2") + "s.");
-        }
-
-        private void BeginSubtitlePage(int pageIndex)
-        {
-            if (pageIndex < 0 || pageIndex >= subtitlePages.Count) return;
-            string page = subtitlePages[pageIndex];
-            // This remains only as a local fallback if no plan can be built.
-            hiddenSubtitleReveal.WordsPerSecond = revealWordsPerSecond;
-            hiddenSubtitleReveal.Begin(page, false);
-        }
-
-        private void PrepareSubtitlePageForFadeIn(int pageIndex, bool seedInitialDueWord)
-        {
-            // Preparation is explicitly non-renderable. The root is disabled
-            // before any text, mesh, or vertex-alpha mutation, so no page can
-            // flash between a text replacement and its fade-start alpha.
-            if (hiddenDialogueViewport != null) hiddenDialogueViewport.gameObject.SetActive(false);
-            if (hiddenDialogueCanvasGroup != null) hiddenDialogueCanvasGroup.alpha = 0f;
-            BeginSubtitlePage(pageIndex);
-            InitializeSubtitlePagePresentation(pageIndex, seedInitialDueWord);
-            SyncHiddenDialogueText(true);
-        }
-
-        private void CommitSubtitlePageForFadeIn()
-        {
-            // All child TMP layers have already received complete text and
-            // vertex visibility while non-renderable. Alpha is established
-            // before this can submit a frame to the renderer.
-            if (hiddenDialogueCanvasGroup != null) hiddenDialogueCanvasGroup.alpha = 0f;
-            if (hiddenDialogueViewport != null) hiddenDialogueViewport.gameObject.SetActive(true);
-            SyncHiddenDialogueText();
-        }
-
-        private void InitializeSubtitlePagePresentation(int pageIndex, bool seedInitialDueWord)
-        {
-            if (subtitleWordSchedule.Count == 0)
-            {
-                if (seedInitialDueWord) hiddenSubtitleReveal.RevealNext();
-                return;
-            }
-
-            if (pageIndex < 0 || pageIndex >= subtitlePageWordRanges.Count) return;
-            // Timestamp-due words during a non-renderable page transition are
-            // pending presentation, not already shown. Seed only the initial
-            // page's first due word so its root fade has visible glyphs.
-            if (seedInitialDueWord && GetSubtitleDueWordCount() >
-                subtitlePageWordRanges[pageIndex].FirstWordIndex)
-                hiddenSubtitleReveal.RevealNext();
-        }
-
-        private void AdvanceSubtitleReveal()
-        {
-            if (subtitleWordSchedule.Count == 0)
-            {
-                hiddenSubtitleReveal.Advance(Time.unscaledDeltaTime);
-                return;
-            }
-
-            int dueWords = GetSubtitleDueWordCount();
-
-            int pageStart = subtitlePageIndex >= 0 && subtitlePageIndex < subtitlePageWordRanges.Count
-                ? subtitlePageWordRanges[subtitlePageIndex].FirstWordIndex : 0;
-            int dueOnCurrentPage = Mathf.Clamp(dueWords - pageStart, 0, hiddenSubtitleReveal.WordCount);
-            // Keep timingDue and presentationShown separate. A burst of words
-            // due while the page was non-renderable is caught up one visible
-            // token at a time, in order, rather than silently consumed by
-            // RevealTo before the reader can see it.
-            if (hiddenSubtitleReveal.RevealedTokenCount < dueOnCurrentPage &&
-                !hiddenSubtitleReveal.LatestTokenIsFading)
-                hiddenSubtitleReveal.RevealNext();
-            hiddenSubtitleReveal.AdvanceLatestTokenFade(Time.unscaledDeltaTime);
-        }
-
-        private float SubtitleScheduleElapsed()
-        {
-            float origin = subtitleTimingUsesPlaybackClock ? subtitlePlaybackStartedAt : subtitlePresentationStartedAt;
-            return Mathf.Max(0f, Time.unscaledTime - origin);
-        }
-
-        private int GetSubtitleDueWordCount()
-        {
-            float elapsed = SubtitleScheduleElapsed();
-            int dueWords = 0;
-            while (dueWords < subtitleWordSchedule.Count && subtitleWordSchedule[dueWords] <= elapsed) dueWords++;
-            return dueWords;
-        }
-
-        private bool IsSubtitlePageFinalWordDue(int pageIndex)
-        {
-            if (subtitleWordSchedule.Count == 0) return hiddenSubtitleReveal.IsComplete;
-            if (pageIndex < 0 || pageIndex >= subtitlePageWordRanges.Count) return false;
-            return SubtitleTimingPlan.IsPageFinalWordDue(
-                subtitlePageWordRanges[pageIndex], subtitleWordSchedule, SubtitleScheduleElapsed());
-        }
-
-        private bool IsSubtitlePageVisuallyComplete(int pageIndex)
-        {
-            return hiddenSubtitleReveal.IsComplete && !hiddenSubtitleReveal.LatestTokenIsFading &&
-                IsSubtitlePageFinalWordDue(pageIndex);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (verboseSubtitleDiagnostics)
+#endif
+                Debug.Log("[AIFren Subtitle] immutable timing plan=" + subtitleWordSchedule.Count +
+                    " words; duration=" + durationSeconds.ToString("F2") + "; playbackClock=" + (playbackClock && durationSeconds > 0f) +
+                    "; source=" + (validAlignment ? "Kokoro token timestamps" : "weighted fallback") +
+                    "; lead=" + HiddenSubtitleLeadSeconds.ToString("F2") + "s.");
         }
 
         private void LogSubtitleTimingDiagnostics(float audioDurationSeconds, bool validAlignment, float rawFinalWordTimestamp)
         {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (!verboseSubtitleDiagnostics) return;
+#else
+            return;
+#endif
             if (subtitleWordSchedule.Count == 0) return;
             float first = subtitleWordSchedule[0];
             float final = subtitleWordSchedule[subtitleWordSchedule.Count - 1];
@@ -4151,24 +6186,28 @@ namespace AIFren.UnityPoc.UI
 
         private void HideHiddenSubtitleImmediately()
         {
-            hiddenSubtitleTemporarilySuppressed = false;
+            hiddenSubtitleSuppressedByUi = false;
             hiddenSubtitlePresenter?.Cancel();
         }
 
-        private void SuppressHiddenSubtitleForTemporaryReveal()
+        private void SuppressHiddenSubtitleForUiReveal()
         {
-            if (hiddenSubtitleTemporarilySuppressed || hiddenDialogueViewport == null) return;
-            hiddenSubtitleTemporarilySuppressed = true;
+            if (hiddenSubtitleSuppressedByUi || hiddenDialogueViewport == null) return;
+            hiddenSubtitleSuppressedByUi = true;
             hiddenSubtitlePresenter?.SetSuppressed(true, Time.unscaledTime);
         }
 
-        private void RestoreHiddenSubtitleAfterTemporaryReveal()
+        private void RestoreHiddenSubtitleAfterUiReveal()
         {
-            if (!hiddenSubtitleTemporarilySuppressed) return;
-            bool restore = interfaceHidden && showDialogueWhenHidden &&
-                hiddenSubtitlePresenter != null && hiddenSubtitlePresenter.IsActive;
-            hiddenSubtitleTemporarilySuppressed = false;
-            if (!restore || hiddenDialogueViewport == null) return;
+            if (!hiddenSubtitleSuppressedByUi) return;
+            bool releaseSuppression = interfaceHidden && showDialogueWhenHidden &&
+                hiddenSubtitlePresenter != null;
+            hiddenSubtitleSuppressedByUi = false;
+            if (!releaseSuppression || hiddenDialogueViewport == null) return;
+            // Always relay the suppression release, even if the preceding
+            // subtitle naturally retired during the peek. Otherwise the
+            // presenter's private suppression bit survives into the next
+            // response and keeps it invisible until another UI transition.
             hiddenSubtitlePresenter?.SetSuppressed(false, Time.unscaledTime);
         }
 
@@ -4179,6 +6218,7 @@ namespace AIFren.UnityPoc.UI
             graphicsQuality = PresentationGraphicsQuality.High;
             avatarRenderScale = DefaultAvatarRenderScale(graphicsQuality);
             showDialogueWhenHidden = false;
+            showSceneOverlay = false;
             alwaysOnTop = false;
             theme = PresentationThemes.Dark;
             PresentationThemes.Save(theme.mode);
@@ -4199,10 +6239,12 @@ namespace AIFren.UnityPoc.UI
             stagedDisplayDefaults.antiAliasing = DefaultAntiAliasing(graphicsQuality);
             QualitySettings.antiAliasing = currentDisplaySettings.antiAliasing;
             avatarLoader?.SetAntiAliasing(currentDisplaySettings.antiAliasing);
+            SetAvatarLighting(DefaultAvatarLighting);
             ApplyPresentationGraphics();
             PlayerPrefs.SetInt(GraphicsQualityPreference, (int)graphicsQuality);
             PlayerPrefs.SetFloat(AvatarRenderScalePreference, avatarRenderScale);
             PlayerPrefs.SetInt(ShowDialogueWhenHiddenPreference, 0);
+            PlayerPrefs.SetInt(SceneOverlayPreference, 0);
             PlayerPrefs.Save();
             ApplyAlwaysOnTop();
             presentationAudio?.ResetToDefaults();
@@ -4215,19 +6257,36 @@ namespace AIFren.UnityPoc.UI
             ApplyTheme();
             RefreshOrdinarySettingsControls();
             RefreshDisplaySettingsUi();
-            SyncHiddenDialogueText();
         }
 
         private void RefreshOrdinarySettingsControls()
         {
             if (revealSlider != null) revealSlider.SetValueWithoutNotify(revealWordsPerSecond);
+            if (avatarLightingSlider != null) avatarLightingSlider.SetValueWithoutNotify(avatarLightingMultiplier);
+            RefreshAvatarLightingLabel();
             if (instantTextToggle != null) instantTextToggle.SetIsOnWithoutNotify(instantText);
             if (hiddenDialogueToggle != null) hiddenDialogueToggle.SetIsOnWithoutNotify(showDialogueWhenHidden);
+            if (sceneOverlayToggle != null) sceneOverlayToggle.SetIsOnWithoutNotify(showSceneOverlay);
             if (alwaysOnTopToggle != null) alwaysOnTopToggle.SetIsOnWithoutNotify(alwaysOnTop);
             if (sfxMuteToggle != null) sfxMuteToggle.SetIsOnWithoutNotify(presentationAudio != null && presentationAudio.SfxMuted);
             if (sfxVolumeSlider != null) sfxVolumeSlider.SetValueWithoutNotify(presentationAudio != null ? presentationAudio.SfxVolume : .45f);
             if (bgmMuteToggle != null) bgmMuteToggle.SetIsOnWithoutNotify(presentationAudio != null && presentationAudio.BgmMuted);
             if (bgmVolumeSlider != null) bgmVolumeSlider.SetValueWithoutNotify(presentationAudio != null ? presentationAudio.BgmVolume : .14f);
+            RefreshSceneOverlay(authoritativeContinuity);
+        }
+
+        private void SetAvatarLighting(float multiplier)
+        {
+            avatarLightingMultiplier = Mathf.Clamp(multiplier, 0f, 2f);
+            PlayerPrefs.SetFloat(AvatarLightingPreference, avatarLightingMultiplier);
+            PlayerPrefs.Save();
+            avatarLoader?.SetPresentationLightingMultiplier(avatarLightingMultiplier);
+            RefreshAvatarLightingLabel();
+        }
+
+        private void RefreshAvatarLightingLabel()
+        {
+            if (avatarLightingValue != null) avatarLightingValue.text = avatarLightingMultiplier.ToString("0.00") + "×";
         }
 
         private void BeginApplyDisplaySettings()
@@ -4538,9 +6597,24 @@ namespace AIFren.UnityPoc.UI
             ApplyAvatarPresentationTransform(portrait);
             ApplyAvatarViewerBackground();
             LayoutHiddenSubtitleRegion();
+            LayoutTruthScopeIndicator();
             if (avatarViewEditing) SyncAvatarViewControls();
             LogAvatarContainerMetrics(interfaceHidden);
             PlacePttPresentation();
+        }
+
+        private void LayoutTruthScopeIndicator()
+        {
+            if (truthScopeIndicatorLabel == null || Screen.width <= 0 || Screen.height <= 0) return;
+            RectTransform rect = truthScopeIndicatorLabel.rectTransform;
+            Vector2 anchor = TruthScopeIndicatorState.SafeAreaAnchor(
+                Screen.safeArea, new Vector2(Screen.width, Screen.height));
+            rect.anchorMin = anchor;
+            rect.anchorMax = anchor;
+            rect.pivot = Vector2.zero;
+            rect.anchoredPosition = TruthScopeIndicatorState.SafeMargin();
+            bool portrait = Screen.height >= Screen.width;
+            rect.sizeDelta = TruthScopeIndicatorState.Size(portrait);
         }
 
         private static Vector2 FullAvatarPresentationPixels()

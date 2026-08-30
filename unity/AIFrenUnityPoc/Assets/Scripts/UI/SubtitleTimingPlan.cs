@@ -35,13 +35,14 @@ namespace AIFren.UnityPoc.UI
             return words;
         }
 
-        internal static List<SubtitlePageWordRange> BuildPageWordRanges(IList<string> pages)
+        internal static List<SubtitlePageWordRange> BuildPageWordRanges(
+            IList<string> pages, Func<string, string> pageToOwnedText = null)
         {
             List<SubtitlePageWordRange> ranges = new List<SubtitlePageWordRange>();
             int nextWord = 0;
             foreach (string page in pages ?? Array.Empty<string>())
             {
-                int count = WordCount(page);
+                int count = WordCount(pageToOwnedText != null ? pageToOwnedText(page) : page);
                 if (count == 0) continue;
                 ranges.Add(new SubtitlePageWordRange(nextWord, nextWord + count - 1));
                 nextWord += count;
@@ -63,6 +64,13 @@ namespace AIFren.UnityPoc.UI
         internal static bool TryValidatePageDefinitions(
             IList<string> pages, IList<SubtitlePageWordRange> ranges, int totalWordCount, out string error)
         {
+            return TryValidatePageDefinitions(pages, ranges, totalWordCount, null, out error);
+        }
+
+        internal static bool TryValidatePageDefinitions(
+            IList<string> pages, IList<SubtitlePageWordRange> ranges, int totalWordCount,
+            Func<string, string> pageToOwnedText, out string error)
+        {
             if (pages == null || ranges == null || pages.Count != ranges.Count)
             {
                 error = "page/range count mismatch";
@@ -73,7 +81,7 @@ namespace AIFren.UnityPoc.UI
             for (int index = 0; index < pages.Count; index++)
             {
                 SubtitlePageWordRange range = ranges[index];
-                int pageWords = WordCount(pages[index]);
+                int pageWords = WordCount(pageToOwnedText != null ? pageToOwnedText(pages[index]) : pages[index]);
                 if (range.FirstWordIndex != expectedFirst || range.LastWordIndex < range.FirstWordIndex ||
                     pageWords != range.LastWordIndex - range.FirstWordIndex + 1)
                 {
@@ -105,7 +113,7 @@ namespace AIFren.UnityPoc.UI
             Func<string, string> pageToSpokenText, out string error)
         {
             List<string> allWords = TokenizeWords(canonicalText);
-            if (!TryValidatePageDefinitions(pages, ranges, allWords.Count, out error)) return false;
+            if (!TryValidatePageDefinitions(pages, ranges, allWords.Count, pageToSpokenText, out error)) return false;
 
             for (int pageIndex = 0; pageIndex < pages.Count; pageIndex++)
             {

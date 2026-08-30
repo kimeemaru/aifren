@@ -1,8 +1,7 @@
 """Replaceable, local embedding lifecycle for the isolated Memory V2 store.
 
-This module is not part of production memory retrieval. Vectors are derived
-from synthetic or explicitly rebuilt diagnostic shadow claims, and are safe to
-delete and rebuild.
+Vectors are derived/local and safe to delete and rebuild.  They may support
+non-authoritative shadow retrieval diagnostics, never V1 prompt retrieval.
 """
 
 from __future__ import annotations
@@ -75,7 +74,7 @@ class MiniLMEmbeddingProvider:
 
 
 class EmbeddingLifecycle:
-    """Explicit rebuild operations; startup never invokes this class itself."""
+    """Explicit derived-index maintenance used only by V2 diagnostics."""
 
     def __init__(self, store: MemoryV2Store, provider: EmbeddingProvider, *, include_legacy_unverified: bool = False):
         self.store = store
@@ -94,9 +93,17 @@ class EmbeddingLifecycle:
     def rebuild_stale_or_missing(self) -> dict[str, int]:
         return self._rebuild(stale_only=True)
 
-    def _rebuild(self, *, stale_only: bool) -> dict[str, int]:
-        self.mark_incompatible_stale()
-        rows = self.store.embedding_source_claims(include_legacy_unverified=self.include_legacy_unverified)
+    def rebuild_claims(self, claim_ids: Sequence[str], *, stale_only: bool = True) -> dict[str, int]:
+        """Refresh only changed claims so normal dual-read never scans V2."""
+        return self._rebuild(stale_only=stale_only, claim_ids=claim_ids)
+
+    def _rebuild(self, *, stale_only: bool, claim_ids: Sequence[str] | None = None) -> dict[str, int]:
+        if claim_ids is None:
+            self.mark_incompatible_stale()
+        rows = self.store.embedding_source_claims(
+            include_legacy_unverified=self.include_legacy_unverified,
+            claim_ids=claim_ids,
+        )
         selected = []
         for row in rows:
             if not stale_only or not self.store.embedding_is_current(row, self.provider):

@@ -20,14 +20,13 @@ namespace AIFren.UnityPoc.Tests.EditMode
         }
 
         [Test]
-        public void PressedPttReleasesWhenFocusOrHeldStateIsLost()
+        public void UnityDeliveredPttTracksTheHeldKeyWithoutAVisibilityOrFocusGate()
         {
-            Assert.IsFalse(PresentationPttInputPolicy.ShouldStart(false, true));
-            Assert.IsTrue(PresentationPttInputPolicy.ShouldStart(true, true));
-            Assert.IsTrue(PresentationPttInputPolicy.ShouldRelease(true, false, true));
-            Assert.IsTrue(PresentationPttInputPolicy.ShouldRelease(true, true, false));
-            Assert.IsFalse(PresentationPttInputPolicy.ShouldRelease(true, true, true));
-            Assert.IsFalse(PresentationPttInputPolicy.ShouldRelease(false, false, false));
+            Assert.IsFalse(PresentationPttInputPolicy.ShouldStart(false));
+            Assert.IsTrue(PresentationPttInputPolicy.ShouldStart(true));
+            Assert.IsTrue(PresentationPttInputPolicy.ShouldRelease(true, false));
+            Assert.IsFalse(PresentationPttInputPolicy.ShouldRelease(true, true));
+            Assert.IsFalse(PresentationPttInputPolicy.ShouldRelease(false, false));
         }
     }
 }

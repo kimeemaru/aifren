@@ -5,6 +5,7 @@ import re
 import shutil
 import tempfile
 import threading
+from dataclasses import dataclass
 from datetime import datetime
 
 from memory.embeddings import EmbeddingModel
@@ -114,10 +115,12 @@ def validate_memory_record(record, allow_missing_derived=False):
 # JSON
 # ============================================================
 
-def load_memories():
+def load_memories(path=None):
+
+    path = path or MEMORY_FILE
 
     if not os.path.exists(
-        MEMORY_FILE
+        path
     ):
 
         return []
@@ -125,7 +128,7 @@ def load_memories():
     try:
 
         with open(
-            MEMORY_FILE,
+            path,
             "r",
             encoding="utf-8"
         ) as file:
@@ -164,8 +167,11 @@ def load_memories():
 
 
 def save_memories(
-    memories
+    memories,
+    path=None,
 ):
+
+    path = path or MEMORY_FILE
 
     if not isinstance(memories, list):
         raise MemoryDataError("Memories must be stored as a list.")
@@ -180,8 +186,9 @@ def save_memories(
 
         seen_ids.add(record["id"])
 
-    directory = os.path.dirname(os.path.abspath(MEMORY_FILE))
-    basename = os.path.basename(MEMORY_FILE)
+    directory = os.path.dirname(os.path.abspath(path))
+    basename = os.path.basename(path)
+    os.makedirs(directory, exist_ok=True)
     temp_path = None
 
     try:
@@ -196,10 +203,10 @@ def save_memories(
             file.flush()
             os.fsync(file.fileno())
 
-        if os.path.exists(MEMORY_FILE):
-            shutil.copy2(MEMORY_FILE, MEMORY_FILE + ".bak")
+        if os.path.exists(path):
+            shutil.copy2(path, path + ".bak")
 
-        os.replace(temp_path, MEMORY_FILE)
+        os.replace(temp_path, path)
         temp_path = None
 
     except OSError as error:
@@ -908,24 +915,38 @@ def calculate_keyword_score(
 # Memory
 # ============================================================
 
+@dataclass(frozen=True)
+class MemoryMutation:
+    """A successful V1 mutation observed after its canonical JSON save."""
+
+    kind: str
+    record: dict | None
+    previous: dict | None = None
+
+
 class Memory:
 
     def __init__(
         self,
-        llm
+        llm,
+        memory_file=None,
+        embedding_model=None,
     ):
 
         self.llm = llm
 
         self._lock = threading.RLock()
+        self.memory_file = memory_file or MEMORY_FILE
+        self._mutation_observers = []
 
         self.memories = (
-            load_memories()
+            load_memories(self.memory_file)
         )
 
-        self.embedding_model = (
-            EmbeddingModel()
-        )
+        # The embedding model is a replaceable runtime resource, not
+        # character-owned state. Character switches reuse the already-loaded
+        # model while loading a fresh per-character memory collection.
+        self.embedding_model = embedding_model if embedding_model is not None else EmbeddingModel()
 
     # ========================================================
     # Metadata
@@ -1047,8 +1068,33 @@ class Memory:
 
         with self._lock:
             save_memories(
-                self.memories
+                self.memories,
+                getattr(self, "memory_file", MEMORY_FILE),
             )
+
+    def subscribe_mutations(self, observer):
+        """Observe successful V1 mutations without taking authority from V1.
+
+        Observer failure is intentionally fail-open: a secondary shadow store
+        must never invalidate a canonical V1 write that has already succeeded.
+        """
+        if not callable(observer):
+            raise TypeError("memory mutation observer must be callable")
+        with self._lock:
+            self._mutation_observers.append(observer)
+
+        def unsubscribe():
+            with self._lock:
+                if observer in self._mutation_observers:
+                    self._mutation_observers.remove(observer)
+        return unsubscribe
+
+    def _emit_mutation(self, mutation):
+        for observer in tuple(getattr(self, "_mutation_observers", ())):
+            try:
+                observer(mutation)
+            except Exception as error:
+                print(f"[Memory V2 shadow] V1 mutation observer failed: {type(error).__name__}")
 
     # ========================================================
     # Centralized Mutations
@@ -1133,6 +1179,7 @@ class Memory:
 
             self.memories.append(candidate)
             self.save()
+            self._emit_mutation(MemoryMutation("created", dict(candidate)))
 
             return candidate
 
@@ -1183,6 +1230,7 @@ class Memory:
                     else importance
                 )
 
+                previous = dict(memory)
                 candidate = dict(memory)
                 candidate["category"] = new_category
                 candidate["content"] = new_content
@@ -1201,6 +1249,7 @@ class Memory:
                 memory.clear()
                 memory.update(candidate)
                 self.save()
+                self._emit_mutation(MemoryMutation("updated", dict(memory), previous))
 
                 return memory
 
@@ -1230,8 +1279,10 @@ class Memory:
         with self._lock:
             for memory in self.memories:
                 if memory.get("id") == memory_id:
+                    previous = dict(memory)
                     self.memories.remove(memory)
                     self.save()
+                    self._emit_mutation(MemoryMutation("removed", None, previous))
                     return True
 
         return False
@@ -1431,8 +1482,11 @@ class Memory:
         if confirmation == "WIPE":
 
             with self._lock:
+                removed = [dict(memory) for memory in self.memories]
                 self.memories.clear()
                 self.save()
+                for memory in removed:
+                    self._emit_mutation(MemoryMutation("removed", None, memory))
 
             print(
                 "All lifelong memories have "

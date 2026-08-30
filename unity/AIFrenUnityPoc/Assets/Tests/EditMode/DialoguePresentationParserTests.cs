@@ -73,20 +73,43 @@ namespace AIFren.UnityPoc.Tests.EditMode
         {
             const string longAction = "*let out a soft, teasing huff and lean back on my heels*";
             const string subjectAction = "*I cross my arms*";
-            const string threeWordEmphasis = "*very close indeed*";
+            const string standaloneAction = "*very close indeed*";
             const string fourWordFallback = "*I really mean this*";
 
             Assert.AreEqual(DialogueSpanKind.Emote, DialoguePresentationParser.Parse(longAction)[0].Kind);
             Assert.AreEqual(DialogueSpanKind.Emote, DialoguePresentationParser.Parse(subjectAction)[0].Kind);
-            Assert.AreEqual(DialogueSpanKind.Emphasis, DialoguePresentationParser.Parse(threeWordEmphasis)[0].Kind);
+            Assert.AreEqual(DialogueSpanKind.Emote, DialoguePresentationParser.Parse(standaloneAction)[0].Kind);
             Assert.AreEqual(DialogueSpanKind.Emote, DialoguePresentationParser.Parse(fourWordFallback)[0].Kind);
             Assert.AreEqual(string.Empty, DialoguePresentationParser.SpokenText(longAction));
             Assert.AreEqual(string.Empty, DialoguePresentationParser.FormatSubtitleText(DialoguePresentationParser.SubtitleSourceText(longAction)));
-            Assert.AreEqual("very close indeed", DialoguePresentationParser.SpokenText(threeWordEmphasis));
+            Assert.AreEqual(string.Empty, DialoguePresentationParser.SpokenText(standaloneAction));
 
             const string doubleEmphasis = "I **really mean this very strongly**.";
             Assert.AreEqual(DialogueSpanKind.Emphasis, DialoguePresentationParser.Parse(doubleEmphasis)[1].Kind);
             Assert.AreEqual("I really mean this very strongly.", DialoguePresentationParser.SpokenText(doubleEmphasis));
+        }
+
+        [Test]
+        public void ContextOwnsEmphasisWhileNestedFormattingCannotEscapeOuterAction()
+        {
+            var cases = new Dictionary<string, string>
+            {
+                { "I *really* don't like that.", "I really don't like that." },
+                { "*smile*", string.Empty },
+                { "*I look *really* confused.*", string.Empty },
+                { "Hello. *I smile.* How are you?", "Hello. How are you?" },
+                { "I **really** mean this.", "I really mean this." },
+                { "I *very strongly mean this* today.", "I very strongly mean this today." },
+                { "*I **carefully** put the book down.*", string.Empty },
+            };
+            foreach (var item in cases)
+            {
+                DialogueDocument document = DialoguePresentationParser.ParseDocument(item.Key);
+                Assert.AreEqual(item.Value, document.SpokenText, item.Key);
+                Assert.AreEqual(
+                    DialoguePresentationParser.SpokenText(item.Key), document.SpokenText,
+                    "Whole response and shared semantic document must agree.");
+            }
         }
 
         [Test]
@@ -121,7 +144,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
         [Test]
         public void LeadingActionsAreEmotesAndDoubleMarkersAreAlwaysEmphasis()
         {
-            foreach (string raw in new[] { "*smiles* Fine.", "*blinks* What?", "*pauses* I suppose so.", "*AIFren waves* Hello." })
+            foreach (string raw in new[] { "*smiles* Fine.", "*blinks* What?", "*pauses* I suppose so.", "*Serval waves* Hello." })
             {
                 IReadOnlyList<DialogueSpan> spans = DialoguePresentationParser.Parse(raw);
                 Assert.AreEqual(DialogueSpanKind.Emote, spans[0].Kind, raw);
@@ -207,6 +230,55 @@ namespace AIFren.UnityPoc.Tests.EditMode
             StringAssert.DoesNotContain("<size=200>", formatted);
             StringAssert.DoesNotContain("<alpha", formatted);
             StringAssert.DoesNotContain("</alpha>", formatted);
+        }
+
+        [Test]
+        public void LongStreamedPartialActionRemainsSafeAndReadablyFormatted()
+        {
+            const string streamed = "*looks toward the window*\n\nA long answer with <size=200>literal model text</size> and an unfinished *waves";
+            string formatted = DialoguePresentationParser.FormatVisible(streamed, true);
+
+            StringAssert.Contains("<color=#74B8FF>*looks toward the window*</color>\nA long answer", formatted);
+            StringAssert.Contains("&lt;size=200&gt;literal model text&lt;/size&gt;", formatted);
+            StringAssert.Contains("<color=#74B8FF>*waves</color>", formatted);
+        }
+
+        [Test]
+        public void CompletedStreamAndCanonicalFormattingUseTheSameActionDecoration()
+        {
+            const string raw = "*smiles* Hello.";
+            string streamed = DialoguePresentationParser.FormatVisible(raw, true);
+            string canonical = DialoguePresentationParser.FormatVisible(raw, false);
+
+            Assert.AreEqual(canonical, streamed);
+            StringAssert.Contains("<color=#74B8FF>*smiles*</color>", canonical);
+            StringAssert.DoesNotContain("(*", canonical);
+            StringAssert.DoesNotContain("*)", canonical);
+        }
+
+        [Test]
+        public void NestedFormattingInsideOuterActionsNeverLeaksIntoSpokenProjection()
+        {
+            var cases = new[]
+            {
+                ("*I slowly *really* lean closer.*", ""),
+                ("*I **carefully** put the book down.*", ""),
+                ("*She pauses, looking *very* confused.*", ""),
+                ("*I look at you.* Then I say hello.", "Then I say hello."),
+                ("Hello. *I look *very* confused.* Are you okay?", "Hello. Are you okay?"),
+                ("*Entire action containing multiple *emphasized* words and another *emphasized* phrase.*", ""),
+                ("I *really* mean it.", "I really mean it."),
+            };
+            foreach (var item in cases)
+            {
+                Assert.AreEqual(item.Item2, DialoguePresentationParser.SpokenText(item.Item1), item.Item1);
+                string subtitle = DialoguePresentationParser.FormatSubtitleText(
+                    DialoguePresentationParser.SubtitleSourceText(item.Item1));
+                if (string.IsNullOrEmpty(item.Item2)) Assert.That(subtitle, Is.Empty, item.Item1);
+                StringAssert.DoesNotContain("lean closer", subtitle, item.Item1);
+                StringAssert.DoesNotContain("put the book down", subtitle, item.Item1);
+                StringAssert.DoesNotContain("looking very confused", subtitle, item.Item1);
+            }
         }
     }
 }

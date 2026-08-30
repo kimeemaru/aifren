@@ -31,7 +31,7 @@ namespace AIFren.UnityPoc.Avatar
     [Serializable]
     public sealed class AvatarPresentationTransform
     {
-        public const float MaximumScale = 8f;
+        public const float MaximumScale = 15f;
         // A scaled full-view image needs half of its scale in either direction
         // to bring either original edge to the viewport center. This preserves
         // the complete direct-view composition range at the maximum zoom.

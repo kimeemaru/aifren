@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace AIFren.UnityPoc.Avatar
 {
-    [Serializable] internal sealed class ManagedAssetRecord { public string id; public string kind; public string path; public string displayName; public string thumbnailPath; }
+    [Serializable] internal sealed class ManagedAssetRecord { public string id; public string kind; public string path; public string displayName; public string thumbnailPath; public bool userNamed; }
     [Serializable] internal sealed class ManagedAssetIndex { public List<ManagedAssetRecord> assets = new List<ManagedAssetRecord>(); }
 
     internal sealed class ManagedAssetLibrary
@@ -16,6 +16,7 @@ namespace AIFren.UnityPoc.Avatar
         private const string ModelsDirectory = "Models";
         private const string BackgroundsDirectory = "Backgrounds";
         private const string ThumbnailsDirectory = "Thumbnails";
+        internal const string BundledAvatarThumbnailId = "bundled-avatar";
         private readonly string root;
         private readonly string indexPath;
         private ManagedAssetIndex index;
@@ -46,7 +47,13 @@ namespace AIFren.UnityPoc.Avatar
             return unique;
         }
         internal List<ManagedAssetRecord> Records(string kind) => index.assets.FindAll(record => record.kind == kind);
+        internal static string DisplayName(ManagedAssetRecord record, string fallback)
+        {
+            return record != null && !string.IsNullOrWhiteSpace(record.displayName)
+                ? record.displayName.Trim() : fallback;
+        }
         internal string ThumbnailPath(string id) => Path.Combine(root, "Thumbnails", id + ".png");
+        internal string BundledAvatarThumbnailPath() => ThumbnailPath(BundledAvatarThumbnailId);
         internal void SetThumbnailPath(string id, string path)
         {
             ManagedAssetRecord record = index.assets.Find(x => x.id == id);
@@ -57,9 +64,8 @@ namespace AIFren.UnityPoc.Avatar
         {
             record = null; error = string.Empty;
             try {
-                if (kind == ModelKind && !IsValidVrmFile(source))
+                if (kind == ModelKind && !AvatarModelFormatClassifier.TryClassify(source, out _, out error))
                 {
-                    error = "Choose a valid .vrm avatar file.";
                     return false;
                 }
                 byte[] bytes = File.ReadAllBytes(source); string ext = Path.GetExtension(source).ToLowerInvariant();
@@ -67,7 +73,7 @@ namespace AIFren.UnityPoc.Avatar
                     record = index.assets.Find(x => x.id == id && x.kind == kind);
                     if (record != null && File.Exists(record.path))
                     {
-                        if (kind == BackgroundKind && IsMissingOrHashLikeName(record.displayName))
+                        if (kind == BackgroundKind && !record.userNamed && IsMissingOrHashLikeName(record.displayName))
                         {
                             record.displayName = FriendlySourceName(source, "Imported background");
                             Save();
@@ -86,7 +92,9 @@ namespace AIFren.UnityPoc.Avatar
                         // Repair a stale record in place instead of appending a
                         // second entry for identical content.
                         record.path = path;
-                        if (string.IsNullOrWhiteSpace(record.displayName) || (kind == BackgroundKind && IsMissingOrHashLikeName(record.displayName))) record.displayName = FriendlySourceName(source, kind == BackgroundKind ? "Imported background" : "Imported model");
+                        if (string.IsNullOrWhiteSpace(record.displayName) ||
+                            (kind == BackgroundKind && !record.userNamed && IsMissingOrHashLikeName(record.displayName)))
+                            record.displayName = FriendlySourceName(source, kind == BackgroundKind ? "Imported background" : "Imported model");
                         if (kind == BackgroundKind && string.IsNullOrWhiteSpace(record.thumbnailPath)) record.thumbnailPath = path;
                     }
                     Save(); return true;
@@ -118,16 +126,30 @@ namespace AIFren.UnityPoc.Avatar
             var removed = new List<ManagedAssetRecord>();
             foreach (ManagedAssetRecord record in new List<ManagedAssetRecord>(index.assets))
             {
-                if (record.kind != ModelKind || IsValidVrmFile(record.path)) continue;
+                if (record.kind != ModelKind || AvatarModelFormatClassifier.IsSupportedAvatarFile(record.path)) continue;
                 if (Delete(ModelKind, new[] { record.id })) removed.Add(record);
             }
             return removed;
         }
-        internal void SetDisplayName(string id, string value)
+        internal bool TryRename(string kind, string id, string value, out string error)
         {
-            ManagedAssetRecord record = index.assets.Find(x => x.id == id);
-            if (record == null || string.IsNullOrWhiteSpace(value)) return;
-            record.displayName = value.Trim(); Save();
+            error = string.Empty;
+            string displayName = (value ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(displayName))
+            {
+                error = "Enter a name.";
+                return false;
+            }
+            ManagedAssetRecord record = index.assets.Find(x => x.id == id && x.kind == kind);
+            if (record == null)
+            {
+                error = "That imported asset is no longer available.";
+                return false;
+            }
+            record.displayName = displayName;
+            record.userNamed = true;
+            Save();
+            return true;
         }
         private void DeduplicateIndex()
         {
@@ -147,27 +169,13 @@ namespace AIFren.UnityPoc.Avatar
                 // one working managed asset.
                 if (!File.Exists(canonical.path) && File.Exists(record.path)) canonical.path = record.path;
                 if (string.IsNullOrWhiteSpace(canonical.displayName) && !string.IsNullOrWhiteSpace(record.displayName)) canonical.displayName = record.displayName;
+                canonical.userNamed |= record.userNamed;
                 if ((!File.Exists(canonical.thumbnailPath)) && File.Exists(record.thumbnailPath)) canonical.thumbnailPath = record.thumbnailPath;
             }
             if (DuplicateRecordsRepaired == 0) return;
             index.assets = unique;
             Save();
             Debug.Log("AIFren asset library repaired " + DuplicateRecordsRepaired + " duplicate metadata record(s).");
-        }
-        internal static bool IsValidVrmFile(string path)
-        {
-            if (string.IsNullOrWhiteSpace(path) || !string.Equals(Path.GetExtension(path), ".vrm", StringComparison.OrdinalIgnoreCase) || !File.Exists(path)) return false;
-            try
-            {
-                var info = new FileInfo(path);
-                if (info.Length < 20 || info.Length > uint.MaxValue) return false;
-                using (var reader = new BinaryReader(File.OpenRead(path)))
-                {
-                    uint magic = reader.ReadUInt32(); uint version = reader.ReadUInt32(); uint declaredLength = reader.ReadUInt32();
-                    return magic == 0x46546C67 && version == 2 && declaredLength == info.Length;
-                }
-            }
-            catch { return false; }
         }
         private void RepairUnsafeRecords()
         {
@@ -203,7 +211,7 @@ namespace AIFren.UnityPoc.Avatar
             bool changed = false;
             foreach (ManagedAssetRecord record in index.assets)
             {
-                if (record == null || record.kind != BackgroundKind || !IsMissingOrHashLikeName(record.displayName)) continue;
+                if (record == null || record.kind != BackgroundKind || record.userNamed || !IsMissingOrHashLikeName(record.displayName)) continue;
                 // Older managed files only retain their content-hash filename;
                 // never show that internal implementation detail to users.
                 record.displayName = "Imported background";

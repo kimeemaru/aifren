@@ -1,5 +1,6 @@
 using AIFren.UnityPoc.Avatar;
 using System.Collections.Generic;
+using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -100,6 +101,17 @@ namespace AIFren.UnityPoc.Tests.EditMode
             AvatarLoader loader = host.AddComponent<AvatarLoader>();
 
             Assert.DoesNotThrow(() => loader.SetDirectBackground(AvatarViewerBackground.Bedroom, null));
+            Object.DestroyImmediate(host);
+        }
+
+        [Test]
+        public void LateUpdateSafelyWaitsForTheDirectPresentationCamera()
+        {
+            GameObject host = new GameObject("Avatar loader late update initialization test");
+            AvatarLoader loader = host.AddComponent<AvatarLoader>();
+            MethodInfo lateUpdate = typeof(AvatarLoader).GetMethod("LateUpdate", BindingFlags.Instance | BindingFlags.NonPublic);
+
+            Assert.DoesNotThrow(() => lateUpdate.Invoke(loader, null));
             Object.DestroyImmediate(host);
         }
 

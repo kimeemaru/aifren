@@ -1,19 +1,24 @@
 using System;
 using System.IO;
+using System.Reflection;
 using System.Threading.Tasks;
 using UniVRM10;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.UI;
 
 namespace AIFren.UnityPoc.Avatar
 {
     /// <summary>
-    /// Loads the active avatar configured in Resources/CharacterAvatarConfig.
+    /// Loads the active avatar selected by the Unity presentation client.
     /// The VRM file is imported by UniVRM in the Unity editor; this component
-    /// only instantiates its generated GameObject at runtime.
+    /// only instantiates its generated GameObject at runtime. Character-owned
+    /// selection stores stable managed identifiers, never runtime objects.
     /// </summary>
     public sealed class AvatarLoader : MonoBehaviour
     {
+        private static readonly FieldInfo VrmRuntimeField = typeof(Vrm10Instance).GetField("m_runtime", BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly FieldInfo VrmUseControlRigField = typeof(Vrm10Instance).GetField("m_useControlRig", BindingFlags.Instance | BindingFlags.NonPublic);
         public const string CustomModelPathPreference = "AIFren.AvatarModelPath";
         internal static void ClearCustomModelPathPreference()
         {
@@ -34,6 +39,7 @@ namespace AIFren.UnityPoc.Avatar
         private RawImage previewSurface;
         private RenderTexture previewTexture;
         private float presentationRenderScale = 1f;
+        private float presentationLightingMultiplier = 1.3f;
         private Vector2 previewViewportPixels;
         private bool hasPreviewViewportPixels;
         private bool previewIsPortrait;
@@ -44,10 +50,16 @@ namespace AIFren.UnityPoc.Avatar
         private HumanPose relaxedPose;
         private bool hasRelaxedPose;
         private bool loggedFullBodyFrustum;
+        private AmbientMode originalAmbientMode;
+        private Color originalAmbientLight;
         private float originalAmbientIntensity;
         private float originalReflectionIntensity;
         private bool savedRenderSettings;
         private AvatarAnimationController animationController;
+        private AvatarExpressionController expressionController;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        private AvatarGazeController gazeController;
+#endif
         private Vector2Int lastLoggedPresentationTextureSize;
         private bool directPresentation = true;
         private AvatarPresentationValues directPresentationValues = new AvatarPresentationValues { scale = 1f };
@@ -55,6 +67,8 @@ namespace AIFren.UnityPoc.Avatar
         private Texture directBedroomTexture;
         private AvatarDirectBackgroundRenderer directBackgroundRenderer;
         private float directBaselineAspect = -1f;
+        private bool avatarVisible = true;
+        private int loadGeneration;
 
         private void Start()
         {
@@ -71,6 +85,7 @@ namespace AIFren.UnityPoc.Avatar
 
         public bool LoadConfiguredAvatar()
         {
+            int request = ++loadGeneration;
             AvatarConfiguration configuration = AvatarConfiguration.Load();
 
             if (!configuration.IsValid(out string validationError))
@@ -92,7 +107,13 @@ namespace AIFren.UnityPoc.Avatar
 
             try
             {
-                ActivateAvatar(Instantiate(avatarPrefab), configuration, "Bundled model");
+                GameObject candidate = Instantiate(avatarPrefab);
+                if (request != loadGeneration)
+                {
+                    Destroy(candidate);
+                    return false;
+                }
+                ActivateAvatar(candidate, configuration, "Bundled model");
                 return true;
             }
             catch (Exception exception)
@@ -102,19 +123,33 @@ namespace AIFren.UnityPoc.Avatar
             }
         }
 
+        /// <summary>
+        /// Hides a retired character's concrete avatar while an authoritative
+        /// character-scoped replacement is loading. Newly activated avatars
+        /// inherit this gate, so a stale async completion cannot flash onscreen.
+        /// </summary>
+        public void SetAvatarVisible(bool visible)
+        {
+            avatarVisible = visible;
+            if (ActiveAvatar != null) ActiveAvatar.SetActive(visible);
+        }
+
         /// <summary>Loads VRM 1.0 or migrates VRM 0.x through UniVRM's unified runtime API.</summary>
         public async Task<bool> LoadAvatarFromPathAsync(string path)
         {
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path) ||
-                !string.Equals(Path.GetExtension(path), ".vrm", StringComparison.OrdinalIgnoreCase))
+            int request = ++loadGeneration;
+            if (!AvatarModelFormatClassifier.TryClassify(path, out AvatarModelFormat format, out string formatError))
             {
-                Fail("Choose a readable .vrm file.");
+                Fail(formatError);
                 return false;
             }
 
             GameObject candidate = null;
             try
             {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                Debug.Log("[AvatarLoader] loading " + format + " avatar from " + Path.GetExtension(path) + " container.");
+#endif
                 string metadataName = string.Empty;
                 Vrm10Instance instance = await Vrm10.LoadPathAsync(path, canLoadVrm0X: true, showMeshes: true,
                     vrmMetaInformationCallback: (_, vrm10, vrm0) => metadataName = MetadataName(vrm10) ?? MetadataName(vrm0));
@@ -122,6 +157,11 @@ namespace AIFren.UnityPoc.Avatar
                 candidate = instance.gameObject;
                 if (candidate.GetComponentsInChildren<Renderer>(true).Length == 0)
                     throw new InvalidOperationException("The VRM contains no renderable avatar geometry.");
+                if (request != loadGeneration)
+                {
+                    Destroy(candidate);
+                    return false;
+                }
                 ActivateAvatar(candidate, AvatarConfiguration.Load(), path);
                 LastLoadedModelName = string.IsNullOrWhiteSpace(metadataName) ? Path.GetFileNameWithoutExtension(path) : metadataName.Trim();
                 return true;
@@ -129,6 +169,7 @@ namespace AIFren.UnityPoc.Avatar
             catch (Exception exception)
             {
                 if (candidate != null && candidate != ActiveAvatar) Destroy(candidate);
+                if (request != loadGeneration) return false;
                 Fail("Could not load VRM: " + exception.Message);
                 return false;
             }
@@ -154,21 +195,58 @@ namespace AIFren.UnityPoc.Avatar
             GameObject previous = ActiveAvatar;
             ActiveAvatar = avatar;
             ActiveAvatar.name = "Active VRM Avatar";
+            ActiveAvatar.SetActive(avatarVisible);
             ActiveAvatar.transform.position = configuration.position.ToVector3();
             ActiveAvatar.transform.rotation = Quaternion.Euler(configuration.rotationEuler.ToVector3());
             ActiveAvatar.transform.localScale = Vector3.one * configuration.scale;
             activeConfiguration = configuration;
             idleBasePosition = ActiveAvatar.transform.position;
+
+            // UniVRM constructs its runtime ControlRig lazily. Its reference
+            // rotations must come from the VRM's imported T-pose, not from
+            // AIFren's presentation-only relaxed idle pose below. Otherwise
+            // portable VRMA rotations are retargeted against arms-down
+            // reference axes and produce a globally malformed body pose.
+            Vrm10Instance vrm10 = ActiveAvatar.GetComponentInChildren<Vrm10Instance>();
+            EnsurePresentationControlRig(vrm10);
+            if (vrm10 != null) _ = vrm10.Runtime;
+
             ConfigureRelaxedPose(configuration);
             ConfigurePreviewCamera(configuration);
             idleBaseRotation = ActiveAvatar.transform.rotation;
+            expressionController = gameObject.GetComponent<AvatarExpressionController>() ?? gameObject.AddComponent<AvatarExpressionController>();
+            expressionController.Configure(ActiveAvatar);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            gazeController = gameObject.GetComponent<AvatarGazeController>() ?? gameObject.AddComponent<AvatarGazeController>();
+            gazeController.Configure(ActiveAvatar);
+#endif
             animationController = gameObject.GetComponent<AvatarAnimationController>() ?? gameObject.AddComponent<AvatarAnimationController>();
             animationController.Configure(ActiveAvatar);
+            AvatarPresentationResolver presentationResolver = gameObject.GetComponent<AvatarPresentationResolver>() ?? gameObject.AddComponent<AvatarPresentationResolver>();
+            presentationResolver.Configure();
             ActiveModelPath = source;
             LastError = string.Empty;
             loggedFullBodyFrustum = false;
             AvatarLoaded?.Invoke(ActiveAvatar);
             if (previous != null && previous != ActiveAvatar) Destroy(previous);
+        }
+
+        /// <summary>
+        /// Runtime-loaded avatars ask UniVRM to create a ControlRig, while a
+        /// Resources-instantiated imported VRM defaults to no ControlRig. VRMA
+        /// needs the same normalized rig in both cases. Set the UniVRM 0.130.x
+        /// importer option before Runtime is constructed; never rebuild an
+        /// already-live runtime around a presentation pose.
+        /// </summary>
+        private static void EnsurePresentationControlRig(Vrm10Instance instance)
+        {
+            if (instance == null || VrmUseControlRigField == null) return;
+            if (VrmRuntimeField != null && VrmRuntimeField.GetValue(instance) != null)
+            {
+                Debug.LogWarning("[AvatarLoader] VRM runtime already exists before presentation ControlRig setup; preserving its existing lifecycle.");
+                return;
+            }
+            VrmUseControlRigField.SetValue(instance, true);
         }
 
         private void ConfigurePreviewCamera(AvatarConfiguration configuration)
@@ -187,37 +265,62 @@ namespace AIFren.UnityPoc.Avatar
                 keyLight = lightObject.AddComponent<Light>();
                 keyLight.type = LightType.Directional;
                 keyLight.color = new Color(1f, 0.96f, 0.92f, 1f);
+                keyLight.shadows = LightShadows.None;
                 keyLight.transform.rotation = Quaternion.Euler(48f, -32f, 0f);
 
                 GameObject fillLightObject = new GameObject("AIFren Avatar Fill Light");
                 fillLight = fillLightObject.AddComponent<Light>();
                 fillLight.type = LightType.Directional;
                 fillLight.color = new Color(0.82f, 0.88f, 1f, 1f);
+                fillLight.shadows = LightShadows.None;
                 fillLight.transform.rotation = Quaternion.Euler(28f, 138f, 0f);
             }
 
             previewCamera.fieldOfView = configuration.fieldOfView;
             UpdatePreviewFraming();
-            keyLight.intensity = configuration.keyLightIntensity;
-            fillLight.intensity = configuration.fillLightIntensity;
-            ConfigureSoftEnvironmentLighting(configuration);
+            ApplyPresentationLighting(configuration);
             if (directPresentation) ApplyDirectPresentationView();
             else ConfigureRenderTexture();
+        }
+
+        /// <summary>Global presentation lighting, independent of avatar identity.</summary>
+        public void SetPresentationLightingMultiplier(float multiplier)
+        {
+            presentationLightingMultiplier = Mathf.Clamp(multiplier, 0f, 2f);
+            if (activeConfiguration != null) ApplyPresentationLighting(activeConfiguration);
+        }
+
+        private void ApplyPresentationLighting(AvatarConfiguration configuration)
+        {
+            if (keyLight != null) keyLight.intensity = configuration.keyLightIntensity * presentationLightingMultiplier;
+            if (fillLight != null) fillLight.intensity = configuration.fillLightIntensity * presentationLightingMultiplier;
+            ConfigureSoftEnvironmentLighting(configuration);
         }
 
         private void ConfigureSoftEnvironmentLighting(AvatarConfiguration configuration)
         {
             if (!savedRenderSettings)
             {
+                originalAmbientMode = RenderSettings.ambientMode;
+                originalAmbientLight = RenderSettings.ambientLight;
                 originalAmbientIntensity = RenderSettings.ambientIntensity;
                 originalReflectionIntensity = RenderSettings.reflectionIntensity;
                 savedRenderSettings = true;
             }
 
             // This isolated presentation scene only contains the avatar preview.
-            // Lowering ambient/reflection contribution avoids clipping light VRM
-            // clothing while the complementary key/fill lights keep the face visible.
-            RenderSettings.ambientIntensity = configuration.ambientIntensity;
+            // A flat neutral fill makes MToon and standard VRM materials read
+            // consistently over any 2D background. The modest key/fill pair
+            // supplies form without hard self-shadows or bright white clipping.
+            RenderSettings.ambientMode = AmbientMode.Flat;
+            RenderSettings.ambientLight = new Color(
+                configuration.ambientIntensity * presentationLightingMultiplier,
+                configuration.ambientIntensity * .98f * presentationLightingMultiplier,
+                configuration.ambientIntensity * .96f * presentationLightingMultiplier,
+                1f);
+            RenderSettings.ambientIntensity = configuration.ambientIntensity * presentationLightingMultiplier;
+            // Keep reflections deliberately stable: multiplying them with the
+            // direct lights can wash out MToon fabric detail at high values.
             RenderSettings.reflectionIntensity = configuration.reflectionIntensity;
         }
 
@@ -238,14 +341,14 @@ namespace AIFren.UnityPoc.Avatar
             directBaselineAspect = -1f;
             if (previewCamera == null) return;
 
-            if (directPresentation)
+            if (directPresentation && previewCamera != null)
             {
                 ReleasePreviewTexture();
                 previewCamera.targetTexture = null;
                 EnsureDirectBackgroundRenderer();
                 ApplyDirectPresentationView();
             }
-            else
+            else if (!directPresentation)
             {
                 directBackgroundRenderer?.SetVisible(false);
                 previewCamera.clearFlags = CameraClearFlags.SolidColor;
@@ -323,7 +426,10 @@ namespace AIFren.UnityPoc.Avatar
 
         private void LateUpdate()
         {
-            if (directPresentation)
+            // Direct-presentation setup can be enabled before its camera has
+            // been created. Wait for that lifecycle step rather than
+            // dereferencing the camera from LateUpdate.
+            if (directPresentation && previewCamera != null)
             {
                 float aspect = Mathf.Max(.1f, Screen.width / (float)Mathf.Max(1, Screen.height));
                 if (Mathf.Abs(directBaselineAspect - aspect) > .0001f)
@@ -629,6 +735,10 @@ namespace AIFren.UnityPoc.Avatar
         private void DestroyActiveAvatar()
         {
             hasRelaxedPose = false;
+            expressionController?.ClearAvatar();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            gazeController?.ClearAvatar();
+#endif
             animationController?.ClearAvatar();
             humanPoseHandler?.Dispose();
             humanPoseHandler = null;
@@ -646,6 +756,8 @@ namespace AIFren.UnityPoc.Avatar
 
             if (savedRenderSettings)
             {
+                RenderSettings.ambientMode = originalAmbientMode;
+                RenderSettings.ambientLight = originalAmbientLight;
                 RenderSettings.ambientIntensity = originalAmbientIntensity;
                 RenderSettings.reflectionIntensity = originalReflectionIntensity;
             }

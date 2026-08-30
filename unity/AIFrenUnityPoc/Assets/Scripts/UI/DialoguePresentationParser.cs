@@ -14,6 +14,15 @@ namespace AIFren.UnityPoc.UI
         internal string Text { get; }
     }
 
+    internal sealed class DialogueDocument
+    {
+        internal DialogueDocument(IReadOnlyList<DialogueSpan> spans, string spoken, string subtitleSource)
+        { Spans = spans; SpokenText = spoken; SubtitleSourceText = subtitleSource; }
+        internal IReadOnlyList<DialogueSpan> Spans { get; }
+        internal string SpokenText { get; }
+        internal string SubtitleSourceText { get; }
+    }
+
     /// <summary>Presentation-only parsing. Canonical conversation text is never changed.</summary>
     internal static class DialoguePresentationParser
     {
@@ -41,6 +50,17 @@ namespace AIFren.UnityPoc.UI
 
         internal static IReadOnlyList<DialogueSpan> Parse(string raw)
         {
+            return ParseCore(raw);
+        }
+
+        internal static DialogueDocument ParseDocument(string raw)
+        {
+            IReadOnlyList<DialogueSpan> spans = ParseCore(raw);
+            return new DialogueDocument(spans, BuildSpoken(spans, false), BuildSpoken(spans, true));
+        }
+
+        private static IReadOnlyList<DialogueSpan> ParseCore(string raw)
+        {
             List<DialogueSpan> spans = new List<DialogueSpan>();
             if (string.IsNullOrEmpty(raw)) return spans;
             int cursor = 0;
@@ -57,7 +77,7 @@ namespace AIFren.UnityPoc.UI
                 else
                 {
                     bool isSingleMarkerEmote = markerLength == 1 &&
-                        (IsActionEmote(text) || CountNormalizedWords(text) >= 4);
+                        IsSingleMarkerEmote(raw, start, end, text);
                     Add(spans, isSingleMarkerEmote ? DialogueSpanKind.Emote : DialogueSpanKind.Emphasis, text);
                 }
                 cursor = end + markerLength;
@@ -115,11 +135,22 @@ namespace AIFren.UnityPoc.UI
             string first = words[0].Trim('"', '\'', '.', ',', '!', '?', ';', ':').ToLowerInvariant();
             if (ActionVerbs.Contains(first)) return true;
             // Keep existing third-person stage directions such as
-            // "*AIFren waves*" action-like without classifying ordinary
+            // "*Serval waves*" action-like without classifying ordinary
             // inline emphasis such as "*very close*" as an emote.
             if (words.Length < 2) return false;
             string second = words[1].Trim('"', '\'', '.', ',', '!', '?', ';', ':').ToLowerInvariant();
             return ActionVerbs.Contains(second);
+        }
+
+        private static bool IsSingleMarkerEmote(string raw, int start, int end, string text)
+        {
+            if (IsActionEmote(text)) return true;
+            string before = raw.Substring(0, start).TrimEnd().TrimEnd('*').TrimEnd();
+            string after = raw.Substring(end + 1).TrimStart();
+            bool startsSegment = before.Length == 0 || ".!?\n".IndexOf(before[before.Length - 1]) >= 0;
+            bool endsSegment = after.Length == 0 || text.TrimEnd().EndsWith(".") ||
+                text.TrimEnd().EndsWith("!") || text.TrimEnd().EndsWith("?");
+            return startsSegment && endsSegment;
         }
 
         private static string BuildSpoken(IReadOnlyList<DialogueSpan> spans, bool preserveEmphasisMarkers)
@@ -130,7 +161,11 @@ namespace AIFren.UnityPoc.UI
                 if (span.Kind == DialogueSpanKind.PlainText) output.Append(span.Text);
                 else if (span.Kind == DialogueSpanKind.Emphasis)
                 {
-                    if (preserveEmphasisMarkers) output.Append('*').Append(span.Text).Append('*');
+                    // Subtitles may paginate a multi-word emphasis span. Use
+                    // the unambiguous double-marker representation so each
+                    // page can close/reopen the styling without turning a
+                    // short fragment into an action emote.
+                    if (preserveEmphasisMarkers) output.Append("**").Append(span.Text).Append("**");
                     else output.Append(span.Text);
                 }
                 // Emotes are never spoken.
@@ -212,7 +247,35 @@ namespace AIFren.UnityPoc.UI
                 if (value[index] != '*' || IsEscaped(value, index)) continue;
                 if (markerLength == 2 && index + 1 < value.Length && value[index + 1] == '*' &&
                     (index == 0 || value[index - 1] != '*') && (index + 2 >= value.Length || value[index + 2] != '*')) return index;
-                if (markerLength == 1 && !IsDoubleStar(value, index)) return index;
+                if (markerLength == 1 && !IsDoubleStar(value, index))
+                {
+                    // AIFren's outer single-star action span is a semantic
+                    // non-spoken boundary. Bounded emphasis nested inside it
+                    // must not terminate that boundary and leak stage
+                    // direction text into speech/subtitle projection.
+                    if (LooksLikeNestedSingleOpen(value, index))
+                    {
+                        int nestedEnd = FindNestedSingleEnd(value, index + 1);
+                        if (nestedEnd < 0) return -1;
+                        return FindMarkerEnd(value, nestedEnd + 1, markerLength);
+                    }
+                    return index;
+                }
+            }
+            return -1;
+        }
+
+        private static bool LooksLikeNestedSingleOpen(string value, int index) =>
+            index > 0 && char.IsWhiteSpace(value[index - 1]) &&
+            (index + 1 >= value.Length ||
+             (!char.IsWhiteSpace(value[index + 1]) && value[index + 1] != '*'));
+
+        private static int FindNestedSingleEnd(string value, int offset)
+        {
+            for (int index = offset; index < value.Length; index++)
+            {
+                if (value[index] != '*' || IsEscaped(value, index) || IsDoubleStar(value, index)) continue;
+                if (index > offset && !char.IsWhiteSpace(value[index - 1])) return index;
             }
             return -1;
         }
@@ -220,7 +283,6 @@ namespace AIFren.UnityPoc.UI
         private static bool IsEscaped(string value, int index) => index > 0 && value[index - 1] == '\\';
         private static bool IsDoubleStar(string value, int index) =>
             (index > 0 && value[index - 1] == '*') || (index + 1 < value.Length && value[index + 1] == '*');
-        private static int CountNormalizedWords(string value) => value.Trim().Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Length;
         private static bool ContainsLetter(string value) { foreach (char character in value) if (char.IsLetter(character)) return true; return false; }
     }
 }

@@ -1,0 +1,13 @@
+{
+  "version": "identity-name-provider-eval-v1",
+  "cases": [
+    {"case_id": "direct-name", "kind": "relevant", "query": "What is my name?", "expected_name": "Elena"},
+    {"case_id": "paraphrase-call", "kind": "relevant", "query": "What should you call me?", "expected_name": "Elena"},
+    {"case_id": "remember-name", "kind": "relevant", "query": "Do you remember my name?", "expected_name": "Elena"},
+    {"case_id": "creative-spaceship", "kind": "withhold", "query": "Help me name a spaceship.", "forbidden_name": "Elena"},
+    {"case_id": "advice-dessert", "kind": "withhold", "query": "Give me a dessert idea.", "forbidden_name": "Elena"},
+    {"case_id": "advice-desk", "kind": "withhold", "query": "How should I organize my desk?", "forbidden_name": "Elena"},
+    {"case_id": "hypothetical-victor", "kind": "hypothetical", "query": "If my name were Victor, what nickname would fit?", "forbidden_name": "Elena"},
+    {"case_id": "current-correction", "kind": "correction", "query": "My name is Mara.", "followup_query": "What is my name?", "expected_name": "Mara", "forbidden_name": "Elena"}
+  ]
+}

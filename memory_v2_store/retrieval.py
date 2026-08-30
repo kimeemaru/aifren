@@ -1,7 +1,7 @@
-"""Isolated deterministic Semantic Retrieval V2 over the shadow SQLite store.
+"""Deterministic, local V2 retrieval over the non-authoritative SQLite store.
 
-This module is intentionally not imported by AIFren runtime code.  It has no
-embedding model and no access to personal JSON persistence.
+It has no access to V1 persistence or prompt construction.  Shadow dual-read
+may invoke it for telemetry, but V1 remains the only prompt-facing retriever.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Iterable
 
 from benchmarks.memory_v2.models import RetrievalOutcome, RetrievalQuery, RetrievalTrace, TypedMemory
 
-from .store import MemoryV2Store, parse_timestamp_us
+from .store import MemoryV2Store, parse_timestamp_us, utc_now_us
 
 
 _STOP_WORDS = {
@@ -23,6 +23,8 @@ _STOP_WORDS = {
 _ALIASES = {
     "n64": ("nintendo", "64"), "allergy": ("allerg",), "allergic": ("allerg",),
     "preferred": ("prefer",), "lived": ("live",), "lives": ("live",), "work": ("engineer",),
+    # Common conversational abbreviation, not fixture-specific wording.
+    "mic": ("microphone",),
 }
 _HISTORICAL_WORDS = {"was", "were", "did", "used", "historical", "then", "previously"}
 _GENERIC_REQUEST_WORDS = {"could", "should", "would", "have", "been", "something", "interesting", "solve", "problem", "recommend", "recommendation"}
@@ -129,13 +131,20 @@ def _historical_time(query: RetrievalQuery) -> tuple[bool, int]:
     if query.mode == "historical" or years or tokens & _HISTORICAL_WORDS:
         year = int(years[-1]) if years else datetime.fromisoformat(query.at.replace("Z", "+00:00")).year
         return True, int(datetime(year, 12, 31, 23, 59, 59, tzinfo=timezone.utc).timestamp() * 1_000_000)
-    return False, parse_timestamp_us(query.at)
+    # Ordinary retrieval asks for current truth.  It must use the current
+    # lifecycle state, not the timestamp at which a client happened to issue
+    # the query; otherwise a correction recorded after that timestamp can
+    # resurrect superseded claims in a normal current-truth result.
+    return False, utc_now_us()
 
 
 def _typed_label(row, historical: bool) -> str:
     if row["provenance_state"] != "complete":
         return "LEGACY UNVERIFIED"
-    if row["claim_type"] in {"episode", "relationship", "running_joke"}:
+    # ``shared_episode`` is the canonical V2 repository type.  Keep the
+    # legacy fixture spelling for backward-compatible diagnostic fixtures,
+    # but never make the production spelling a second-class retrieval type.
+    if row["claim_type"] in {"shared_episode", "episode", "relationship", "running_joke"}:
         return "SHARED EPISODE"
     if row["claim_type"] in {"temporary_state", "future_event"}:
         return "TEMPORARY/PLAN"
@@ -147,11 +156,13 @@ def _typed_label(row, historical: bool) -> str:
 class SemanticRetrievalV2:
     """Derived-index, deterministic candidate retrieval for synthetic V2 stores."""
 
-    def __init__(self, store: MemoryV2Store, limits: RetrievalLimits | None = None, embedding_provider=None, *, allow_legacy_unverified: bool = False):
+    def __init__(self, store: MemoryV2Store, limits: RetrievalLimits | None = None, embedding_provider=None, *, allow_legacy_unverified: bool = False, ann_ef: int = 4096, ann_candidate_multiplier: int = 16):
         self.store = store
         self.limits = limits or RetrievalLimits()
         self.embedding_provider = embedding_provider
         self.allow_legacy_unverified = allow_legacy_unverified
+        self.ann_ef = max(1, int(ann_ef))
+        self.ann_candidate_multiplier = max(1, int(ann_candidate_multiplier))
         if min(self.limits.exact_candidates, self.limits.fts_candidates, self.limits.structural_candidates, self.limits.semantic_candidates, self.limits.final_count, self.limits.token_budget) < 1:
             raise ValueError("retrieval limits must be positive")
         self.store.ensure_fts()
@@ -165,10 +176,19 @@ class SemanticRetrievalV2:
         embedding_state: str | None = None,
         final_count: int | None = None,
         token_budget: int | None = None,
+        truth_scope_id: str | None = None,
     ) -> RetrievalOutcome:
         """Return typed claims and privacy-safe traces; never constructs a prompt."""
         if embedding_state in {"stale", "failed", "retryable"}:
             return self._abstain(query, "embedding_state_not_current")
+        truth_scope_id = self.store._require_truth_scope(
+            query.character_id,
+            (
+                self.store.active_truth_scope_id(query.character_id)
+                if truth_scope_id is None else truth_scope_id
+            ),
+            require_active=False,
+        )
         historical, at_us = _historical_time(query)
         query_tokens = _tokens(" ".join((query.current_user_text, *query.recent_user_turns)))
         if not query_tokens:
@@ -177,17 +197,27 @@ class SemanticRetrievalV2:
         if intent.kind in {"assistant_opinion", "generic_reasoning", "ambiguous_memory"}:
             return self._abstain(query, f"intent_{intent.kind}", intent=intent)
         exact_terms = self._exact_terms(query.current_user_text)
-        exact_ids = self.store.exact_claim_ids(query.character_id, exact_terms, self.limits.exact_candidates)
-        fts_rows = self.store.search_fts(query.character_id, _safe_fts_query(query_tokens), self.limits.fts_candidates)
-        semantic_rows = self._semantic_rows(query, " ".join((query.current_user_text, *query.recent_user_turns)))
+        exact_ids = self.store.exact_claim_ids(
+            query.character_id, exact_terms, self.limits.exact_candidates,
+            truth_scope_id=truth_scope_id,
+        )
+        fts_rows = self.store.search_fts(
+            query.character_id, _safe_fts_query(query_tokens), self.limits.fts_candidates,
+            truth_scope_id=truth_scope_id,
+        )
+        semantic_rows = self._semantic_rows(
+            query, " ".join((query.current_user_text, *query.recent_user_turns)),
+            truth_scope_id,
+        )
         structural_types = self._structural_types(query_tokens)
         structural_rows = self.store.structural_claims(
             query.character_id, at_us, historical=historical, claim_types=structural_types,
-            limit=self.limits.structural_candidates,
+            limit=self.limits.structural_candidates, truth_scope_id=truth_scope_id,
         ) if structural_types else []
         candidate_ids = tuple(dict.fromkeys([*exact_ids, *(row["claim_id"] for row in fts_rows), *(row[0] for row in semantic_rows), *(row["claim_id"] for row in structural_rows)]))
         eligible_rows = self.store.structural_claims(
             query.character_id, at_us, historical=historical, claim_ids=candidate_ids,
+            truth_scope_id=truth_scope_id,
         ) if candidate_ids else []
         eligible_states = {"complete"}
         if self.allow_legacy_unverified:
@@ -249,12 +279,26 @@ class SemanticRetrievalV2:
             lexical_eligible = candidate.lexical_overlap >= 2 or (single_domain_term and candidate.lexical_overlap == 1)
             structural_direct = (
                 intent.kind in {"user_memory", "historical_user_fact", "multi_user_memory"}
-                and row["claim_type"] in structural_types and candidate.lexical_overlap >= 1
+                # A shared broad type (for example two preferences) is not
+                # enough to surface a nearby but wrong fact.  Require a
+                # second concrete overlap; semantic/FTS lanes still handle
+                # genuine paraphrases without this permissive shortcut.
+                and row["claim_type"] in structural_types
+                and (
+                    candidate.lexical_overlap >= 2
+                    # "Where do I live now?" is a narrow, typed location
+                    # question even though it shares just the normalized
+                    # ``live`` token with a stored location fact.
+                    or (row["claim_type"] == "location" and candidate.lexical_overlap >= 1)
+                )
             )
             semantic_eligible = candidate.semantic_score >= 0.55
             paraphrase_eligible = (
                 intent.kind in {"user_memory", "historical_user_fact", "multi_user_memory"}
-                and candidate.semantic_rank == 1 and candidate.semantic_score >= 0.32
+                # A rank-one vector alone becomes noisy in a long history.
+                # Keep this below the strong semantic lane, but high enough
+                # for genuine indirect episode phrasing in the local MiniLM.
+                and candidate.semantic_rank == 1 and candidate.semantic_score >= 0.40
             )
             exact_eligible = candidate.exact_strength > 0
             if _has_specific_medical_conflict(query_tokens, content_tokens):
@@ -327,14 +371,40 @@ class SemanticRetrievalV2:
             traces=tuple(traces),
         )
 
-    def _semantic_rows(self, query: RetrievalQuery, text: str) -> list[tuple[str, float]]:
+    def _semantic_rows(
+        self,
+        query: RetrievalQuery,
+        text: str,
+        truth_scope_id: str,
+    ) -> list[tuple[str, float]]:
         if self.embedding_provider is None:
             return []
         try:
             vector = self.embedding_provider.embed([text])[0]
+            try:
+                from .ann import HnswClaimIndex
+                vector_count = self.store.ann_embedding_count(query.character_id, self.embedding_provider)
+                # At 100k, a measured brute-force rank 2/7 result was absent
+                # from ef=4096 HNSW candidates.  Deep retrieval therefore
+                # grows its search breadth with the derived index; the 10k
+                # measured configuration remains exactly ef=4096.
+                effective_ef = self.ann_ef
+                if self.ann_ef >= 4096:
+                    effective_ef = max(effective_ef, min(vector_count, vector_count // 2))
+                return HnswClaimIndex(self.store, query.character_id, self.embedding_provider).query(
+                    vector, self.limits.semantic_candidates,
+                    ef=effective_ef, candidate_multiplier=self.ann_candidate_multiplier,
+                    truth_scope_id=truth_scope_id,
+                )
+            except Exception:
+                # The index is derived state.  For small/test stores retain
+                # the existing exact cosine fallback; larger live stores keep
+                # the bounded lexical lanes rather than scanning every vector.
+                if len(self.store.ann_embedding_rows(query.character_id, self.embedding_provider)) > 2_000:
+                    return []
             return self.store.semantic_candidates(
                 query.character_id, self.embedding_provider, vector,
-                self.limits.semantic_candidates,
+                self.limits.semantic_candidates, truth_scope_id=truth_scope_id,
             )
         except Exception:
             # The lexical lanes remain usable if an optional derived model is
@@ -360,9 +430,9 @@ class SemanticRetrievalV2:
         if "allerg" in tokens:
             types.append("fact")
         if {"remember", "watch", "troubleshoot"} & set(tokens):
-            types.extend(("episode", "relationship"))
+            types.extend(("shared_episode", "episode", "relationship"))
         if {"pokemon", "stadium", "evening"} & set(tokens):
-            types.append("episode")
+            types.extend(("shared_episode", "episode"))
         if {"nintendo", "64"} & set(tokens):
             types.extend(("profile_fact", "identifier"))
         if "joke" in tokens:

@@ -5,6 +5,7 @@ import math
 import re
 import threading
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from memory.memory import Memory, generate_memory_keywords
 from memory_v2_store import MemoryV2Store
@@ -135,10 +136,14 @@ class SemanticRetrievalV2Adapter:
 
     name = "semantic-retrieval-v2-isolated"
 
-    def __init__(self, fixture):
+    def __init__(self, fixture, *, use_fixture_query_clock=False):
         self.store = MemoryV2Store()
         self.character_map = import_fixture(self.store, fixture)
         self.retriever = SemanticRetrievalV2(self.store)
+        # The isolated engine intentionally uses real current time by default.
+        # Aging fixtures are synthetic time-travel tests, so they may opt into
+        # a clock only for the duration of an individual benchmark retrieval.
+        self.use_fixture_query_clock = bool(use_fixture_query_clock)
 
     def close(self):
         self.store.close()
@@ -147,14 +152,19 @@ class SemanticRetrievalV2Adapter:
         query = case.retrieval_query
         # Benchmark fixture character IDs are labels; the store exposes UUIDs.
         query = type(query)(self.character_map[query.character_id], query.current_user_text, query.at, query.mode, query.recent_user_turns)
-        return self.retriever.retrieve(
-            query,
+        arguments = dict(
             recent_visible_claim_ids=case.recent_visible_claim_ids,
             recently_used_claim_ids=case.recently_used_claim_ids,
             embedding_state=case.embedding_state,
             final_count=min(limit, case.final_injection_cap),
             token_budget=case.final_token_budget,
         )
+        if not getattr(self, "use_fixture_query_clock", False):
+            return self.retriever.retrieve(query, **arguments)
+        # No production clock seam exists.  Patch only this benchmark call,
+        # then automatically restore the production module's real-time clock.
+        with patch("memory_v2_store.retrieval.utc_now_us", return_value=parse_timestamp_us(case.at)):
+            return self.retriever.retrieve(query, **arguments)
 
     def retrieve(self, fixture, case, limit=5):
         return list(self.retrieve_outcome(fixture, case, limit).claim_ids)
@@ -171,3 +181,4 @@ class HybridSemanticRetrievalV2Adapter(SemanticRetrievalV2Adapter):
         self.provider = MiniLMEmbeddingProvider()
         self.embedding_build = EmbeddingLifecycle(self.store, self.provider).rebuild_all()
         self.retriever = SemanticRetrievalV2(self.store, embedding_provider=self.provider)
+        self.use_fixture_query_clock = False

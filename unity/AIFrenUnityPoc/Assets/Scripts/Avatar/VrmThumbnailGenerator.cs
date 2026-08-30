@@ -19,13 +19,46 @@ namespace AIFren.UnityPoc.Avatar
         internal static async Task<bool> TryGenerateAsync(string modelPath, string thumbnailPath)
         {
             if (HasValidThumbnail(thumbnailPath)) return true;
-            GameObject avatar = null; GameObject cameraObject = null; GameObject lightObject = null; RenderTexture target = null; Texture2D output = null;
-            RenderTexture previousActive = null;
-            bool changedActiveTarget = false;
+            GameObject avatar = null;
             try
             {
                 Vrm10Instance instance = await Vrm10.LoadPathAsync(modelPath, canLoadVrm0X: true, showMeshes: true);
                 avatar = instance.gameObject;
+                return TryGenerateFromAvatar(avatar, thumbnailPath);
+            }
+            catch (Exception error) { Debug.LogWarning("AIFren model thumbnail generation failed: " + error.Message); return false; }
+            finally { if (avatar != null) UnityEngine.Object.Destroy(avatar); }
+        }
+
+        // Bundled avatars are Resources prefabs rather than managed source
+        // files. Capture an instantiated prefab through the same renderer and
+        // cache format used by imported VRM/GLB models.
+        internal static Task<bool> TryGenerateFromPrefabAsync(GameObject avatarPrefab, string thumbnailPath)
+        {
+            if (HasValidThumbnail(thumbnailPath)) return Task.FromResult(true);
+            if (avatarPrefab == null) return Task.FromResult(false);
+
+            GameObject avatar = null;
+            try
+            {
+                avatar = UnityEngine.Object.Instantiate(avatarPrefab);
+                return Task.FromResult(TryGenerateFromAvatar(avatar, thumbnailPath));
+            }
+            catch (Exception error)
+            {
+                Debug.LogWarning("AIFren bundled avatar thumbnail generation failed: " + error.Message);
+                return Task.FromResult(false);
+            }
+            finally { if (avatar != null) UnityEngine.Object.Destroy(avatar); }
+        }
+
+        private static bool TryGenerateFromAvatar(GameObject avatar, string thumbnailPath)
+        {
+            GameObject cameraObject = null; GameObject lightObject = null; RenderTexture target = null; Texture2D output = null;
+            RenderTexture previousActive = null;
+            bool changedActiveTarget = false;
+            try
+            {
                 avatar.transform.position = PreviewOrigin;
                 Bounds bounds = new Bounds(); bool found = false;
                 foreach (Renderer renderer in avatar.GetComponentsInChildren<Renderer>()) { if (!found) { bounds=renderer.bounds; found=true; } else bounds.Encapsulate(renderer.bounds); }
@@ -50,7 +83,7 @@ namespace AIFren.UnityPoc.Avatar
                 return true;
             }
             catch (Exception error) { Debug.LogWarning("AIFren model thumbnail generation failed: "+error.Message); return false; }
-            finally { if(changedActiveTarget)RenderTexture.active=previousActive; if(output!=null) UnityEngine.Object.Destroy(output); if(target!=null){target.Release();UnityEngine.Object.Destroy(target);} if(lightObject!=null)UnityEngine.Object.Destroy(lightObject); if(cameraObject!=null)UnityEngine.Object.Destroy(cameraObject); if(avatar!=null)UnityEngine.Object.Destroy(avatar); }
+            finally { if(changedActiveTarget)RenderTexture.active=previousActive; if(output!=null) UnityEngine.Object.Destroy(output); if(target!=null){target.Release();UnityEngine.Object.Destroy(target);} if(lightObject!=null)UnityEngine.Object.Destroy(lightObject); if(cameraObject!=null)UnityEngine.Object.Destroy(cameraObject); }
         }
 
         private static bool HasValidThumbnail(string thumbnailPath)

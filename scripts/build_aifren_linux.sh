@@ -6,6 +6,17 @@ project="$repository_root/unity/AIFrenUnityPoc"
 player="$project/Builds/Linux/AIFrenPoc.x86_64"
 log_file="${AIFREN_UNITY_BUILD_LOG:-/tmp/aifren-unity-linux-build.log}"
 unity_version="2022.3.62f3"
+build_method="AIFren.UnityPoc.Editor.BuildAIFrenPoc.BuildLinux"
+
+if [[ "${1:-}" == "--development" ]]; then
+    build_method="AIFren.UnityPoc.Editor.BuildAIFrenPoc.BuildLinuxDevelopment"
+    player="$project/Builds/LinuxDevelopment/AIFrenPoc.x86_64"
+    shift
+fi
+if [[ $# -ne 0 ]]; then
+    echo "Usage: $0 [--development]" >&2
+    exit 2
+fi
 
 unity_editor="${UNITY_EDITOR:-}"
 if [[ -z "$unity_editor" ]]; then
@@ -38,7 +49,7 @@ echo "Building AIFren Linux presentation player with $unity_editor..."
     -batchmode \
     -quit \
     -projectPath "$project" \
-    -executeMethod AIFren.UnityPoc.Editor.BuildAIFrenPoc.BuildLinux \
+    -executeMethod "$build_method" \
     -logFile "$log_file"
 
 if [[ ! -x "$player" ]]; then

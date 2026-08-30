@@ -28,7 +28,8 @@ namespace AIFren.UnityPoc.UI
 
     internal interface IHiddenSubtitleRenderTarget
     {
-        void Prepare(string page, int shownWords, float newestWordAlpha);
+        void Preload(string page);
+        void ShowPage(string page, int shownWords);
         void SetRenderable(bool renderable);
         void SetAlpha(float alpha);
         void Clear();
@@ -40,7 +41,6 @@ namespace AIFren.UnityPoc.UI
         internal const float InitialFadeSeconds = .32f;
         internal const float PageFadeOutSeconds = .09f;
         internal const float PageFadeInSeconds = .12f;
-        internal const float WordFadeSeconds = .12f;
         internal const float CatchupSpacingSeconds = .05f;
         internal const float FinalHoldSeconds = .12f;
         internal const float FinalFadeSeconds = .45f;
@@ -50,28 +50,39 @@ namespace AIFren.UnityPoc.UI
         private HiddenSubtitleState state = HiddenSubtitleState.Inactive;
         private int pageIndex;
         private int shownWords;
-        private float newestWordAt;
         private float stateAt;
         private float nextCatchupAt;
         private bool suppressed;
 
         internal HiddenSubtitleState State => state;
         internal bool IsActive => state != HiddenSubtitleState.Inactive;
+        internal bool IsSuppressed => suppressed;
         internal event Action<int> WordPresented;
+        internal event Action<int> PageActivated;
 
         internal HiddenSubtitlePresenter(IHiddenSubtitleRenderTarget target) { this.target = target; }
 
+        internal void Preload(string page)
+        {
+            if (!string.IsNullOrWhiteSpace(page)) target.Preload(page);
+        }
+
         internal void Begin(SubtitleSession value)
         {
-            Cancel();
-            if (value == null || value.Pages == null || value.Pages.Count == 0) return;
+            if (value == null || value.Pages == null || value.Pages.Count == 0) { Cancel(); return; }
             if (!SubtitleTimingPlan.TryValidatePageDefinitions(value.Pages, value.Ranges,
-                value.WordTimes != null ? value.WordTimes.Count : 0, out string validationError))
+                value.WordTimes != null ? value.WordTimes.Count : 0,
+                DialoguePresentationParser.SpokenText, out string validationError))
             {
                 Debug.LogError("[AIFren Subtitle] refusing invalid page ownership: " + validationError);
+                Cancel();
                 return;
             }
 
+            // Preserve pre-synthesis page measurements. Reset session
+            // visibility without clearing the cache that chunk_queued built.
+            target.SetAlpha(0f);
+            target.SetRenderable(false);
             session = value;
             state = HiddenSubtitleState.WaitingForPlaybackOrFallback;
             stateAt = value.StartedAt;
@@ -108,7 +119,23 @@ namespace AIFren.UnityPoc.UI
             Apply(now);
             target.SetRenderable(true);
         }
-        internal void Cancel() { session = null; state = HiddenSubtitleState.Inactive; target.SetAlpha(0f); target.SetRenderable(false); target.Clear(); }
+        internal void Cancel()
+        {
+            session = null;
+            state = HiddenSubtitleState.Inactive;
+            suppressed = false;
+            target.SetAlpha(0f);
+            target.SetRenderable(false);
+            target.Clear();
+        }
+        private void RetireNaturally()
+        {
+            // A later queued audio chunk may already be measured. Natural
+            // completion hides this session without erasing that work;
+            // explicit cancellation still clears the cache.
+            session = null; state = HiddenSubtitleState.Inactive;
+            target.SetAlpha(0f); target.SetRenderable(false);
+        }
 
         internal void Tick(float now, bool uiHidden, bool enabled)
         {
@@ -130,7 +157,7 @@ namespace AIFren.UnityPoc.UI
             else if (state == HiddenSubtitleState.PageFadeOut && now - stateAt >= PageFadeOutSeconds)
                 BeginPage(now, pageIndex + 1, false, HiddenSubtitleState.PageFadeIn);
             else if (state == HiddenSubtitleState.FinalHold && now - stateAt >= FinalHoldSeconds) { state = HiddenSubtitleState.FinalFadeOut; stateAt = now; }
-            else if (state == HiddenSubtitleState.FinalFadeOut && now - stateAt >= FinalFadeSeconds) { Cancel(); return; }
+            else if (state == HiddenSubtitleState.FinalFadeOut && now - stateAt >= FinalFadeSeconds) { RetireNaturally(); return; }
 
             Apply(now);
         }
@@ -144,11 +171,14 @@ namespace AIFren.UnityPoc.UI
                 Debug.Assert(incoming.FirstWordIndex == previous.LastWordIndex + 1,
                     "[AIFren Subtitle] non-contiguous page ownership at page " + index + ".");
             }
-            pageIndex = index; shownWords = 0; newestWordAt = float.NegativeInfinity; nextCatchupAt = now;
-            // Atomic preparation: disabled + alpha zero before text/mesh state.
-            target.SetRenderable(false); target.SetAlpha(0f); target.Prepare(session.Pages[index], 0, 0f);
+            pageIndex = index; shownWords = 0; nextCatchupAt = now;
+            // Text and maxVisibleWords are committed while the sole visible
+            // TMP is disabled and the CanvasGroup is transparent.  There is
+            // no independently stateful staging renderer to promote.
+            target.SetRenderable(false); target.SetAlpha(0f); target.ShowPage(session.Pages[index], 0);
             state = nextState; stateAt = now;
             target.SetAlpha(0f); target.SetRenderable(true);
+            PageActivated?.Invoke(index);
             if (initial && DueOnPage(now) > 0) ShowOne(now);
         }
 
@@ -168,15 +198,15 @@ namespace AIFren.UnityPoc.UI
                     " outside page " + pageIndex + " ownership " + range.FirstWordIndex + "-" + range.LastWordIndex + ".");
                 return;
             }
-            shownWords++; newestWordAt = now; nextCatchupAt = now + CatchupSpacingSeconds;
-            target.Prepare(session.Pages[pageIndex], shownWords, 0f);
+            shownWords++; nextCatchupAt = now + CatchupSpacingSeconds;
+            target.ShowPage(session.Pages[pageIndex], shownWords);
             WordPresented?.Invoke(globalWordIndex);
         }
         private bool PageComplete(int due, float now)
         {
             SubtitlePageWordRange range = session.Ranges[pageIndex];
             return shownWords >= range.LastWordIndex - range.FirstWordIndex + 1 &&
-                due >= shownWords && Elapsed(now) >= session.WordTimes[range.LastWordIndex] && now - newestWordAt >= WordFadeSeconds;
+                due >= shownWords && Elapsed(now) >= session.WordTimes[range.LastWordIndex];
         }
         private void BeginFinal(float now) { state = HiddenSubtitleState.FinalHold; stateAt = now; }
         private int DueOnPage(float now)
@@ -194,55 +224,128 @@ namespace AIFren.UnityPoc.UI
             else if (state == HiddenSubtitleState.PageFadeOut) alpha = 1f - Mathf.Clamp01((now - stateAt) / PageFadeOutSeconds);
             else if (state == HiddenSubtitleState.PageFadeIn) { alpha = Mathf.Clamp01((now - stateAt) / PageFadeInSeconds); if (alpha >= 1f) state = HiddenSubtitleState.ShowingPage; }
             else if (state == HiddenSubtitleState.FinalFadeOut) alpha = 1f - Mathf.Clamp01((now - stateAt) / FinalFadeSeconds);
-            float wordAlpha = shownWords > 0 ? Mathf.Clamp01((now - newestWordAt) / WordFadeSeconds) : 0f;
-            target.SetAlpha(alpha); target.Prepare(session.Pages[pageIndex], shownWords, wordAlpha);
+            target.SetAlpha(alpha); target.ShowPage(session.Pages[pageIndex], shownWords);
         }
     }
 
     internal sealed class TmpHiddenSubtitleRenderTarget : IHiddenSubtitleRenderTarget
     {
+        private sealed class PreparedPage
+        {
+            internal string FormattedText;
+            internal float FontSize;
+        }
+
+        private const int PreparedPageLimit = 32;
         private readonly GameObject root;
         private readonly CanvasGroup group;
         private readonly RectTransform viewport;
-        private readonly TMP_Text front;
-        private readonly IList<TMP_Text> backings;
+        private readonly TMP_Text visible;
+        private readonly TMP_Text measurement;
+        private readonly Dictionary<string, PreparedPage> preparedPages = new Dictionary<string, PreparedPage>();
+        private readonly Queue<string> preparedPageOrder = new Queue<string>();
+        private string activePage;
+        private int shownWords = int.MinValue;
+        internal int LayoutPreparationCount { get; private set; }
 
-        internal TmpHiddenSubtitleRenderTarget(GameObject root, CanvasGroup group, RectTransform viewport, TMP_Text front, IList<TMP_Text> backings)
-        { this.root = root; this.group = group; this.viewport = viewport; this.front = front; this.backings = backings; }
-
-        public void SetRenderable(bool renderable) { if (root != null) root.SetActive(renderable); }
-        public void SetAlpha(float alpha) { if (group != null) group.alpha = Mathf.Clamp01(alpha); }
-        public void Clear() { if (front != null) front.text = string.Empty; foreach (TMP_Text text in backings) if (text != null) text.text = string.Empty; }
-        public void Prepare(string page, int shownWords, float newestWordAlpha)
+        internal TmpHiddenSubtitleRenderTarget(GameObject root, CanvasGroup group, RectTransform viewport,
+            TMP_Text visible, TMP_Text measurement)
         {
-            if (front == null) return;
-            string full = DialoguePresentationParser.FormatSubtitleText(page);
-            front.text = full;
-            float width = Mathf.Max(1f, viewport.rect.width - 36f), height = Mathf.Max(1f, viewport.rect.height - 20f), size = 35f;
-            for (; size >= 23f; size -= 1f) { front.fontSize = size; if (front.GetPreferredValues(full, width, 0f).y <= height) break; }
-            front.fontSize = Mathf.Max(23f, size);
-            Apply(front, shownWords, newestWordAlpha);
-            foreach (TMP_Text text in backings)
-            {
-                if (text == null) continue;
-                text.text = full; text.fontSize = front.fontSize; text.fontStyle = front.fontStyle; text.alignment = front.alignment; text.color = Color.black;
-                Apply(text, shownWords, newestWordAlpha);
-            }
+            this.root = root; this.group = group; this.viewport = viewport;
+            this.visible = visible; this.measurement = measurement;
+            if (root != null) root.SetActive(true);
+            SetRenderable(false);
+            WarmPresentationMesh();
         }
-        private static void Apply(TMP_Text text, int shownWords, float newestWordAlpha)
+
+        private void WarmPresentationMesh()
         {
-            text.ForceMeshUpdate(); TMP_TextInfo info = text.textInfo; int word = -1; bool inWord = false;
-            byte newest = (byte)Mathf.RoundToInt(Mathf.Clamp01(newestWordAlpha) * 255f);
-            for (int index = 0; index < info.characterCount; index++)
+            // TMP performs sizeable one-time parser, glyph, material, and mesh
+            // allocations the first time a non-empty subtitle is measured and
+            // rendered. Pay that cold cost while the presenter is created and
+            // fully transparent, rather than on the first user response/audio
+            // boundary. This is deterministic initialization, not a delay.
+            const string sample = "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789.,!?;:'- **readable emphasis**";
+            string formatted = DialoguePresentationParser.FormatSubtitleText(sample);
+            float width = viewport != null ? Mathf.Max(1f, viewport.rect.width - 36f) : 640f;
+            if (measurement != null)
             {
-                TMP_CharacterInfo c = info.characterInfo[index];
-                if (char.IsWhiteSpace(c.character)) inWord = false; else if (!inWord) { word++; inWord = true; }
-                byte alpha = word < shownWords - 1 ? (byte)255 : word == shownWords - 1 ? newest : (byte)0;
-                if (!c.isVisible || c.materialReferenceIndex < 0) continue;
-                Color32[] colors = info.meshInfo[c.materialReferenceIndex].colors32;
-                for (int vertex = 0; vertex < 4; vertex++) { Color32 color = colors[c.vertexIndex + vertex]; color.a = alpha; colors[c.vertexIndex + vertex] = color; }
+                measurement.fontSize = 35f;
+                measurement.GetPreferredValues(formatted, width, 0f);
             }
-            text.UpdateVertexData(TMP_VertexDataUpdateFlags.Colors32);
+            if (visible != null)
+            {
+                visible.fontSize = 35f;
+                visible.maxVisibleWords = 0;
+                visible.text = formatted;
+                visible.ForceMeshUpdate(true, true);
+                visible.text = string.Empty;
+                visible.maxVisibleWords = 0;
+                visible.ForceMeshUpdate(true, true);
+            }
+            activePage = null;
+            shownWords = int.MinValue;
+        }
+
+        public void SetRenderable(bool renderable)
+        {
+            if (root != null && !root.activeSelf) root.SetActive(true);
+            if (visible != null) visible.enabled = renderable;
+        }
+        public void SetAlpha(float alpha) { if (group != null) group.alpha = Mathf.Clamp01(alpha); }
+        public void Clear()
+        {
+            activePage = null; shownWords = int.MinValue;
+            preparedPages.Clear(); preparedPageOrder.Clear();
+            if (visible != null) { visible.text = string.Empty; visible.maxVisibleWords = 0; }
+        }
+        public void Preload(string page)
+        {
+            string sourcePage = page ?? string.Empty;
+            GetOrPrepare(sourcePage);
+        }
+        public void ShowPage(string page, int visibleWords)
+        {
+            if (visible == null) return;
+            string sourcePage = page ?? string.Empty;
+            if (!string.Equals(activePage, sourcePage, StringComparison.Ordinal))
+            {
+                PreparedPage prepared = GetOrPrepare(sourcePage);
+                visible.maxVisibleWords = 0;
+                visible.fontSize = prepared.FontSize;
+                visible.text = prepared.FormattedText;
+                activePage = sourcePage;
+                shownWords = int.MinValue;
+            }
+
+            int clamped = Mathf.Max(0, visibleWords);
+            if (shownWords == clamped) return;
+            visible.maxVisibleWords = clamped;
+            shownWords = clamped;
+        }
+        private PreparedPage GetOrPrepare(string sourcePage)
+        {
+            if (preparedPages.TryGetValue(sourcePage, out PreparedPage cached)) return cached;
+            LayoutPreparationCount++;
+            string full = DialoguePresentationParser.FormatSubtitleText(sourcePage);
+            float width = Mathf.Max(1f, viewport.rect.width - 36f);
+            float height = Mathf.Max(1f, viewport.rect.height - 20f);
+            float size = 35f;
+            TMP_Text sizingText = measurement != null ? measurement : visible;
+            for (; size >= 23f; size -= 1f)
+            {
+                sizingText.fontSize = size;
+                if (sizingText.GetPreferredValues(full, width, 0f).y <= height) break;
+            }
+            var prepared = new PreparedPage { FormattedText = full, FontSize = Mathf.Max(23f, size) };
+            preparedPages[sourcePage] = prepared;
+            preparedPageOrder.Enqueue(sourcePage);
+            while (preparedPageOrder.Count > PreparedPageLimit)
+            {
+                string expired = preparedPageOrder.Dequeue();
+                if (!string.Equals(expired, activePage, StringComparison.Ordinal)) preparedPages.Remove(expired);
+            }
+            return prepared;
         }
     }
 }

@@ -7,11 +7,22 @@ Read [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](ARCHITECTURE.md), and
 
 - Preserve working behavior with small, reviewable changes. Do not begin an unrelated roadmap stage without approval.
 - `conversation.json`, `conversation_summary.json`, `memories.json`, and character data are durable canonical records. Do not casually move, rewrite, or migrate them.
-- `AssistantService` owns backend turns, canonical persistence, memory processing, TTS/PTT lifecycle, and backend events. `backend_host.py` is the loopback WebSocket adapter. Unity is the production frontend; Tkinter is legacy/debug-only. Both are presentation clients, not alternate backends.
+- `AssistantService` owns backend turns, canonical persistence, memory processing, TTS/PTT lifecycle, and backend events. `backend_host.py` is the loopback WebSocket adapter. Unity is the production presentation client.
 - Keep LLM, TTS, STT, embedding, and frontend implementations replaceable. Frontends must not mutate `Memory.memories` directly.
 - Character identity, personality, conversation, and memory are separate from global visual avatar/background assets. A visual asset swap must not change a character's durable identity.
+- Unity is the sole production frontend. Python services and transport remain frontend-neutral. Add product settings, character management, memory UX, and other user-facing flows in Unity only.
 - Direct VRM rendering is the normal Unity path. The RenderTexture presentation path is rollback/debug-only; do not reintroduce UV crop framing as a feature.
 - Portrait and landscape presentation/background choices are independent. UI show/hide overlays the full viewport and must not move or resize the avatar.
+- AIFren-owned `llama_cpp.server` processes must explicitly use
+  `--logits_all false`. AIFren chat does not consume per-prompt-token logits,
+  and retaining them can allocate multiple GiB on large-vocabulary models.
+- Synthetic benchmarks support diagnosis; ordinary Linux Development-player
+  use with a synthetic/test character is the final performance acceptance
+  gate. Keep the Development flight recorder privacy-safe and available for
+  intermittent real-user failures.
+- Memory V1 remains authoritative and prompt-facing. Memory V2 episode
+  compactions may supply bounded, source-ranged derived context, but they are
+  disposable, rebuildable, and subordinate to the canonical raw archive.
 
 ## Ownership and deletion
 
@@ -28,9 +39,10 @@ PTT/audio state is authoritative; subtitles are downstream presentation only. A 
   `timingDue` separate from `presentationShown`; temporary edge peek suppresses
   rendering only, while committed Show cancels the session.
 - `DialoguePresentationParser` produces `PlainText`, `Emphasis`, and `Emote`
-  spans. Single `*...*` is an emote for known actions or four-or-more words;
-  otherwise it is emphasis. `**...**` is always emphasis. Canonical text is
-  unchanged and the backend TTS cleaner must mirror these semantics.
+  spans. Single `*...*` is an emote when action-shaped or a standalone
+  roleplay segment; otherwise inline emphasis remains spoken regardless of
+  word count. `**...**` is emphasis unless owned by an outer action. Canonical
+  text is unchanged and the backend TTS cleaner must mirror these semantics.
 - Semantic gestures use `AvatarGestureIntent`, never model-specific clip names.
   Keep them based on Humanoid mappings and separate from blink/lip-sync.
 
@@ -44,7 +56,16 @@ For backend or transport changes:
 git diff --check
 ```
 
-For Unity changes, run relevant Unity EditMode tests and the appropriate build for the target platform. Use the local-asset opt-in only for a local development build that intentionally needs ignored presentation assets; never package or commit those assets. Commit only after requested validation/review.
+For Unity changes, run relevant Unity EditMode tests and the appropriate build for the target platform. Use the local-asset build mechanism only for a local development build; never package or commit ignored local presentation assets. Commit only after requested validation/review.
+
+The Conversation History/Log is a derived view of canonical messages. Hidden
+updates mark it dirty; do not rebuild its TMP hierarchy until it is visible.
+Visible event bursts should remain coalesced.
+
+Development flight recording is enabled for Development builds and includes
+automatic incident capture plus the manual `6666666` dump. A release/1.0
+player must keep diagnostics off by default and avoid unbounded persistent log
+growth; do not create a second logging subsystem.
 
 ## Map
 
@@ -52,5 +73,4 @@ For Unity changes, run relevant Unity EditMode tests and the appropriate build f
 - `backend_host.py` — one-client, loopback-only WebSocket adapter.
 - `conversation/`, `memory/` — canonical history/context and Memory V1.
 - `llm/`, `stt/`, `tts/`, `voice/` — replaceable integration boundaries.
-- `gui.py` — existing Tkinter frontend.
 - `unity/AIFrenUnityPoc/` — Unity companion presentation client.

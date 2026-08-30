@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
@@ -18,7 +19,21 @@ namespace AIFren.UnityPoc.Editor
             BuildStandalone(BuildTarget.StandaloneLinux64, "Linux", "AIFrenPoc.x86_64");
         }
 
-        private static void BuildStandalone(BuildTarget target, string platformDirectory, string playerName)
+        /// <summary>Local QA build with Unity's DEVELOPMENT_BUILD define enabled.</summary>
+        public static void BuildLinuxDevelopment()
+        {
+            BuildStandalone(
+                BuildTarget.StandaloneLinux64,
+                "LinuxDevelopment",
+                "AIFrenPoc.x86_64",
+                BuildOptions.Development);
+        }
+
+        private static void BuildStandalone(
+            BuildTarget target,
+            string platformDirectory,
+            string playerName,
+            BuildOptions buildOptions = BuildOptions.None)
         {
             string projectRoot = Directory.GetParent(Application.dataPath).FullName;
             RefuseLocalPresentationAssetsByDefault();
@@ -30,9 +45,7 @@ namespace AIFren.UnityPoc.Editor
                 scenes = new[] { "Assets/Scenes/AIFrenPoc.unity" },
                 locationPathName = Path.Combine(outputDirectory, playerName),
                 target = target,
-                // Private visual-test builds should resemble a shipped player.
-                // Unity's Development option adds its own bottom-right watermark.
-                options = BuildOptions.None
+                options = buildOptions
             };
 
             BuildReport report = BuildPipeline.BuildPlayer(options);
@@ -52,14 +65,20 @@ namespace AIFren.UnityPoc.Editor
             }
 
             string resources = Path.Combine(Application.dataPath, "Resources");
-            bool hasLocalCharacter = Directory.Exists(Path.Combine(resources, "LocalCharacter"));
+            string localCharacter = Path.Combine(resources, "LocalCharacter");
+            bool hasLocalCharacter = Directory.Exists(localCharacter) &&
+                Directory.EnumerateFileSystemEntries(localCharacter).Any(entry =>
+                {
+                    string name = Path.GetFileName(entry);
+                    return name != "model.vrm" && name != "model.vrm.meta";
+                });
             bool hasLocalBackground = Directory.Exists(Path.Combine(resources, "LocalBackground"));
             if (hasLocalCharacter || hasLocalBackground)
             {
                 throw new System.Exception(
                     "Refusing to package ignored local avatar/background assets. " +
                     "Use a clean project copy for a shareable test build, or set " +
-                    "AIFREN_INCLUDE_LOCAL_PRESENTATION_ASSETS=1 only for a private local build."
+                    "AIFREN_INCLUDE_LOCAL_PRESENTATION_ASSETS=1 only for a local development build."
                 );
             }
         }

@@ -1,7 +1,7 @@
 # AIFren Design Decisions
 
 > **Status:** Durable product/system design record.
-> **Updated:** 2026-08-22.
+> **Updated:** 2026-08-29.
 > **Purpose:** Preserve the detailed reasoning, invariants, and future-system decisions that are intentionally kept concise in `PROJECT.md`.
 >
 > - See [`../PROJECT.md`](../PROJECT.md) for the concise direction and roadmap.
@@ -222,18 +222,19 @@ Conversation history must survive:
 
 No provider-specific session identifier should become the only copy of conversation continuity.
 
-### Planned / decided — very large archives
+### Implemented / current — scalable History browsing
 
-A multi-year archive can become extremely large. UI and memory tools must therefore assume that loading the entire archive into memory or rendering it all at once will eventually be unacceptable.
+A multi-year archive cannot be rendered as one TMP hierarchy. Unity's derived
+History viewer therefore navigates Year -> Month -> Day -> bounded/paged
+messages and instantiates only the selected page. Large days have older/newer
+navigation, non-renderable empty legacy records are skipped in the derived
+view, and visible updates affect only the current index/page. Canonical
+conversation is unchanged.
 
-Future history browsing should use bounded access such as:
-
-- pagination or virtualization,
-- date/range filters,
-- search,
-- lazy loading,
-- export tools,
-- scoped correction/deletion tools.
+Future search should jump directly to a date/range without populating the
+archive first. Transport-side history pagination remains a compatible future
+optimization because the initial snapshot can still carry more canonical
+records than the current page displays.
 
 ### Implemented / current — timestamps
 
@@ -253,6 +254,11 @@ The Conversation Log is a secondary history/backlog surface. Current product beh
 
 The log is not a second canonical history store.
 
+Canonical/local conversation state updates immediately even when History is
+hidden. The lightweight date index updates incrementally; no lifetime-scale
+row hierarchy is rebuilt from each message event. Do not regress this into a
+single full-archive TMP view.
+
 ---
 
 ## 5. Memory architecture
@@ -261,133 +267,356 @@ Memory is the central long-term differentiator and requires stronger boundaries 
 
 ### 5.1 Current authority: Memory V1
 
-**Implemented / current:** Memory V1 is the authoritative long-term memory system in the current runtime. It persists durable memory JSON, validates data, uses atomic save behavior, and supports provenance/source-aware extraction. The current memory path is part of the canonical application data that must not be casually relocated or rewritten.
+**Implemented / current:** Memory V1 is the broad/general learned-memory
+authority and remains prompt-facing in the current runtime. It persists durable
+memory JSON, validates data, uses atomic save behavior, and supports
+provenance/source-aware extraction. Separately governed V2 lanes have only
+their closed structured authority described below. Neither lane replaces the
+canonical conversation archive, and neither may be casually relocated or
+rewritten.
 
 **Implemented / current:** assistant-generated statements are not automatically treated as evidence of user facts. User-message evidence is the important current integrity boundary.
 
-### 5.2 Memory V2
+### 5.2 Memory V2: current boundary and intended breadth
 
-**Exploratory / current shadow work:** Memory V2 exists only as partial/experimental/shadow work. It is **not authoritative** and must not silently replace Memory V1.
+**Implemented / current:** Memory V2 is character-scoped SQLite structured
+continuity infrastructure. Memory V1 remains broad/general prompt-facing memory
+authority, while validated V2 lanes have narrower current production authority:
+Truth Scope, Active State, Open Threads, closed-schema durable facts, and
+source-grounded derived episode context. Generic V2 retrieval remains
+non-authoritative/fail-open. A Memory Viewer/Editor and explicit promotion
+evidence remain required before any broader authority.
 
-**Planned / decided:** Before V2 can become authoritative it needs, at minimum:
+Raw conversation is canonical. Claims, evidence, lifecycle records, FTS/embedding/ANN indexes, and scene state are derived/rebuildable views; they never justify deleting source history.
 
-- trustworthy retrieval diagnostics,
-- source tracing/provenance,
-- safe structured editing/inspection,
-- character scoping,
-- correction/supersession semantics,
-- temporal handling,
-- scalable browsing,
-- migration/recovery confidence.
+V2 now also owns a narrow provider-neutral working-context seam for derived
+episode accounts. Complete canonical exchanges are deterministically segmented
+into source-ranged, versioned, rebuildable lower episodes while the recent raw
+suffix remains verbatim and passes through Context Hygiene. This is derived
+context, not general V2 prompt authority: invalid caches fail open, provider
+switching does not reset continuity, and no summary is inserted into canonical
+dialogue or promoted to Memory V1 truth.
 
-The V2 curator is a **logical role**, not a requirement for a permanently resident second large model. On constrained hardware, curation may be scheduled, batched, or use the same model at another time.
+**Planned / decided:** 1.0 continuity has distinct layers that must not be collapsed into one salience score or vector search:
 
-### 5.3 Conceptual memory categories
+- durable facts and corrections;
+- sparse deterministic Active State / current scene;
+- recent/session continuity;
+- open or unresolved threads where appropriate;
+- important shared episodes;
+- a separately designed relationship-state layer if and when that deferred
+  subsystem is explicitly resumed.
 
-The long-term system should keep conceptually different information distinct even if implementation later stores some categories in shared tables.
+Ordinary vague ancient low-value detail may be best-effort or gracefully forgotten. Durable/core facts, explicit retention, corrections, and important recorded continuity must not fade merely because they are old or unrepeated.
 
-#### Stable user/profile facts
+### 5.3 Durable facts and episodes
 
-Examples include durable preferences, biographical facts, important constraints, and other user-provided information likely to remain true.
+**Implemented / current governed lane:** The durable vertical path covers a
+small closed set of explicit real-world identity/profile, residence,
+occupation/school, device, pet, long-running project, preference,
+recurring-interest, and ownership facts. Canonical user evidence, validation,
+truth scope, correction/supersession, bounded lookup, and typed admission remain
+authoritative. This is intentionally not an arbitrary ontology or universal V2
+retrieval system.
 
-These are not the same as shared episodic experiences.
+**Planned / decided:** stable facts and shared episodes remain different concepts. Important shared episodes should remain retrievable; perfect recall of arbitrary vague lifetime episodes is post-1.0 research, not a release gate. Historical corrections preserve predecessor evidence but cannot answer ordinary current-truth queries.
 
-#### Shared episodic experiences
+**Implemented / current episode foundation:** Lower episode accounts preserve a
+bounded neutral narrative plus at most six distinctive source-grounded
+continuity anchors. Rebuild verifies anchor retention, permits at most one
+deterministic refinement, and uses a bounded source-grounded fallback with
+metadata if verification still fails. Local derived requests use deterministic
+provenance seeds while live Local dialogue uses fresh system-random seeds.
 
-AIFren should remember things that happened **between the character and the user**, not merely extract user profile facts.
+Optional contiguous-era accounts must pass a separate retention verifier
+against every covered lower account. Any missing/uncertain detail rejects the
+era and keeps the lower summaries; zero selected eras is valid. The public
+matched-seed historical harness is the regression gate for continuity, topic
+adherence/reversion, poison recurrence, coherence, and prompt cost. Fixture
+results do not make derived summaries canonical facts.
 
-Examples include:
+### 5.4 Active State / current companion scene
 
-- promises,
-- repairs after a disagreement,
-- milestones,
-- recurring jokes,
-- shared projects,
-- meaningful past conversations,
-- events the pair experienced together.
+**Implemented / current:** Active State is the sparse, mention-driven current
+reality for the user, persistent companion, shared/current context, and
+materially mentioned scene subjects. It is not ordinary learned memory,
+relationship state, avatar configuration, or an inventory/world simulator.
 
-This category is important to the long-term relationship goal.
+The generic mutation contract supports:
 
-#### Active/current state
+- establish/create subject;
+- set an attribute;
+- establish or clear a relation;
+- replace a subject/relation;
+- transfer a subject between actors;
+- set an explicit location;
+- correct current state;
+- retire a current/dormant subject;
+- explicitly reactivate an eligible distinct retired subject.
 
-Temporary state should not rely on ordinary semantic retrieval. When relevant, it belongs in deterministic prompt/context assembly.
+`set attribute` is not `replace subject`. “Your blue hat is red now” changes
+the current hat's color. “Replace your blue hat with a red one” closes the old
+current wear relation and establishes a distinct replacement while preserving
+history. Complete multi-update batches validate before one transaction.
 
-Examples include:
+Subjects use opaque backend-generated `scene-<uuid>` IDs, are not global
+identity records, and retain independently evolving governed attributes such as
+kind, location, state/activity, condition, color, wearer/holder projections,
+wetness, and stains. Internal IDs never enter normal prompt or UI text.
 
-- current location,
-- current clothing,
-- held objects,
-- current activity,
-- current environment/temporary conditions,
-- other presently true situational facts.
+For ownership/attachment lifecycle, current semantic relations are the primary
+authority. `holding`/`carrying` and `wearing` relations own holder/wearer truth;
+`held_by` and `worn_by` are compatibility projections for bounded scene
+snapshots and older consumers. Every governed scene mutation synchronizes those
+projections in the same store transaction. A release closes the holding relation
+before an explicit location is established, and a parity failure rejects the
+transaction instead of leaving two current truths that disagree.
 
-Active state needs explicit lifecycle semantics. Candidate lifecycles include:
+Updating one attribute never erases unaffected facts. A white shirt worn by the companion may later gain `wet=true` and `stain=wine`; its color and wearer remain current unless changed. Likewise, a user's kitchen location can survive food cooking/burning/plating updates.
 
-- **until changed**,
-- **session**,
-- **time-limited**,
-- **explicit clear**,
-- **cautious inference** with lower confidence.
+#### Sparse, mention-driven boundary
 
-An old semantically similar state must not randomly reappear as current merely because vector retrieval ranked it highly.
+Track only facts explicitly established as currently true, materially relevant objects/entities mentioned in conversation, and conservative immediate consequences strongly implied by an explicit event. Preserve unaffected current facts across turns.
 
-#### Relationship state
+Do not invent unmentioned details, simulate rooms/physics/time, infer off-screen consequence chains, model everything that plausibly exists, or build a game-world/ECS simulation. The test is whether a normal conversational companion would keep the fact in mind because it was mentioned or immediately implied; if it requires imagining unseen details, omit it.
 
-Relationship state is a separate concept described in its own section. It should not be encoded only as factual memories or base personality.
+#### Actor scope and authority
 
-### 5.4 Evidence and provenance
+Active State naturally covers both actors:
 
-**Planned / decided:** Derived memories should be backed by source/evidence where practical.
+- user location/activity and relevant conditions/objects;
+- companion location/context, activity, appearance/outfit state, and relevant conditions/objects;
+- shared/current context when mentioned;
+- bounded scene subjects such as food, clothing, drinks, or devices.
 
-A durable memory should be able to answer questions such as:
+Assistant-generated free-form prose must never establish authoritative state merely because the model said it. Trusted state must come from canonical user evidence, governed backend/app-avatar transitions, or another explicitly approved runtime source.
 
-- what conversation/event supported this claim?
-- which character does it belong to?
-- when was the evidence created?
-- was the statement direct user evidence, inference, correction, or consolidation?
-- has newer evidence superseded it?
-- is it disputed?
+#### Temporal and lifecycle semantics
 
-The canonical conversation remains available when a derived claim must be audited or rebuilt.
+Every current attribute has a validity start/end. `valid_from_us` marks the value start; replacement, clear, or retirement closes it through `valid_to_us`; `last_confirmed_at_us` is derived from later explicit confirming user evidence; elapsed duration is derived at read time. Reasserting the same normalized value adds confirmation evidence without replacing the claim or resetting its start.
 
-Assistant-generated text must not automatically become evidence that a user fact is true. Otherwise the model can manufacture a claim and then "remember" its own invention as user history.
+Time never autonomously mutates state. Wet clothing does not silently dry, food does not cool/spoil, and people/objects do not move merely because time passed.
 
-### 5.5 Corrections, conflicts, and trust
+Scene subjects have three non-destructive lifecycle states:
 
-**Planned / decided:** Explicit, plausible user corrections are high-authority evidence. If the user says an old memory is wrong or outdated, AIFren should generally accept the correction.
+- **current** — has an active relation/attribute/capability dependency;
+- **dormant** — has no active relation but remains within the bounded salient
+  working roster;
+- **retired** — preserved historically but absent from ordinary current
+  prompt/UI/reference resolution.
 
-That does not require blindly rewriting history. Where evidence conflicts, the system may preserve the old evidence while marking the derived claim as:
+Active relation sources, capability causes, and profile defaults cannot retire.
+The dormant roster is bounded; least-recent eligible generic subjects retire
+conservatively before distinct named/qualified subjects. Explicit strong
+identity can reactivate a distinct subject. A generic old cup, book, box, or hat
+must not resurrect merely because it is the only historical noun match.
 
-- superseded,
-- corrected,
-- disputed,
-- no longer current.
+#### Proposal/application boundary
 
-The policy should be cautiously trusting rather than adversarial. AIFren is not meant to argue with the user or behave like an anti-gaslighting security system, but obvious contradictions should not destroy the provenance of what previously happened.
+Active State proposals are bounded and may target governed actor/global state, introduce a scene subject, update an existing current subject, clear an attribute, or retire a subject. Backend validation is authoritative: registry/attribute/type checks, canonical persisted evidence, same-character scope, and atomic application happen before state changes.
 
-### 5.6 Retrieval
+Proposals distinguish `explicit` updates from `immediate_consequence` updates.
+The latter require a narrowly governed consequence rule, remain tied to an
+explicit trusted event, and cannot become authority for another inferred
+consequence. Deterministic or bounded closed-schema semantic extraction may
+only propose; it never writes state directly.
 
-**Planned / decided:** Retrieval should balance more than raw semantic similarity. Relevant factors include:
+#### Relation-semantic capability derivation
 
-- relevance,
-- recency,
-- importance,
-- diversity,
-- repetition suppression,
-- character scope,
-- temporal validity/currentness.
+Current relations retain target actor/scene subject, optional body facet and
+side, predicate, cause, optional stable subject/quantity/equipment semantics,
+scope, evidence, and validity lifecycle. Capability effects derive from that
+meaning, not merely from the object's name.
 
-The prompt should not be flooded with near-duplicate memories, and a memorable phrase/running joke should not recur in every conversation simply because it scores highly.
+Examples:
 
-Retrieval metadata and indexes are derived and rebuildable.
+- a sparkly scrunchie worn on a wrist is decorative and does not occupy a hand;
+- a wrist tethered to a pole constrains the affected side/reach;
+- rollerblades carried are not rollerblades worn;
+- a blindfold held is not a blindfold covering eyes;
+- a wheelchair nearby is not a wheelchair in use.
 
-### 5.7 Accessibility, importance, and forgetting
+A conventional blindfold applied over the eyes is a bounded known equipment
+semantic and directly establishes vision unavailability. A later explicit
+coverage statement for that same blindfold confirms/refines the same logical
+application; it does not create another independently removable blindfold
+cause.
 
-**Planned / decided:** accessibility is not the same as importance, and forgetting is not the same as deletion.
+The shared derived envelope currently covers:
 
-A future character may occasionally fail to recall obscure information. If imperfect recall is implemented, it should be conservative and believable rather than frustrating or arbitrary.
+- perception: vision, hearing, smell, taste, and touch, each
+  normal/constrained/unavailable;
+- communication: speech normal/constrained/unavailable;
+- manipulation: bounded side-aware hand and arm availability;
+- locomotion: semantic mode plus constraint;
+- awareness: normal/reduced/asleep;
+- posture: standing/sitting/lying when established.
 
-Failure to recall something in one turn must not destroy the canonical archive or erase the underlying memory evidence. Recurrence can reinforce accessibility without rewriting history.
+Sparse environmental causes record only explicit interaction consequences,
+such as pitch darkness preventing sight, smoke constraining vision, or loud
+music preventing hearing. AIFren does not compute physics, acoustics, light,
+collision, pain, or medical consequences. Sparse body availability likewise
+records only explicit bounded facts; a missing limb does not automatically
+invent every downstream disability, and explicitly established assistance can
+alter effective capability.
+
+Unavailable hearing has one bounded information-authority consequence. When
+the interaction explicitly establishes that a user utterance is delivered
+through that unavailable channel, canonical evidence is preserved but the new
+content is excluded from understood model context, Memory V1 semantic
+processing, Memory V2 shadow processing, durable-fact admission, Open Threads,
+summaries, and episode compaction. Hearing restoration does not reveal it
+retroactively. `constrained` hearing remains usable with limitations; AIFren
+does not simulate acoustics, partial transcripts, or treat all typed text as
+spoken by default.
+
+Multiple causes compose independently and deterministically. Removing one eye,
+mouth, hearing, hand, or locomotion cause removes only that contribution. The
+final cause removal restores the capability immediately. Derived effects are
+not persisted as duplicate memory facts.
+
+**Capability unavailable does not mean response unavailable.** Removing one
+channel leaves every other valid channel available for characterful VN-style
+reaction. Speech unavailable still permits gaze, expression, gesture, posture,
+and physical action when their capabilities allow it. Fallback means
+generation/validation failure; it is not the normal representation of a
+constrained character.
+
+Posture stores only `standing`, `sitting`, or `lying`. Location/support is a
+separate relation: “lying on the couch” conceptually establishes `lying` plus
+a couch relation, never posture `couch`. The compact overlay need not surface
+every such fact; Scene Details remains the fuller inspection surface. Likewise,
+a tether has bounded default effects, while explicit user evidence such as an
+inability to move away may strengthen locomotion without distance/physics
+simulation.
+
+#### Planned / decided — extensible scene loci
+
+This direction is **not fully implemented**. Future relation storage should use
+an open vocabulary for body/attachment/scene loci while keeping the important
+capability consequences closed and validated. Common built-ins such as eyes,
+ears, mouth, head, neck, arms, wrists, hands, torso, waist, legs, and feet
+remain valuable deterministic anchors. Evidence may also preserve normalized
+custom loci such as finger, left index finger, ankle, toes, nose, hair, tail,
+horns, wings, or character-specific anatomy.
+
+An unknown/custom locus should normally degrade to a valid scene relation with
+no automatically inferred capability effect, rather than rejecting the entire
+mutation because the locus is absent from a global enum. Conservative parent
+normalization may map `left index finger` to `left hand` or `ankle` toward a
+leg/foot family when evidence is sufficient; it must not guess aggressively.
+Character-specific anatomy may eventually seed known loci without adding
+global enums.
+
+Capabilities continue to derive from relation semantics and explicit
+consequences, not the locus name. A ring worn on a finger is decorative; a
+trapped finger plus explicit inability to use the hand may constrain manual
+capability. A scrunchie worn on a wrist is not a wrist tether, and a tail ribbon
+does not require a global “tail equipment slot.” This is a body/attachment/scene
+locus model, not game inventory or equipment-slot simulation.
+
+#### Response authority boundary
+
+A validated user-evidence mutation is applied before response generation so
+context assembly, capability validation, and narration share the same
+post-mutation snapshot. It creates a **must-respect** response requirement: the
+model may react naturally or omit the changed fact, but may not question,
+reverse, or contradict it. Only a bounded direct current-state question creates
+a **must-communicate** requirement whose authoritative answer must actually be
+rendered. These are separate typed modes; an ordinary mutation must never force
+a mechanical restatement merely to pass validation.
+
+The authoritative response envelope permits canonical dialogue as its minimal
+form. Response mode, spoken projection, presentation, and companion-action
+metadata remain optional unless a capability or action requires them; supplied
+metadata is strictly validated, while safe defaults are derived backend-side.
+This keeps local-model formatting fallibility separate from state and
+capability enforcement.
+
+Direct deterministic queries receive one bounded repair and then a
+state-derived factual fallback. Unknown is not none: lack of authoritative
+attire, holder, activity, location, or capability evidence cannot become a
+negative claim. Any fallback that states a scene fact must derive it from the
+same authoritative snapshot.
+
+Several independently recognized direct questions in one user turn may create
+several `must-communicate` facts. The model may answer naturally without a fixed
+order, but every fact remains required. Ordinary replies have a soft preference
+near 100 words and no general hard ceiling. Constrained/nonverbal reactions
+target roughly 50--80 words and have a bounded 100-word validation ceiling plus
+one concise repair; no path raw-truncates canonical dialogue.
+
+The same composed capability envelope governs normal constrained turns, sleep,
+response validation, companion actions, semantic presentation, gaze,
+gesture eligibility, and spoken projection. No constrained mode may bypass
+another active domain.
+
+#### Scene UI interaction versus administrative correction
+
+The optional compact Current Scene overlay is an immersive interaction
+surface. Its X sends only an opaque snapshot-relative token/revision/scope.
+After validation, the backend applies the mutation and recomputes capabilities
+before publishing a snapshot or generating prose. It then constructs one
+deterministic natural user-side scene event, stores it canonically with
+`scene_ui/generated_event` origin, and offers one reaction opportunity from
+post-mutation state. Generated event prose is narration, not evidence, and is
+never reparsed into state. Rapid actions cancel or suppress stale
+contradictory reactions.
+
+Event wording follows the accepted operation and predicate/semantic family
+before body facet. Removing decorative wristwear therefore cannot become a
+restraint-release event. Snapshot conversation projection and delayed event
+echoes use stable canonical message identity; deduplication is never based on
+text, so legitimate identical messages remain distinct.
+
+Detailed Scene Details/debug correction remains a separate silent operation:
+it changes authoritative current state without creating an in-world canonical
+event or companion reaction. Both operations preserve canonical evidence and
+close causes rather than editing derived capability values.
+
+#### Bounded companion actions
+
+The model may propose a closed companion-only activity, posture, one current
+wear/remove or hold/release action, or supported equipment use/dismount. The
+backend validates actor, subject, scope, lifecycle, capabilities, and operation
+before applying it. Rejected or failed actions cannot be narrated as completed.
+Ordinary prose remains non-authoritative, and this is not a general autonomous
+agent loop.
+
+#### Truth / scenario scope
+
+**Implemented / current:** Schema v12 adds a small character-scoped truth-scope boundary. Every character has one stable backend-derived `real_world` scope and may have bounded persistent `scenario` scopes with opaque IDs and non-authoritative compact labels. A scope is created, activated, or deactivated only through governed canonical user evidence; a model cannot silently create or switch one.
+
+Active State (including scene subjects/attributes) and Open Threads are scoped. Current reads use only the active scope; inactive scenario continuity remains stored, historical, and available again when that same scope is resumed. Existing V2 rows migrate safely to the default real-world scope. Durable facts are real-world only: roleplay claims cannot overwrite real identity or biographical facts.
+
+Activation/deactivation completes before context retrieval and response
+generation. The first response after leaving RP therefore uses the restored
+real-world Active State and Open Threads, not inactive scenario state as current
+truth.
+
+Scope is a truth boundary, not an expiry system. Long-lived active state stays active until changed, cleared, retired, or its scope is made inactive; age, repetition, context rollover, and elapsed time never promote it to durable memory, delete it, switch scope, or cross it into real-world truth. Stable identity may still be used when relevant in a scenario, while scenario-specific scene state and threads must not leak to ordinary real-world context.
+
+The model remains sparse and generic. The current governed scene attributes can preserve independently changing properties but do not provide arbitrary RPG modifiers, inventory mechanics, an entity graph, or a game/world simulation.
+
+### 5.5 Evidence, corrections, and trust
+
+Derived claims require inspectable source/evidence where practical: character, canonical event, user/trusted actor, evidence role, timestamps, lifecycle, and supersession history. Assistant text alone is not user-fact or companion-state authority.
+
+Explicit user corrections are high-authority evidence. Preserve prior evidence/history as superseded or historical rather than destructively rewriting it; old values cannot answer ordinary current queries.
+
+### 5.6 Retrieval, admission, and prompt safety
+
+Use the explicit pipeline:
+
+```text
+lookup → relevance/selection → admission → typed rendering
+```
+
+A lookup hit is not prompt admission. Retrieved memory/state is background evidence, not an instruction, compulsory topic, or personality override. Typed rendering uses governed validated values, never raw claim text, source excerpts, hashes, IDs, or ordinary provenance internals. The latest explicit user turn overrides stale remembered assumptions.
+
+### 5.7 Accessibility and forgetting
+
+Accessibility is not importance, and forgetting is not deletion. A low-salience old detail may be unavailable without damaging canonical history. Important/core continuity must be evaluated separately from acceptable abstention on mundane ambiguous history.
 
 ### 5.8 Memory Viewer / Editor
 
@@ -421,7 +650,7 @@ Deleting a derived memory must not implicitly delete its source conversation. De
 
 ## 6. Relationship state
 
-### Planned / decided
+### Explicitly deferred
 
 Relationship state is distinct from:
 
@@ -447,7 +676,7 @@ Relationship state may later affect emotional thresholds and reaction strength. 
 
 There should be no overt game-like relationship meter in the ordinary experience.
 
-### Implemented / current
+### Implemented / current boundary
 
 No authoritative relationship-state subsystem exists yet. Current memory/history can preserve relationship-relevant events, but that is not the same as a dedicated relationship state.
 
@@ -469,7 +698,7 @@ A long-lived character needs explicit real-time continuity. Future context/memor
 - how long ago a shared event happened,
 - whether a fact was true only during a past period,
 - session-limited versus long-lived state,
-- temporary-state expiration,
+- explicit current-state lifecycle,
 - continuity across days, months, and years.
 
 Temporal awareness should help the character distinguish:
@@ -483,7 +712,11 @@ This should be built from reliable timestamps/state semantics rather than asking
 
 ### Implemented / current
 
-Canonical conversation timestamps exist. Full temporal reasoning and temporary-state lifecycle management do not.
+Canonical conversation timestamps exist. Direct local time/date requirements,
+validity intervals, correction/supersession, and the current/dormant/retired
+Active State lifecycle are implemented. AIFren does not autonomously expire
+scene facts based on guessed physics or elapsed time, and broad temporal
+reasoning over arbitrary history remains future work.
 
 ---
 
@@ -507,15 +740,29 @@ The current paired-markup semantics are deliberately explicit and mirrored by th
 
 **Single paired `*...*`:**
 
-1. a known action/stage-direction phrase is `Emote`;
-2. otherwise, a span with four or more normalized words is `Emote`;
-3. otherwise it is `Emphasis`.
+1. an action-shaped or standalone roleplay segment is `Emote`;
+2. otherwise, emphasis embedded in surrounding spoken dialogue is `Emphasis`,
+   regardless of its word count.
 
-**Double paired `**...**`:** always `Emphasis`, regardless of length.
+**Double paired `**...**`:** `Emphasis`, unless it is nested inside an outer
+action that already owns the whole nonspoken span.
 
 `Emphasis` remains spoken content: its markers are removed for TTS and it is presented as spoken emphasis, currently italicized in visible dialogue.
 
 `Emote` is presentation/action content: it remains visible in normal dialogue with distinct styling, is omitted from TTS and hidden spoken subtitles, and may feed semantic gesture mapping.
+
+An outer roleplay action remains nonspoken even when it contains nested
+single- or double-asterisk emphasis. Inner formatting cannot prematurely close
+the outer action span. Ordinary emphasis outside an action remains spoken.
+Whole-response and incremental speech projections share this deterministic
+policy so action prose cannot leak into TTS at streaming boundaries.
+Generated physical actions are requested in `*...*`; parentheses remain
+ordinary parenthetical prose and are not universally reclassified as actions.
+
+Generated assistant emoji are removed at the assistant-output boundary before
+canonical persistence and presentation. User-authored emoji remain untouched,
+and ordinary Unicode text, including Japanese text and punctuation, is not
+treated as emoji merely because it is non-ASCII.
 
 The canonical raw assistant response remains unchanged. Markup interpretation is a presentation derivative rather than a rewrite of history.
 
@@ -549,11 +796,23 @@ A temporary edge/input UI peek suppresses hidden-subtitle rendering without canc
 
 Provider word timing is optional. Valid one-to-one timings may improve synchronization, while missing/invalid timing uses a deterministic fallback plan. Subtitle timing, pagination, fade, and reveal must never gate PTT readiness, speech interruption, synthesis cancellation, playback startup, or backend readiness.
 
-### Planned / decided — one interpretation boundary
+Configured WPM/WPS is the maximum normal visual reveal speed. Audio alignment
+may make reveal slower, but a short or empty spoken projection cannot accelerate
+a long action-heavy response past the user's reading preference. Explicit
+instant-text mode remains authoritative.
 
-Presentation semantics should increasingly become structured meaning once rather than being independently re-parsed with subtly different heuristics by display, TTS, animation, logging, and future frontends.
+### Implemented / current — stable interpretation boundary
 
-The long-term direction is structured response/presentation metadata while retaining canonical natural-language response text. Raw punctuation conventions should not become an unbounded protocol.
+Within each runtime projection, dialogue is parsed once into stable typed spans
+and display, speech, subtitle ownership, pagination, and streaming decisions are
+derived from that representation. Python and Unity intentionally mirror the
+same bounded policy and cross-projection tests guard their equivalence rather
+than allowing each downstream consumer to invent an asterisk heuristic.
+
+The longer-term direction remains more explicit structured
+response/presentation metadata while retaining canonical natural-language
+response text. Raw punctuation conventions must not become an unbounded
+protocol.
 
 ---
 
@@ -587,7 +846,11 @@ The durable rule is that avatar framing is a **presentation transform**, not cha
 
 ### Implemented / current — managed visual assets
 
-Avatar models and backgrounds are global managed visual assets rather than character identity. Imported assets are copied into AIFren-owned managed storage with stable identity, friendly naming, and previews/thumbnails where available.
+Avatar models and backgrounds are global managed visual assets rather than
+character identity. Imported assets are copied into AIFren-owned managed
+storage with stable identity, friendly naming, and previews/thumbnails where
+available. Each character stores only a local stable reference to its selected
+managed avatar; background, lighting, and framing preferences remain global.
 
 A visual asset may be referenced by a character without becoming character-owned. Changing the avatar or background must not reset or rewrite personality, memory, history, relationship, or voice.
 
@@ -755,19 +1018,14 @@ More elaborate gaze, authored idle sets, richer gesture libraries, and detailed 
 
 ## 11. Emotion and mood design
 
-### Planned / decided — metadata from the same response
+### Implemented / current — metadata from the same response
 
-The LLM should ideally choose response emotion explicitly.
-
-Avoid an extra LLM call solely to classify emotion if the main response generation can return structured presentation metadata in the same turn.
-
-A future `ResponsePresentationMetadata` contract may include fields conceptually equivalent to:
-
-- `emotion`,
-- `intensity`,
-- optional `gesture`.
-
-The exact wire/schema format is not fixed by this document.
+The unified assistant response contract may carry optional bounded semantic
+presentation metadata in the same inference as canonical dialogue. Current
+fields cover a closed emotion/intensity vocabulary and an optional semantic
+gesture; models do not address avatar blendshape or animation filenames.
+Canonical dialogue alone remains a valid minimal response, and the backend
+derives safe presentation defaults when optional metadata is absent.
 
 An absent/no-change emotion update is valid. Each assistant turn may change the persistent visible facial expression/intensity or intentionally leave the current expression unchanged. Emotion semantics remain independent of VRM blendshape/expression names; Unity maps semantic emotion onto the active VRM's available expression capabilities.
 
@@ -811,9 +1069,12 @@ Emotion/mood is not permission to rewrite personality.
 
 Personality influences **how strongly and how easily** a character reacts. Mood is a temporary state. Relationship state can bias later reactions. These concepts should remain distinct.
 
-### Implemented / current
+### Implemented / current boundary
 
-There is no complete authoritative mood system. Persistent mood, richer semantic vocabularies, and autonomous gaze remain future work; the current bounded response-presentation metadata is deliberately not mood or character-memory state.
+There is no complete authoritative mood system. Persistent mood, richer
+semantic vocabularies, and autonomous gaze remain future work; the current
+bounded response-presentation metadata is deliberately presentation state, not
+mood, relationship state, or character-memory authority.
 
 ### Undecided
 
@@ -847,7 +1108,24 @@ Over time, structured response presentation metadata should reduce dependence on
 
 ### Implemented / current — provider boundary
 
-AIFren has a provider-independent TTS/service boundary. Kokoro is the current main local TTS path and Piper remains available as a fallback/dependency path. STT is local-capable. The backend remains authoritative for synthesis/playback lifecycle.
+AIFren has provider-neutral model and TTS boundaries. Model choice (Gemini,
+another online service, or a local OpenAI-compatible endpoint) never changes
+character, history, Memory V2, or context-assembly semantics. Unity is the sole
+user-facing frontend. Kokoro is the active production baseline; Piper and the
+Tkinter application path are removed. Streamed assistant text remains
+presentation-only until one final canonical assistant message is persisted.
+Current Kokoro scheduling defaults to bounded complete-sentence early speech.
+A separate semantic projection emits the first sentence immediately, groups
+small later adjacent sentences, and feeds one synthesis worker and one
+continuous per-turn playback stream. Canonical output remains untouched, and a
+persisted Unity setting selects the stable `whole_response` fallback. STT is
+local-capable and the backend remains authoritative for synthesis/playback
+lifecycle. Experimental voice runtimes and protected voice material are not
+part of the public repository. Any further speech
+scheduling change must preserve exact canonical whitespace, wait for complete
+semantic action/emote spans, retain spoken emphasis and interruption identity,
+and pass the full ordinary Development-player path rather than only synthetic
+benchmarks.
 
 The current Kokoro configuration does not depend on runtime pitch post-processing to force a character voice.
 
@@ -861,6 +1139,21 @@ The durable provider-independent concept is a synthesis/playback result that can
 - optional word/phoneme/viseme timing information.
 
 Kokoro can expose predicted token/word timing when a trustworthy one-to-one mapping is available. Timing metadata is enhancement data, not lifecycle authority.
+
+Streaming early speech and direct/governed speech use the same ordered resource
+manager. A recognized accelerator out-of-memory/resource failure preserves the
+unresolved chunk, retries according to the bounded policy, and can move Kokoro
+to CPU for the rest of the runtime before retrying that same chunk. Ordering is
+exact-once: later chunks cannot skip past or duplicate an unresolved one, and
+interruption cancels pending retry/failover work. Classification is
+accelerator-neutral across PyTorch CUDA and HIP/ROCm interfaces; ROCm evidence
+is injected/architectural until tested on actual ROCm hardware.
+
+The spoken projection removes generated assistant emoji and omits complete
+outer action/emote spans, including actions containing nested emphasis.
+Canonical/display text and speech projection remain separate. Current STT
+resource recovery likewise retries the same captured WAV once on CPU/int8 after
+a recognized Whisper accelerator failure and remains on CPU for that runtime.
 
 ### Implemented / current — authoritative interruption lifecycle
 
@@ -922,6 +1215,15 @@ Current PTT routes into the same backend turn path as accepted text/transcriptio
 
 Current development behavior includes configurable/focused Unity PTT and backend/global-listener support where available.
 
+PortAudio microphone close is a bounded owned-resource operation. Graceful
+stop/close remains normal; a close exceeding 250 ms is safely aborted, the
+capture is discarded before WAV/Whisper, and capture identity prevents stale
+cleanup from affecting a newer attempt. Python threads are never forcibly
+terminated. A recovered no-turn voice `ready` explicitly reconciles Unity's
+capture-owned Thinking placeholder by restoring the prior dialogue (or clearing
+an empty prior state); `turn_started` retires that authority so legitimate
+generation cannot be rolled back.
+
 ### Planned / decided — VOIP-like PTT
 
 PTT should feel like a normal VOIP client:
@@ -950,33 +1252,30 @@ Temporary input reveal should not necessarily change the user's committed hide/s
 
 ## 15. Proactive behavior
 
-### Planned / decided
-
-Proactive behavior should be limited and conservative.
-
-The companion should not constantly interrupt the user simply because the application is open.
-
-The rough product direction discussed is an occasional check-in on the order of **about once per hour** when the user is not actively interacting. This is an approximate scale, not a required fixed timer.
-
-Proactivity should consider context such as:
-
-- recent activity,
-- whether the user is already interacting,
-- quiet/sleep indications,
-- whether prior check-ins were ignored,
-- explicit user preferences.
-
-Ignoring a proactive suggestion is at most a weak back-off signal. It must not be interpreted as relationship rejection.
-
-"Good night" or equivalent language can suppress interruptions until later activity suggests the user is available again; the system should not require a rigid fixed sleep schedule.
-
 ### Implemented / current
 
-No mature proactive behavior system is authoritative today.
+Proactive behavior is deliberately conservative and user-configurable through a
+closed interval set from Off and short QA intervals through six hours. The
+selected interval is a minimum opportunity, not a promise that a message will
+be sent.
+
+Eligibility considers recent user activity, open/waiting continuity, sleep or
+quiet suppression, and unanswered-check-in backoff. Startup has a separate
+settling grace after backend, provider, and frontend readiness. Background
+generation remains private until a draft is publishable; failed, empty,
+overlength, timed-out, or rejected attempts create no visible turn and count
+for failed-attempt throttling. Every published turn has a terminal lifecycle,
+so startup cannot be left in phantom Thinking.
+
+Published proactive messages alone enter canonical conversation and normal
+ignored-check-in tracking. Ignoring one is a weak scheduling backoff signal,
+not relationship rejection. Genuine user activity relaxes the appropriate
+backoff. Relationship interpretation is outside this subsystem.
 
 ### Undecided
 
-The exact scheduler, context signals, UI controls, and local notification behavior are not settled.
+Future notification surfaces and richer product-level availability controls
+remain unsettled; they must preserve the private-before-publication lifecycle.
 
 ---
 
@@ -1047,7 +1346,27 @@ A generic toast system is not a product requirement; feedback should be contextu
 
 The Python `AssistantService` is the authoritative frontend-independent service boundary. The Unity client connects through loopback transport and does not own conversation/memory persistence.
 
-Current response generation uses a cloud provider, while STT/TTS/memory are designed around local operation.
+Current response generation supports Online providers and managed/external
+OpenAI-compatible Local providers through the same continuity boundary. Managed
+Qwen 3.5 CUDA is validated on Linux; provider switching does not reset character
+state.
+
+AIFren owns only managed processes it starts. Local to Online stops that owned
+llama process; an external compatible endpoint is never killed or restarted.
+Online to Local applies saved model/Auto-start state. Missing credentials or no
+configured provider leaves Settings accessible, and a Local failure never
+silently selects Online.
+
+Owned `llama_cpp.server` launch explicitly sets `--logits_all false`. Ordinary
+chat does not consume prompt-token log-probabilities, and retaining the
+`n_ctx x n_vocab` score matrix can allocate several GiB on
+large-vocabulary models without changing normal response semantics.
+
+Live Local turns use fresh explicit system-random seeds. Qwen3.5 gets its
+model-specific recommended non-thinking/general sampler preset; Online and
+other local families are not silently changed. Deterministic seeds are reserved
+for rebuildable derived compaction and must never make ordinary companion
+dialogue deterministic.
 
 ### Planned / decided — replaceable providers
 
@@ -1090,6 +1409,21 @@ Accelerator-specific concerns should remain isolated to inference/runtime/provid
 A personal high-end deployment may use significantly larger/better local models than the general distributed default.
 
 A mature 1.0 should aim to provide or recommend a lower-spec local model appropriate for broader hardware where licensing, size, and quality permit. Advanced users should be able to substitute larger models without changing the rest of AIFren.
+
+### Planned / decided — context detail and resource tradeoffs
+
+Working-context detail should eventually be a user-visible resource tradeoff,
+not a hidden model-size assumption. A likely ordinary control is Context Detail
+Low/Balanced/High/Custom, backed by an explicit working-context token budget.
+Advanced diagnostics may expose model `n_ctx` capacity, current and recent
+average/peak prompt tokens, raw-dialogue/episode/memory composition, measured
+VRAM used/free, and cautious estimated VRAM impact for larger capacities.
+
+Model parameter count and context capacity are separate. A small local model
+may use a modest useful context, stronger local hardware may retain more
+high-resolution dialogue, and Online providers may permit much larger budgets.
+All must use the same AIFren-owned archive/memory/selection semantics. Exact
+future limits and the UI are not implemented or settled.
 
 ### Undecided
 
@@ -1204,6 +1538,16 @@ This is a **testing distribution milestone**, not the final 1.0 installer archit
 
 Current friend-build limitations/requirements include the present x86-64 Linux target, NVIDIA/CUDA dependence in the bundled faster-whisper path, working audio/microphone, network/API access for the current cloud LLM path, and user-supplied/licensed avatar content where the distribution does not bundle one.
 
+### Planned / decided — release diagnostics boundary
+
+Development builds enable the privacy-safe rolling flight recorder, automatic
+incident capture, and manual `6666666` dump because they are essential to
+intermittent in-player diagnosis. Release/1.0 builds keep recording off by
+default. Disabled instrumentation should be a cheap/no-op path, and persistent
+diagnostics must never grow without a bound. A future explicit Diagnostics
+opt-in may retain bounded captures, but it must reuse the central recorder
+rather than introduce another logging subsystem.
+
 ### Planned / decided — ordinary-user packaging
 
 A mature 1.0 should be easy to install and run. Ordinary users should not have to manually assemble Python virtual environments, install model dependencies one by one, or understand the development checkout.
@@ -1311,9 +1655,11 @@ These items are intentionally not the current development focus:
 - generic GLB avatar support;
 - advanced mood/emotion behavior beyond the initial restrained expression/metadata system;
 - deeper gaze and physical-interaction systems;
-- game-world / locomotion systems;
+- full game-world simulation, physics, pathfinding, maps, and inventory systems;
 - constant autonomous chatter;
-- final Memory V2 authority until inspection/provenance/safety tooling is ready;
+- broad generic Memory V2 authority beyond the current governed lanes until
+  inspection/provenance/safety tooling is ready;
+- Relationship State (a separate future subsystem);
 - local-LLM **distribution/productization** work beyond what is needed for development;
 - full Windows/distribution hardening until the current Linux-first feature work is further along.
 
@@ -1343,15 +1689,18 @@ The following remain genuinely unresolved and should not be silently converted i
 
 ### Memory / relationship
 
-- What exact schema and authority transition should Memory V2 use?
-- What are the final relationship-state dimensions and update rules?
+- What evidence and product gate should justify broad Memory V2 authority after
+  the settled claim/scene foundations and Memory Viewer/Editor exist?
+- When Relationship State is deliberately resumed, what evidence, user
+  controls, dimensions, and update rules should it use?
 - How should confidence/dispute/supersession be represented in the user-facing memory tools?
 - What, if any, deliberate imperfect-recall model feels natural without becoming frustrating?
 
 ### Emotion / animation
 
 - What exact mood dimensions and decay mathematics should be used?
-- What exact structured response metadata schema should connect LLM response, expression, gesture, and TTS?
+- Which bounded presentation metadata extensions, if any, are justified beyond
+  the current response contract and semantic emotion/gesture fields?
 - Which authored Humanoid animation source(s), if any, meet quality and redistribution/commercial requirements?
 - How much expression should persist during listening before it feels unnatural?
 
@@ -1428,22 +1777,24 @@ This section is intentionally more time-sensitive than the durable design sectio
 
 ### Current priority
 
-The major visual/direct-rendering, background, dialogue, subtitle, input, and friend-build milestones have already been completed far enough to move the project forward.
+The hardened Active State foundation, governed durable-fact lanes, Open
+Threads, scalable History hierarchy, proactive lifecycle, response authority,
+and production Unity integration are implemented. The latest targeted
+production fixes passed automated validation, and Active State is now frozen at
+another manual Development-player product-acceptance cycle. Further changes
+should be driven by concrete real-use regressions, not speculative world-model
+expansion. Extensible body/attachment loci are an agreed future bounded
+improvement, not current accepted functionality.
 
-Current order when development quota/time allows:
+After that acceptance gate, the next important user-facing continuity tranche
+is a bounded Memory Viewer/Editor with evidence, provenance, correction, and
+scope inspection. Broader generic V2 authority must wait for those controls and
+promotion evidence. Relationship State remains explicitly deferred and is not
+part of the current roadmap tranche.
 
-1. establish reliable long-term episodic and temporal memory retrieval before
-   any Memory V2 prompt-facing canary;
-2. design active/current state, relationship state, and a scalable
-   non-destructive Memory Viewer / Editor;
-3. continue friend-build/package and Unity frontend validation;
-4. improve licensed authored animation and presentation only after memory
-   correctness is no longer the release blocker;
-5. expand Voice/AI settings and provider choices;
-6. perform the dedicated Windows compatibility pass;
-7. continue 1.0 packaging/productization.
-
-Friend-build testing may continue opportunistically, but producing a portable Linux friend archive is no longer a missing milestone.
+Packaging, authored-animation quality, Voice/AI settings, Windows
+compatibility, and 1.0 productization remain separate later priorities. The
+portable Linux friend archive is already a completed testing milestone.
 
 ### Stability constraints while pursuing the roadmap
 
@@ -1452,6 +1803,19 @@ Friend-build testing may continue opportunistically, but producing a portable Li
 - Preserve backend authority over canonical conversation/memory and speech lifecycle.
 - Preserve semantic gesture intent even if authored clips replace procedural motion.
 - Keep future emotion/mood work restrained and separate from durable personality/relationship semantics.
+- Keep Relationship State deferred until explicitly resumed; do not infer it
+  from Active State, Open Threads, or ignored proactive messages.
+- Keep owned llama launch on `--logits_all false`; do not trade away the
+  intentional 16k context to conceal that corrected server configuration bug.
+- Treat synthetic benchmarks as diagnostic support. Ordinary Development-player
+  interaction with a synthetic/test character is the performance acceptance
+  gate, and the privacy-safe flight recorder is the preferred intermittent
+  incident record.
+- Keep Kokoro early speech bounded and provider-specific; retain the persisted
+  `whole_response` fallback even though grouped streaming has passed human QA.
+- Keep Context Hygiene at its conservative lexical limit. Broader semantic
+  concentration belongs in bounded episode selection/retrieval, not looser
+  deletion-like heuristics.
 
 ---
 
