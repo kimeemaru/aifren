@@ -113,6 +113,19 @@ namespace AIFren.UnityPoc.Tests.EditMode
         }
 
         [Test]
+        public void CanonicalizedMalformedActionUsesExistingEmoteContract()
+        {
+            const string canonical = "*shakes her head slowly* I *really* remember.";
+            IReadOnlyList<DialogueSpan> spans = DialoguePresentationParser.Parse(canonical);
+
+            Assert.AreEqual(DialogueSpanKind.Emote, spans[0].Kind);
+            Assert.AreEqual(DialogueSpanKind.Emphasis, spans[2].Kind);
+            Assert.AreEqual("I really remember.", DialoguePresentationParser.SpokenText(canonical));
+            StringAssert.Contains("<color=#74B8FF>*shakes her head slowly*</color>",
+                DialoguePresentationParser.FormatVisible(canonical));
+        }
+
+        [Test]
         public void EmoteSpansRemainAvailableForSemanticMapping()
         {
             var emotes = DialoguePresentationParser.EmoteTexts("*walks to the kitchen* *nods slowly* I *really* agree.");
@@ -144,7 +157,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
         [Test]
         public void LeadingActionsAreEmotesAndDoubleMarkersAreAlwaysEmphasis()
         {
-            foreach (string raw in new[] { "*smiles* Fine.", "*blinks* What?", "*pauses* I suppose so.", "*Serval waves* Hello." })
+            foreach (string raw in new[] { "*smiles* Fine.", "*blinks* What?", "*pauses* I suppose so.", "*Lyra waves* Hello." })
             {
                 IReadOnlyList<DialogueSpan> spans = DialoguePresentationParser.Parse(raw);
                 Assert.AreEqual(DialogueSpanKind.Emote, spans[0].Kind, raw);

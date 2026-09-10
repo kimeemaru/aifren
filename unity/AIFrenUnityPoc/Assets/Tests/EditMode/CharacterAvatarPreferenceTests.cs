@@ -1,3 +1,4 @@
+using PlayerPrefs = AIFren.UnityPoc.PresentationPreferences;
 using System;
 using System.IO;
 using System.Text;

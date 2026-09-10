@@ -321,17 +321,13 @@ class PushToTalk:
 
         except Exception as e:
 
-            print(
-                f"TTS interruption error: {e}"
-            )
+            print('[AIFren PTT] audio operation failed.')
 
             if self.on_error:
 
                 try:
 
-                    self.on_error(
-                        str(e)
-                    )
+                    self.on_error("Audio operation failed; try PTT again.")
 
                 except Exception:
 
@@ -419,9 +415,7 @@ class PushToTalk:
                 capture_id=capture_id,
             )
 
-            print(
-                f"PTT transcription: {text!r}"
-            )
+            print('[AIFren PTT] transcription completed.')
 
             if text:
 
@@ -473,17 +467,13 @@ class PushToTalk:
             if discarded_capture:
                 self._observe_ptt_stage("ptt_capture_discarded", capture_id=capture_id)
 
-            print(
-                f"\nPTT error: {e}"
-            )
+            print('[AIFren PTT] audio operation failed.')
 
             if self.on_error:
 
                 try:
 
-                    self.on_error(
-                        str(e)
-                    )
+                    self.on_error("Audio operation failed; try PTT again.")
 
                 except Exception:
 

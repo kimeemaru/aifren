@@ -76,6 +76,54 @@ namespace AIFren.UnityPoc.Tests.EditMode
         }
 
         [Test]
+        public void ReopeningHistoryResetsAnOlderBrowsedDayToLatest()
+        {
+            AddMessage("user", "Older day", "2026-08-24T12:00:00Z");
+            AddMessage("assistant", "Latest day", "2026-08-25T12:00:00Z");
+            Method("ToggleHistoryPanel").Invoke(controller, null);
+            StringAssert.Contains("Latest day", RenderedText());
+
+            Method("SelectHistoryDay").Invoke(
+                controller, new object[] { new HistoryDayKey(2026, 8, 24) });
+            StringAssert.Contains("Older day", RenderedText());
+            StringAssert.DoesNotContain("Latest day", RenderedText());
+
+            Method("CloseHistoryPanel").Invoke(controller, null);
+            Method("ToggleHistoryPanel").Invoke(controller, null);
+
+            StringAssert.Contains("Latest day", RenderedText());
+            StringAssert.DoesNotContain("Older day", RenderedText());
+        }
+
+        [Test]
+        public void NavigationRemainsOnBrowsedPageUntilPanelIsReopened()
+        {
+            for (int index = 0; index < 161; index++)
+                AddMessage("user", "Paged " + index, "2026-08-25T12:00:00Z");
+            Method("ToggleHistoryPanel").Invoke(controller, null);
+            Assert.AreEqual(2, SelectedHistoryPage);
+
+            Method("ChangeHistoryPage").Invoke(controller, new object[] { -1 });
+            Assert.AreEqual(1, SelectedHistoryPage);
+            Method("RefreshHistoryIfVisible").Invoke(controller, null);
+            Assert.AreEqual(1, SelectedHistoryPage);
+
+            Method("CloseHistoryPanel").Invoke(controller, null);
+            Method("ToggleHistoryPanel").Invoke(controller, null);
+            Assert.AreEqual(2, SelectedHistoryPage);
+        }
+
+        [Test]
+        public void EmptyHistoryCanOpenAndReopenWithoutInventingASelection()
+        {
+            Method("ToggleHistoryPanel").Invoke(controller, null);
+            StringAssert.Contains("No renderable conversation messages", RenderedText());
+            Method("CloseHistoryPanel").Invoke(controller, null);
+            Method("ToggleHistoryPanel").Invoke(controller, null);
+            StringAssert.Contains("No renderable conversation messages", RenderedText());
+        }
+
+        [Test]
         public void BackToBackHiddenMessagesPerformNoRebuilds()
         {
             AddMessage("user", "One");
@@ -179,7 +227,15 @@ namespace AIFren.UnityPoc.Tests.EditMode
 
         private IList Messages => (IList)Field("messages").GetValue(controller);
         private bool HistoryDirty => (bool)Field("historyDirty").GetValue(controller);
+        private int SelectedHistoryPage => (int)Field("selectedHistoryPage").GetValue(controller);
         private RectTransform HistoryContent => (RectTransform)Field("historyContent").GetValue(controller);
+
+        private string RenderedText()
+        {
+            return string.Join("\n", HistoryContent
+                .GetComponentsInChildren<TMP_Text>(true)
+                .Select(label => label.text));
+        }
 
         private int RenderedOccurrences(string text)
         {
@@ -187,11 +243,12 @@ namespace AIFren.UnityPoc.Tests.EditMode
                 .Count(label => label.text.Contains(text));
         }
 
-        private void AddMessage(string role, string content)
+        private void AddMessage(
+            string role, string content, string timestamp = "2026-08-25T12:00:00Z")
         {
             Method("AddMessage").Invoke(controller, new object[]
             {
-                role, content, "2026-08-25T12:00:00Z", false, false
+                role, content, timestamp, false, false
             });
         }
 

@@ -6,7 +6,7 @@ import json
 import unittest
 from datetime import datetime, timezone
 
-from tests.active_state_support import SyntheticSession
+from benchmarks.active_state.harness import SyntheticSession
 from active_scene import extract_active_scene_mutation
 from capability_policy import capability_context_block, validate_capability_response
 from companion_action import (

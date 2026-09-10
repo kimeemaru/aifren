@@ -1,3 +1,4 @@
+using PlayerPrefs = AIFren.UnityPoc.PresentationPreferences;
 using UnityEngine;
 
 namespace AIFren.UnityPoc.UI

@@ -7,6 +7,7 @@ from memory.memory import Memory
 from conversation.conversation import Conversation
 from stt.voice import VoiceInput
 from tts.tts import TextToSpeech
+from ui_sound import UISound
 from voice.ptt import PushToTalk
 from presentation_metadata import response_contract_prompt
 
@@ -112,7 +113,11 @@ explicitly asked about them.
 # Startup
 # ============================================================
 
-def initialize():
+def initialize(*, prepare_v1_memory=None):
+    if prepare_v1_memory is None:
+        from config import configured_memory_authority
+        prepare_v1_memory = configured_memory_authority() == "v1"
+
 
     print(
         "Initializing AI Companion..."
@@ -130,18 +135,21 @@ def initialize():
     # Upgrade older memories with embeddings.
     # --------------------------------------------------------
 
-    memory.generate_missing_embeddings()
+    if prepare_v1_memory:
+        memory.generate_missing_embeddings()
 
     # --------------------------------------------------------
     # Upgrade older memories with keyword/concept metadata.
     # --------------------------------------------------------
 
-    memory.generate_missing_metadata()
+    if prepare_v1_memory:
+        memory.generate_missing_metadata()
 
     conversation = Conversation(
         llm,
         conversation_file=str(paths["conversation"]),
         summary_file=str(paths["summary"]),
+        memory_authority="v1" if prepare_v1_memory else "v2",
     )
 
     # --------------------------------------------------------
@@ -165,6 +173,8 @@ def initialize():
         )
     )
     
+    ui_sound = None
+
     return (
         llm,
         memory,
@@ -172,7 +182,8 @@ def initialize():
         voice,
         character,
         character_prompt,
-        tts
+        tts,
+        ui_sound
     )
 
 
@@ -239,6 +250,7 @@ def save_everything(
 ):
 
     conversation.save()
+    conversation.save_summary()
     memory.save()
 
 
@@ -328,7 +340,21 @@ def generate_response(
     admitted_durable_facts=(),
     active_truth_scope=None,
     current_user_projection=None,
+    long_term_memory_authority="v1",
+    admitted_v2_memory_context=None,
+    memory_answer_requirement=None,
+    recent_context_policy=None,
+    memory_query_decision=None,
+    memory_realization=None,
 ):
+
+    from config import (
+        V2_AUTHORITY_RECENT_CHARACTERS,
+        V2_AUTHORITY_RECENT_MESSAGES,
+        V2_AUTHORITY_RECENT_POLICY,
+    )
+    if recent_context_policy is None:
+        recent_context_policy = V2_AUTHORITY_RECENT_POLICY
 
     provider_budget = getattr(llm, "context_budget_chars", None)
     if provider_budget is not None:
@@ -347,11 +373,36 @@ def generate_response(
         active_truth_scope=active_truth_scope,
         max_context_chars=provider_budget,
         current_user_projection=current_user_projection,
+        long_term_memory_authority=long_term_memory_authority,
+        admitted_v2_memory_context=admitted_v2_memory_context,
+        recent_message_limit=(
+            V2_AUTHORITY_RECENT_MESSAGES
+            if long_term_memory_authority == "v2" else None
+        ),
+        recent_character_limit=(
+            V2_AUTHORITY_RECENT_CHARACTERS
+            if long_term_memory_authority == "v2" else None
+        ),
+        recent_context_policy=recent_context_policy,
+        memory_query_decision=memory_query_decision,
     )
-
+    system_prompt = character_prompt
+    if long_term_memory_authority == "v2" and memory_answer_requirement is not None:
+        from memory_v2_answer_governance import memory_answer_system_prompt
+        system_prompt = memory_answer_system_prompt(
+            character_prompt, memory_answer_requirement,
+        )
+    if memory_realization is not None:
+        from companion_memory_realizer import reaction_system_prompt
+        system_prompt = reaction_system_prompt(character_prompt, memory_realization)
+        # Optional reaction only: a request-local output cap, not saved sampling
+        # or normal-reply length. Partial/malformed output is simply discarded.
+        bounded = getattr(llm, "generate_bounded", None)
+        if callable(bounded):
+            return bounded(context, system_prompt, max_output_tokens=64)
     return llm.generate(
         context,
-        character_prompt
+        system_prompt
     )
 
 import time
@@ -362,7 +413,8 @@ import time
 # ============================================================
 
 def typewriter_response(
-    text
+    text,
+    ui_sound
 ):
 
     print(
@@ -380,7 +432,8 @@ def process_user_turn(
     conversation,
     user_message,
     character_prompt,
-    tts
+    tts,
+    ui_sound
 ):
 
     # --------------------------------------------------------
@@ -414,7 +467,8 @@ def process_user_turn(
     )
 
     typewriter_response(
-        reply
+        reply,
+        ui_sound
     )
 
     # --------------------------------------------------------
@@ -472,7 +526,8 @@ def run():
         voice,
         character,
         character_prompt,
-        tts
+        tts,
+        ui_sound
     ) = initialize()
     processing_lock = threading.Lock()
 
@@ -506,7 +561,8 @@ def run():
                 conversation,
                 text,
                 character_prompt,
-                tts
+                tts,
+                ui_sound
             )
     
         finally:
@@ -587,6 +643,10 @@ def run():
                 
                 ptt.stop()
                 
+                if ui_sound:
+                    ui_sound.close()
+
+
                 print(
                     "Conversation saved."
                 )
@@ -620,7 +680,8 @@ def run():
                         conversation,
                         user_input,
                         character_prompt,
-                        tts
+                        tts,
+                        ui_sound
                     )
             
                 finally:
@@ -642,6 +703,9 @@ def run():
             
             ptt.stop()
             
+            if ui_sound:
+                ui_sound.close()
+
             print(
                 "\nConversation saved."
             )

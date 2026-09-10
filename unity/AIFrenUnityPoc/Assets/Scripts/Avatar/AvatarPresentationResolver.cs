@@ -1,4 +1,6 @@
 using AIFren.UnityPoc.Protocol;
+using AIFren.UnityPoc.UI;
+using System.Collections.Generic;
 using UniVRM10;
 using UnityEngine;
 
@@ -15,6 +17,7 @@ namespace AIFren.UnityPoc.Avatar
 
         private AvatarExpressionController expressions;
         private AvatarAnimationController animation;
+        private AvatarGazeController gaze;
         private string handsMode = "free";
         private string locomotionMode = "walking";
         private string postureMode = string.Empty;
@@ -27,16 +30,43 @@ namespace AIFren.UnityPoc.Avatar
         public string PostureMode => postureMode;
         public string SpeechMode => speechMode;
         public bool AllowsLipSync => SpeechAllowsLipSync(speechMode) && awarenessMode != "asleep";
+        public string LastFaceOrigin { get; private set; } = "no_change";
+        public string LastFaceRequest { get; private set; } = "none";
+        public bool LastFaceApplied { get; private set; }
+        public string LastFaceFallbackReason { get; private set; } = "no_action";
 
         public void Configure()
         {
             expressions = GetComponent<AvatarExpressionController>();
             animation = GetComponent<AvatarAnimationController>();
+            gaze = GetComponent<AvatarGazeController>();
         }
 
         public void Apply(PresentationMetadata presentation)
         {
-            if (presentation == null) return;
+            ApplyReply(presentation, AvatarGestureIntent.None);
+            // Authoritative snapshots also use this resolver (including a
+            // character's neutral reset). They are not model-selected metadata.
+            if (LastFaceOrigin == "model_metadata") LastFaceOrigin = "state_update";
+        }
+
+        public void ApplyReply(PresentationMetadata presentation, AvatarGestureIntent fallback)
+            => ApplyReply(presentation, fallback, null);
+
+        internal void ApplyDialogueReply(PresentationMetadata presentation, DialogueDocument dialogue, string selfName)
+        {
+            var emotes = new List<string>();
+            foreach (DialogueSpan span in dialogue.Spans)
+                if (span.Kind == DialogueSpanKind.Emote) emotes.Add(span.Text);
+            AvatarGestureMapper.TryFirstSupported(emotes, out AvatarGestureIntent body, out _);
+            string face = FacialEmoteProjection.Select(dialogue, selfName, out string reason);
+            LastFaceFallbackReason = reason;
+            ApplyReply(presentation, body, face);
+        }
+
+        private void ApplyReply(PresentationMetadata presentation, AvatarGestureIntent fallback, string facialFallback)
+        {
+            presentation = presentation ?? new PresentationMetadata();
             handsMode = KnownMode(presentation.hands_mode, new[] { "free", "partially_occupied", "occupied" }, handsMode);
             locomotionMode = KnownMode(presentation.locomotion_mode,
                 new[] { "walking", "rolling", "skating", "cycling", "driving", "riding", "assisted", "swimming", "other" },
@@ -48,25 +78,60 @@ namespace AIFren.UnityPoc.Avatar
             visionMode = KnownMode(presentation.vision_mode, new[] { "available", "obstructed", "unavailable" }, visionMode);
             awarenessMode = KnownMode(presentation.awareness_mode, new[] { "normal", "reduced", "asleep" }, awarenessMode);
             float intensity = presentation.has_intensity ? Mathf.Clamp01(presentation.intensity) : DefaultIntensity;
-            bool appliedEmotion = ApplyEmotion(presentation.emotion, intensity);
+            // An explicit request owns this channel even when the avatar cannot
+            // supply its preset. Unrelated presentation fields do not mask emotes.
+            bool explicitEmotion = !string.IsNullOrWhiteSpace(presentation.emotion);
+            string face = explicitEmotion ? presentation.emotion : facialFallback;
+            LastFaceOrigin = explicitEmotion ? "model_metadata" : facialFallback != null ? "explicit_emote" : "no_change";
+            LastFaceRequest = string.Equals(face, "neutral", System.StringComparison.OrdinalIgnoreCase) ? "neutral" :
+                TryResolveEmotion(face, out _) ? face.ToLowerInvariant() : "none";
+            bool appliedEmotion = ApplyEmotion(face, explicitEmotion ? intensity : DefaultIntensity);
+            LastFaceApplied = appliedEmotion;
             bool requestedGesture = TryResolveGesture(presentation.gesture, out AvatarGestureIntent gesture);
-            if (requestedGesture && GestureAllowed(gesture, handsMode, awarenessMode)) animation?.PlayGesture(gesture);
             bool explicitSleeping = string.Equals(presentation.pose, "sleeping", System.StringComparison.OrdinalIgnoreCase);
             bool awake = string.Equals(presentation.pose, "awake", System.StringComparison.OrdinalIgnoreCase);
             if (explicitSleeping) awarenessMode = "asleep";
-            else if (awake) awarenessMode = "normal";
+            else if (awake && string.IsNullOrWhiteSpace(presentation.awareness_mode)) awarenessMode = "normal";
             bool sleeping = explicitSleeping || awarenessMode == "asleep";
             if (sleeping || awake) animation?.SetSleepingPresentation(sleeping);
+            if (visionMode != "available" || sleeping
+                || string.Equals(presentation.gaze_mode, "suppressed", System.StringComparison.OrdinalIgnoreCase))
+                gaze?.SetPresentationSuppressed(true);
+            else if (string.Equals(presentation.gaze_mode, "normal", System.StringComparison.OrdinalIgnoreCase)
+                || string.Equals(presentation.vision_mode, "available", System.StringComparison.OrdinalIgnoreCase)
+                || string.Equals(presentation.awareness_mode, "normal", System.StringComparison.OrdinalIgnoreCase))
+                gaze?.SetPresentationSuppressed(false);
             animation?.SetMobilityPresentation(locomotionMode);
             animation?.SetPosturePresentation(postureMode);
-            animation?.PlayStateReaction(presentation.reaction, sleeping);
+            // Capabilities and pose are active before a single optional body
+            // request. A rejected metadata request cannot route around its guard
+            // via an emote or state-reaction fallback.
+            if (requestedGesture) TryGesture(gesture);
+            else if (!string.IsNullOrEmpty(presentation.reaction))
+            {
+                switch (presentation.reaction)
+                {
+                    case "shift": case "stir":
+                        // Existing bounded sleeping stir, never an awake gesture.
+                        if (sleeping) animation?.PlayStateReaction("stir", true);
+                        else TryGesture(AvatarGestureIntent.HeadTilt);
+                        break;
+                    case "startle": TryGesture(AvatarGestureIntent.Shrug); break;
+                    case "wake": TryGesture(AvatarGestureIntent.Nod); break;
+                    case "settle": animation?.PlayStateReaction("settle", sleeping); break;
+                }
+            }
+            else if (fallback != AvatarGestureIntent.None) TryGesture(fallback);
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
-            string emotion = string.IsNullOrWhiteSpace(presentation.emotion) ? "unchanged" : presentation.emotion;
+            string emotion = LastFaceRequest;
             string gestureName = requestedGesture ? gesture.ToString() : "none";
-            Debug.Log("[Presentation] " + emotion + " " + intensity.ToString("0.00") + " / " + gestureName +
+            Debug.Log("[Presentation] origin=" + LastFaceOrigin + " " + emotion + " " + intensity.ToString("0.00") + " / " + gestureName +
                 (appliedEmotion ? "." : " (no matching concrete expression)."));
 #endif
         }
+
+        public bool TryGesture(AvatarGestureIntent intent) =>
+            GestureAllowed(intent, handsMode, awarenessMode) && animation != null && animation.PlayGesture(intent);
 
         private bool ApplyEmotion(string semanticEmotion, float intensity)
         {
@@ -107,8 +172,8 @@ namespace AIFren.UnityPoc.Avatar
             if (string.IsNullOrWhiteSpace(semanticGesture)) return false;
             switch (semanticGesture.Trim().ToLowerInvariant())
             {
-                // Use only stable procedural capabilities exposed by the
-                // current semantic resolver.
+                // Use only stable procedural capabilities. Wave is deliberately
+                // excluded: its portable authored source remains development QA.
                 case "greeting":
                 case "agreement":
                 case "encouragement": intent = AvatarGestureIntent.Nod; return true;

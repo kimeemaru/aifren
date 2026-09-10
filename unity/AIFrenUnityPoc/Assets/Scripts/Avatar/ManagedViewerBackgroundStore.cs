@@ -18,7 +18,7 @@ namespace AIFren.UnityPoc.Avatar
                 using (SHA256 hash = SHA256.Create())
                 {
                     string name = BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-", string.Empty).ToLowerInvariant() + extension;
-                    string directory = Path.Combine(Application.persistentDataPath, "AIFren", "ViewerBackgrounds");
+                    string directory = Path.Combine(AIFren.UnityPoc.UI.NativeQaSession.AssetDataRoot, "AIFren", "ViewerBackgrounds");
                     Directory.CreateDirectory(directory);
                     managedPath = Path.Combine(directory, name);
                     if (!File.Exists(managedPath)) File.WriteAllBytes(managedPath, bytes);

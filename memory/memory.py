@@ -1024,10 +1024,7 @@ class Memory:
 
                 continue
 
-            print(
-                f"Generating embedding for memory "
-                f"{memory.get('id', '?')}..."
-            )
+            print("Generating memory embedding...")
 
             embedding = (
                 self.embedding_model.encode(
@@ -1290,6 +1287,59 @@ class Memory:
     # ========================================================
     # List
     # ========================================================
+
+    def query_page(
+        self,
+        *,
+        query="",
+        limit=20,
+        offset=0,
+    ):
+        """Return one bounded, presentation-safe page of canonical V1 rows.
+
+        The full V1 collection is already the in-process prompt authority.  A
+        frontend nevertheless receives only this projection: embeddings and
+        derived keywords never cross the transport boundary, and callers
+        cannot mutate ``memories`` through returned dictionaries.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            raise MemoryDataError("Memory page limit must be an integer from 1 to 50.")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise MemoryDataError("Memory page offset must be a non-negative integer.")
+        normalized_query = " ".join(str(query or "").casefold().split())
+        with self._lock:
+            page = []
+            matched = 0
+            for memory in reversed(self.memories):
+                if normalized_query:
+                    provenance = memory.get("provenance")
+                    source = provenance.get("source", "") if isinstance(provenance, dict) else ""
+                    searchable = " ".join((
+                        str(memory.get("content", "")),
+                        str(memory.get("category", "")),
+                        str(source),
+                    )).casefold()
+                    if normalized_query not in searchable:
+                        continue
+                if matched < offset:
+                    matched += 1
+                    continue
+                page.append({
+                    "id": int(memory["id"]),
+                    "category": str(memory.get("category", "")),
+                    "content": str(memory.get("content", "")),
+                    "importance": int(memory.get("importance", 5)),
+                    "created": memory.get("created"),
+                    "updated": memory.get("updated"),
+                    "provenance": dict(memory.get("provenance") or {}),
+                })
+                matched += 1
+                if len(page) > limit:
+                    break
+        return {
+            "items": page[:limit],
+            "has_more": len(page) > limit,
+        }
 
     def list(
         self
@@ -2143,20 +2193,13 @@ Importance must be 1-10.
 
                     except Exception as e:
 
-                        print(
-                            f"\nWarning: Could not "
-                            f"generate embedding "
-                            f"for new memory: {e}"
-                        )
+                        print('[AIFren Memory] observation failed.')
 
                     self.memories.append(
                         memory
                     )
 
-                    print(
-                        f"\n[Memory saved: "
-                        f"{content}]"
-                    )
+                    print('[AIFren Memory] mutation applied.')
 
                 # ====================================================
                 # UPDATE
@@ -2277,17 +2320,9 @@ Importance must be 1-10.
 
                             except Exception as e:
 
-                                print(
-                                    f"\nWarning: Could "
-                                    f"not update "
-                                    f"memory embedding: "
-                                    f"{e}"
-                                )
+                                print('[AIFren Memory] observation failed.')
 
-                        print(
-                            f"\n[Memory updated: "
-                            f"{memory['content']}]"
-                        )
+                        print('[AIFren Memory] mutation applied.')
 
                         break
 
@@ -2295,9 +2330,7 @@ Importance must be 1-10.
 
         except Exception as e:
 
-            print(
-                f"\nMemory check failed: {e}"
-            )
+            print('[AIFren Memory] observation failed.')
 
     # ========================================================
     # Memory Processing
@@ -2437,7 +2470,7 @@ If nothing should change:
                             )
 
                             if memory:
-                                print(f"\n[Memory saved: {content}]")
+                                print('[AIFren Memory] mutation applied.')
 
                         else:
                             memory = self.update_memory(
@@ -2450,13 +2483,10 @@ If nothing should change:
                             )
 
                             if memory:
-                                print(
-                                    f"\n[Memory updated: "
-                                    f"{memory['content']}]"
-                                )
+                                print('[AIFren Memory] mutation applied.')
 
                     except (MemoryDataError, ValueError, TypeError) as error:
-                        print(f"\nMemory action skipped: {error}")
+                        print('[AIFren Memory] observation failed.')
 
             except Exception as error:
-                print(f"\nMemory check failed: {error}")
+                print('[AIFren Memory] observation failed.')

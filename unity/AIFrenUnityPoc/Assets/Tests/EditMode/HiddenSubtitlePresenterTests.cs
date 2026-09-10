@@ -48,7 +48,8 @@ namespace AIFren.UnityPoc.Tests.EditMode
 
                 Assert.AreEqual(1, target.LayoutPreparationCount);
                 Assert.AreEqual(DialoguePresentationParser.FormatSubtitleText("One **two** three"), visible.text);
-                Assert.AreEqual(1, visible.maxVisibleWords);
+                Assert.AreEqual(int.MaxValue, visible.maxVisibleWords, "complete geometry is fixed; the target owns vertex alpha");
+                Assert.AreEqual(0f, target.RenderedWordOpacity(1));
                 Assert.AreEqual(intended, visible.color, "page activation must not replace the intended subtitle color");
             }
             finally { Object.DestroyImmediate(root); }
@@ -75,8 +76,8 @@ namespace AIFren.UnityPoc.Tests.EditMode
 
                 Assert.AreEqual(2, target.LayoutPreparationCount);
                 Assert.AreEqual(2, root.GetComponentsInChildren<TMP_Text>(true).Length);
-                Assert.AreEqual(0, visible.maxVisibleWords,
-                    "a new page must establish zero visible words before it can render");
+                Assert.AreEqual(0f, target.RenderedWordOpacity(0),
+                    "a new page must establish zero visible opacity before it can render");
                 Assert.AreEqual(new Color(.98f, .62f, .78f, 1f), visible.color);
                 TestContext.Progress.WriteLine("subtitle preload={0:F3}ms two-page activation={1:F3}ms",
                     preload.Elapsed.TotalMilliseconds, activation.Elapsed.TotalMilliseconds);
@@ -114,6 +115,8 @@ namespace AIFren.UnityPoc.Tests.EditMode
             public void SetRenderable(bool value) { Renderable = value; }
             public void SetAlpha(float value) { Alpha = value; }
             public void Clear() { ClearCount++; }
+            internal float[] Opacities;
+            public void SetWordOpacities(float[] values, int count) { Opacities = values; }
         }
 
         [Test]
@@ -127,7 +130,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             presenter.OnPlaybackStopped(7, .1f);
             presenter.Tick(.1f, true, true);
             presenter.Tick(.23f, true, true);
-            presenter.Tick(.70f, true, true);
+            for (float now = .71f; now < 1.7f; now += .02f) presenter.Tick(now, true, true);
 
             Assert.IsFalse(presenter.IsActive);
             Assert.AreEqual(0, sink.ClearCount);
@@ -153,7 +156,84 @@ namespace AIFren.UnityPoc.Tests.EditMode
             presenter.Begin(Session(new[] { "One two" }, new[] { 0f, .2f }));
             presenter.OnPlaybackStarted(1, 7, new List<float> { 0f, .2f }, 0f);
             presenter.Tick(0f, true, true);
-            Assert.IsTrue(sink.Renderable); Assert.AreEqual(0f, sink.Alpha); Assert.AreEqual("One two|0", sink.Prepared[0]);
+            Assert.IsTrue(sink.Renderable); Assert.AreEqual(0f, sink.Opacities[0]); Assert.AreEqual("One two|0", sink.Prepared[0]);
+        }
+
+        [Test]
+        public void KnownPendingSynthesisNeverRevealsOnAWallClockTimeout()
+        {
+            Sink sink = new Sink(); HiddenSubtitlePresenter presenter = new HiddenSubtitlePresenter(sink);
+            presenter.Begin(Session(new[] { "One two" }, new[] { 0f, .2f }));
+
+            presenter.Tick(7f, true, true);
+
+            Assert.AreEqual(HiddenSubtitleState.WaitingForPlaybackOrFallback, presenter.State);
+            Assert.IsFalse(sink.Renderable);
+            Assert.IsFalse(sink.Prepared.Exists(item => item.StartsWith("One two|")));
+        }
+
+        [Test]
+        public void DelayedCpuPlaybackStartsHiddenPresentationFromAudioClock()
+        {
+            Sink sink = new Sink(); HiddenSubtitlePresenter presenter = new HiddenSubtitlePresenter(sink);
+            presenter.Begin(Session(new[] { "One two" }, new[] { 0f, .2f }));
+            presenter.Tick(6f, true, true);
+
+            presenter.OnPlaybackStarted(1, 7, new List<float> { 0f, .2f }, 6.5f);
+            presenter.Tick(6.5f, true, true);
+
+            Assert.AreEqual(HiddenSubtitleState.InitialFadeIn, presenter.State);
+            Assert.IsTrue(sink.Renderable);
+            Assert.AreEqual("One two|0", sink.Prepared[0]);
+        }
+
+        [Test]
+        public void ExplicitNoAudioReleasesReadablePresentationWithFreshTiming()
+        {
+            Sink sink = new Sink(); HiddenSubtitlePresenter presenter = new HiddenSubtitlePresenter(sink);
+            presenter.Begin(Session(new[] { "One two" }, new[] { 0f, .2f }));
+            presenter.Tick(5f, true, true);
+
+            presenter.OnAudioUnavailable(1, 5f);
+            presenter.Tick(5f, true, true);
+
+            Assert.AreEqual(HiddenSubtitleState.InitialFadeIn, presenter.State);
+            Assert.AreEqual("One two|0", sink.Prepared[0]);
+            presenter.Tick(5.21f, true, true);
+            Assert.IsTrue(sink.Prepared.Contains("One two|2"));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ExplicitNoAudioCompletesEveryWordAndRetiresWithoutPlaybackStop(bool multiplePages)
+        {
+            GameObject root = CreateTargetObjects(out TMP_Text visible, out TMP_Text measurement);
+            try
+            {
+                var target = new TmpHiddenSubtitleRenderTarget(root, root.GetComponent<CanvasGroup>(),
+                    root.GetComponent<RectTransform>(), visible, measurement);
+                var presenter = new HiddenSubtitlePresenter(target);
+                var presented = new List<int>();
+                presenter.WordPresented += presented.Add;
+                presenter.Begin(Session(multiplePages ? new[] { "One two", "Three four" } : new[] { "One two three four" },
+                    new[] { 0f, .2f, .4f, .6f }));
+                presenter.Tick(10f, true, true);
+                Assert.IsFalse(visible.enabled, "pending synthesis must not start a fallback timer");
+                presenter.OnAudioUnavailable(1, 10f);
+                // There is no playback ID and no later playback-stopped event.
+                // A temporary peek must not consume words or retire this session.
+                presenter.SetSuppressed(true, 10f);
+                presenter.Tick(11f, true, true);
+                Assert.IsEmpty(presented);
+                presenter.SetSuppressed(false, 11f);
+                for (float now = 11f; now < 14f; now += .02f) presenter.Tick(now, true, true);
+
+                CollectionAssert.AreEqual(new[] { 0, 1, 2, 3 }, presented);
+                Assert.IsFalse(presenter.IsActive, "text-only completion must retire without inventing an audio event");
+                Assert.IsFalse(visible.enabled);
+                Assert.AreEqual(0f, root.GetComponent<CanvasGroup>().alpha);
+            }
+            finally { Object.DestroyImmediate(root); }
         }
 
         [Test]
@@ -185,6 +265,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             presenter.Tick(.45f, true, true);
             Assert.IsTrue(sink.Renderable);
             Assert.IsTrue(presenter.IsActive);
+            presenter.Tick(.62f, true, true);
             Assert.IsTrue(sink.Prepared.Exists(item => item == "One two three four|2"));
         }
 
@@ -209,7 +290,9 @@ namespace AIFren.UnityPoc.Tests.EditMode
 
             Assert.IsTrue(presenter.IsActive);
             Assert.IsTrue(sink.Renderable);
-            CollectionAssert.AreEqual(new[] { 0, 1, 2 }, presented);
+            CollectionAssert.AreEqual(new[] { 0 }, presented, "peek must not consume due-but-unrendered words");
+            for (float now = .57f; now < 1.3f; now += .02f) presenter.Tick(now, true, true);
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 3 }, presented);
         }
 
         [Test]
@@ -222,7 +305,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             presenter.OnPlaybackStopped(7, .11f);
             presenter.Tick(.11f, true, true);
             presenter.Tick(.24f, true, true);
-            presenter.Tick(.70f, true, true);
+            for (float now = .71f; now < 1.7f; now += .02f) presenter.Tick(now, true, true);
             Assert.IsFalse(presenter.IsActive);
 
             presenter.SetSuppressed(true, .71f);
@@ -300,18 +383,23 @@ namespace AIFren.UnityPoc.Tests.EditMode
             presenter.Tick(.31f, true, true);
 
             Assert.IsTrue(sink.Renderable);
-            Assert.AreEqual(HiddenSubtitleState.FinalHold, presenter.State);
+            Assert.IsTrue(presenter.IsActive, "natural stop preserves pending readable words");
+            for (float now = .32f; now < 1.7f; now += .02f) presenter.Tick(now, true, true);
+            Assert.IsFalse(presenter.IsActive);
         }
 
         [Test]
-        public void CompletedNonFinalPageFadesOutImmediatelyAfterFinalWord()
+        public void CompletedNonFinalPageDwellsBeforeItsScheduledSwap()
         {
             Sink sink = new Sink(); HiddenSubtitlePresenter presenter = new HiddenSubtitlePresenter(sink);
             presenter.Begin(Session(new[] { "First page", "Second page" }, new[] { 0f, .01f, 1f, 1.1f }));
             presenter.OnPlaybackStarted(1, 7, new List<float> { 0f, .01f, 1f, 1.1f }, 0f);
 
             presenter.Tick(0f, true, true);
-            presenter.Tick(.13f, true, true);
+            for (float now = .01f; now < .7f; now += .01f) presenter.Tick(now, true, true);
+            Assert.AreEqual(HiddenSubtitleState.ShowingPage, presenter.State);
+            Assert.AreEqual(1f, sink.Opacities[1]);
+            presenter.Tick(.94f, true, true);
             Assert.AreEqual(HiddenSubtitleState.PageFadeOut, presenter.State);
             Assert.AreEqual(1f, sink.Alpha);
         }
@@ -340,7 +428,8 @@ namespace AIFren.UnityPoc.Tests.EditMode
             presenter.Begin(Session(new[] { "One two three four" }, new[] { 0f, .2f, .4f, .6f }));
             presenter.OnPlaybackStarted(1, 7, new List<float> { 0f, .2f, .4f, .6f }, 0f);
             presenter.Tick(.21f, true, true);
-            presenter.OnPlaybackStopped(7, .21f);
+            presenter.Tick(.24f, true, true);
+            presenter.OnPlaybackStopped(7, .24f, interrupted: true);
             int countAtInterruption = presented.Count;
 
             presenter.Tick(.8f, true, true);
@@ -356,16 +445,16 @@ namespace AIFren.UnityPoc.Tests.EditMode
             presenter.Begin(Session(new[] { "First page", "Once upon a time" }, new[] { 0f, .01f, .02f, .03f, .04f, .05f }));
             presenter.OnPlaybackStarted(1, 7, new List<float> { 0f, .01f, .02f, .03f, .04f, .05f }, 0f);
             presenter.Tick(0f, true, true);
-            presenter.Tick(.13f, true, true);
+            for (float now = .01f; now < .54f; now += .01f) presenter.Tick(now, true, true);
             Assert.AreEqual(HiddenSubtitleState.PageFadeOut, presenter.State);
 
-            presenter.SetSuppressed(true, .13f);
-            presenter.Tick(.80f, true, true);
+            presenter.SetSuppressed(true, .54f);
+            presenter.Tick(1.5f, true, true);
             Assert.IsFalse(sink.Prepared.Exists(item => item.StartsWith("Once upon a time|")));
 
-            presenter.SetSuppressed(false, .80f);
-            presenter.Tick(.80f, true, true);
-            presenter.Tick(.90f, true, true);
+            presenter.SetSuppressed(false, 1.5f);
+            presenter.Tick(1.5f, true, true);
+            presenter.Tick(1.6f, true, true);
             Assert.IsTrue(sink.Prepared.Exists(item => item == "Once upon a time|1"));
         }
 

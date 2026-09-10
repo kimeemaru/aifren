@@ -4,7 +4,7 @@ import unittest
 import uuid
 
 from assistant_service import AssistantService
-from tests.active_state_support import BASE_TIME, SyntheticSession
+from benchmarks.active_state.harness import BASE_TIME, SyntheticSession
 from capability_policy import (
     normalize_constrained_caption,
     preview_capability_effects,
@@ -216,6 +216,32 @@ class ActiveStateImmersionTests(unittest.TestCase):
         )
         self.assertTrue(smuggled_answer.used_fallback)
         self.assertEqual(smuggled_answer.fallback_category, "informative_speech")
+
+        retrospective_answer = render_sleep_reaction(
+            decision,
+            _envelope(
+                "*Their ears twitch without waking.* I remember your cat.",
+                mode="sleep_reaction", spoken="I remember your cat.",
+            ),
+            user_message="Do you remember my cat?",
+        )
+        self.assertTrue(retrospective_answer.used_fallback)
+        self.assertEqual(
+            retrospective_answer.fallback_category, "informative_speech",
+        )
+        self.assertNotIn("cat", retrospective_answer.dialogue.casefold())
+
+        attributed_answer = render_sleep_reaction(
+            decision,
+            _envelope(
+                "*Their tail shifts beneath the blanket.* You told me about your dog.",
+                mode="sleep_reaction", spoken="You told me about your dog.",
+            ),
+            user_message="What about my dog?",
+        )
+        self.assertTrue(attributed_answer.used_fallback)
+        self.assertEqual(attributed_answer.fallback_category, "informative_speech")
+        self.assertNotIn("dog", attributed_answer.dialogue.casefold())
 
         rejected = render_sleep_reaction(
             decision,
@@ -533,7 +559,7 @@ class ActiveStateImmersionTests(unittest.TestCase):
         )
         self.assertTrue(allowed.accepted)
 
-    def test_unavailable_vision_rejects_grounding_variants(self):
+    def test_unavailable_vision_rejects_real_session_grounding_variants(self):
         self.session.turn("*I blindfold you.*")
         effects = self.session.effects()
         for dialogue in (
@@ -845,6 +871,7 @@ class ActiveStateImmersionTests(unittest.TestCase):
             response_generator=lambda *_args: final,
             memory_v2_shadow_writer=self.session.writer,
             character_id=self.session.character_id,
+            memory_authority="v1",
         )
         result = service.process_text_turn("Do whatever you'd like.", speak=False)
         self.assertTrue(result.succeeded, result.error)
@@ -879,6 +906,7 @@ class ActiveStateImmersionTests(unittest.TestCase):
             response_generator=lambda *_args: _envelope("*Begins stretching.*", spoken=""),
             memory_v2_shadow_writer=self.session.writer,
             character_id=self.session.character_id,
+            memory_authority="v1",
         )
         result = service.process_text_turn("Do whatever you'd like.", speak=False)
         self.assertTrue(result.succeeded, result.error)
@@ -899,6 +927,7 @@ class ActiveStateImmersionTests(unittest.TestCase):
             response_generator=lambda *_args: _envelope("*She begins skating.*", spoken=""),
             memory_v2_shadow_writer=self.session.writer,
             character_id=self.session.character_id,
+            memory_authority="v1",
         )
         result = service.process_text_turn("Do whatever you'd like.", speak=False)
         self.assertTrue(result.succeeded, result.error)
@@ -922,6 +951,7 @@ class ActiveStateImmersionTests(unittest.TestCase):
             ),
             memory_v2_shadow_writer=self.session.writer,
             character_id=self.session.character_id,
+            memory_authority="v1",
         )
         result = service.process_text_turn(
             "That was a typo. I meant sleeping.", speak=False,

@@ -1,6 +1,10 @@
+#define DEVELOPMENT_BUILD // Private release builds intentionally retain hidden avatar QA.
+
 using System;
 using System.Collections;
 using System.Reflection;
+using UnityEngine.Animations;
+using UnityEngine.Playables;
 using UnityEngine;
 
 namespace AIFren.UnityPoc.Avatar
@@ -18,6 +22,7 @@ namespace AIFren.UnityPoc.Avatar
         // swapped or unavailable.
         private Component vrmInstance;
         private Animator humanoidAnimator;
+        private AvatarVrmaGesturePlayer vrmaGesturePlayer;
         private AvatarExpressionController expressionPresentation;
         private object runtimeExpression;
         private MethodInfo setWeightMethod;
@@ -52,10 +57,14 @@ namespace AIFren.UnityPoc.Avatar
         private float reactionUntil;
         private float reactionWeight;
         private AvatarGestureIntent activeGesture;
+        public AvatarGestureIntent ActiveGesture => activeGesture;
         private float gestureStartedAt;
         private float gestureDuration;
         private float nextGestureAt;
         private AvatarGestureIntent lastGesture;
+        private PlayableGraph authoredGestureGraph;
+        private bool authoredGestureActive;
+        private bool authoredGestureRootMotionWasEnabled;
         private bool sleepingPresentation;
         private string mobilityPresentation = "walking";
         private string posturePresentation = string.Empty;
@@ -64,6 +73,9 @@ namespace AIFren.UnityPoc.Avatar
         public string PosturePresentation => posturePresentation;
         private bool stateReactionDispatch;
 
+        private const string KayKitWaveResourcePath = "Presentation/Animations/ThirdParty/KayKit/CharacterAnimations_1.1/Rig_Medium_Simulation";
+        private const string KayKitWaveClipName = "Waving";
+
         public void Configure(GameObject avatar)
         {
             ClearAvatar();
@@ -71,6 +83,8 @@ namespace AIFren.UnityPoc.Avatar
 
             vrmInstance = FindVrmInstance(avatar);
             expressionPresentation = GetComponent<AvatarExpressionController>();
+            vrmaGesturePlayer = GetComponent<AvatarVrmaGesturePlayer>() ?? gameObject.AddComponent<AvatarVrmaGesturePlayer>();
+            vrmaGesturePlayer.Configure(avatar);
             humanoidAnimator = avatar.GetComponentInChildren<Animator>();
             if (humanoidAnimator != null && humanoidAnimator.avatar != null && humanoidAnimator.avatar.isHuman)
             {
@@ -107,6 +121,8 @@ namespace AIFren.UnityPoc.Avatar
         public void ClearAvatar()
         {
             StopSpeech();
+            vrmaGesturePlayer?.ClearAvatar();
+            StopAuthoredGesture();
             ResetGestureBones();
             if (runtimeExpression != null)
             {
@@ -117,6 +133,7 @@ namespace AIFren.UnityPoc.Avatar
             }
             vrmInstance = null;
             humanoidAnimator = null;
+            vrmaGesturePlayer = null;
             expressionPresentation = null;
             runtimeExpression = null;
             setWeightMethod = null;
@@ -138,6 +155,8 @@ namespace AIFren.UnityPoc.Avatar
         {
             if (sleeping && !sleepingPresentation)
             {
+                if (vrmaGesturePlayer != null && vrmaGesturePlayer.IsActive) vrmaGesturePlayer.Stop();
+                StopAuthoredGesture();
                 ResetGestureBones();
                 activeGesture = AvatarGestureIntent.None;
             }
@@ -218,16 +237,31 @@ namespace AIFren.UnityPoc.Avatar
         /// model remains in place, so one-shot gesture/reaction state must not
         /// visually carry into the newly selected character.
         /// </summary>
-        public void ClearTransientPresentationForCharacterChange()
+        public void ClearTransientPresentationForCharacterChange() => RetireResponseMotion(true);
+
+        public void RetireResponseMotion(bool characterChange = false)
         {
+            ClearTransientReactionWeight();
             reactionUntil = 0f;
-            reactionWeight = 0f;
-            lastGesture = AvatarGestureIntent.None;
-            nextGestureAt = 0f;
+            if (characterChange) { lastGesture = AvatarGestureIntent.None; nextGestureAt = 0f; }
             activeGesture = AvatarGestureIntent.None;
 
+            if (vrmaGesturePlayer != null && vrmaGesturePlayer.IsActive)
+            {
+                // Preserve the validated VRMA exit path rather than detaching
+                // its provider or changing retarget behavior mid-pose.
+                vrmaGesturePlayer.Stop();
+                return;
+            }
+
+            StopAuthoredGesture();
             ResetGestureBones();
         }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        public void SelectPreviousAnimationQaVrma() => vrmaGesturePlayer?.SelectPreviousQaVrma();
+        public void SelectNextAnimationQaVrma() => vrmaGesturePlayer?.SelectNextQaVrma();
+#endif
 
         public void PlayAttentiveReaction()
         {
@@ -256,6 +290,26 @@ namespace AIFren.UnityPoc.Avatar
                 Debug.Log("[AvatarGesture] ignored " + intent + " due to cooldown.");
                 return false;
             }
+            if (vrmaGesturePlayer != null && (intent == AvatarGestureIntent.Wave ||
+                (intent == AvatarGestureIntent.Nod && vrmaGesturePlayer.OriginalNodTrialReady)) && vrmaGesturePlayer.TryPlay(intent))
+            {
+                StartGesture(intent, now, vrmaGesturePlayer.Duration);
+                Debug.Log("[AvatarGesture] started native VRMA " + intent + ".");
+                return true;
+            }
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (intent == AvatarGestureIntent.Wave)
+            {
+                Debug.LogWarning("[AvatarGesture] no QA VRMA is ready; Wave was not played.");
+                return false;
+            }
+#endif
+            if (intent == AvatarGestureIntent.Wave && TryStartAuthoredWave())
+            {
+                StartGesture(intent, now, GetAuthoredWaveClip().length);
+                Debug.Log("[AvatarGesture] started authored " + intent + ".");
+                return true;
+            }
             if (!CanPlay(intent))
             {
                 Debug.LogWarning("[AvatarGesture] cannot start " + intent + "; required Humanoid bones are unavailable.");
@@ -277,6 +331,21 @@ namespace AIFren.UnityPoc.Avatar
 
         private void Update()
         {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            if (AvatarQaVisibility.Visible)
+            {
+                if (Input.GetKeyDown(KeyCode.F1)) PlayGesture(AvatarGestureIntent.Wave);
+                if (Input.GetKeyDown(KeyCode.F2)) PlayGesture(AvatarGestureIntent.Nod);
+                if (Input.GetKeyDown(KeyCode.F3)) PlayGesture(AvatarGestureIntent.HeadShake);
+                if (Input.GetKeyDown(KeyCode.F4)) PlayGesture(AvatarGestureIntent.HeadTilt);
+                if (Input.GetKeyDown(KeyCode.F5)) PlayGesture(AvatarGestureIntent.Shrug);
+                if (Input.GetKeyDown(KeyCode.F6)) PlayGesture(AvatarGestureIntent.Thinking);
+                if (Input.GetKeyDown(KeyCode.F7)) SelectPreviousAnimationQaVrma();
+                // F8 remains available as an explicit PTT binding. F9 avoids
+                // claiming that production-configurable control.
+                if (Input.GetKeyDown(KeyCode.F9)) SelectNextAnimationQaVrma();
+            }
+#endif
             if (runtimeExpression != null)
             {
                 UpdateMouth();
@@ -288,6 +357,22 @@ namespace AIFren.UnityPoc.Avatar
         private void LateUpdate()
         {
             float time = Time.unscaledTime;
+            if (vrmaGesturePlayer != null && vrmaGesturePlayer.IsActive)
+            {
+                vrmaGesturePlayer.Tick();
+                if (!vrmaGesturePlayer.IsActive) activeGesture = AvatarGestureIntent.None;
+                return;
+            }
+            if (authoredGestureActive)
+            {
+                if (time >= gestureStartedAt + gestureDuration)
+                {
+                    StopAuthoredGesture();
+                    ResetGestureBones();
+                    activeGesture = AvatarGestureIntent.None;
+                }
+                return;
+            }
             // Tiny unscripted head life; it deliberately does not mouse-track
             // or replace UniVRM's optional look-at setup.
             float yaw = Mathf.Sin(time * .37f) * .7f;
@@ -348,6 +433,42 @@ namespace AIFren.UnityPoc.Avatar
             return head != null;
         }
 
+        private bool TryStartAuthoredWave()
+        {
+            AnimationClip wave = GetAuthoredWaveClip();
+            if (wave == null || humanoidAnimator == null || humanoidAnimator.avatar == null || !humanoidAnimator.avatar.isHuman)
+                return false;
+
+            StopAuthoredGesture();
+            authoredGestureRootMotionWasEnabled = humanoidAnimator.applyRootMotion;
+            humanoidAnimator.applyRootMotion = false;
+            authoredGestureGraph = PlayableGraph.Create("AIFren Authored Wave");
+            authoredGestureGraph.SetTimeUpdateMode(DirectorUpdateMode.UnscaledGameTime);
+            AnimationClipPlayable playable = AnimationClipPlayable.Create(authoredGestureGraph, wave);
+            playable.SetApplyFootIK(false);
+            playable.SetApplyPlayableIK(false);
+            AnimationPlayableOutput output = AnimationPlayableOutput.Create(authoredGestureGraph, "Wave", humanoidAnimator);
+            output.SetSourcePlayable(playable);
+            authoredGestureGraph.Play();
+            authoredGestureActive = true;
+            return true;
+        }
+
+        private void StopAuthoredGesture()
+        {
+            if (authoredGestureGraph.IsValid()) authoredGestureGraph.Destroy();
+            if (authoredGestureActive && humanoidAnimator != null)
+                humanoidAnimator.applyRootMotion = authoredGestureRootMotionWasEnabled;
+            authoredGestureActive = false;
+        }
+
+        private static AnimationClip GetAuthoredWaveClip()
+        {
+            foreach (AnimationClip clip in Resources.LoadAll<AnimationClip>(KayKitWaveResourcePath))
+                if (clip != null && clip.name == KayKitWaveClipName) return clip;
+            return null;
+        }
+
         private static float GestureDuration(AvatarGestureIntent intent)
         {
             switch (intent)
@@ -406,9 +527,24 @@ namespace AIFren.UnityPoc.Avatar
             SetWeight(blinkKey, Mathf.Sin(phase * Mathf.PI));
         }
 
+        private void ClearTransientReactionWeight()
+        {
+            if (reactionWeight <= 0) return;
+            if (hasHappy && !(expressionPresentation?.OwnsPreset(UniVRM10.ExpressionPreset.happy) ?? false)) SetWeight(happyKey, 0);
+            else if (!hasHappy && hasSurprised && !(expressionPresentation?.OwnsPreset(UniVRM10.ExpressionPreset.surprised) ?? false)) SetWeight(surprisedKey, 0);
+            reactionWeight = 0;
+        }
+
         private void UpdateReaction()
         {
             if (reactionWeight <= 0f) return;
+            if (expressionPresentation != null && expressionPresentation.HasActiveExpression)
+            {
+                // Persistent face owns this channel even when a settle request
+                // arrived earlier. Do not overwrite its blend with a tiny reaction.
+                ClearTransientReactionWeight();
+                return;
+            }
             float remaining = Mathf.Clamp01((reactionUntil - Time.unscaledTime) / .85f);
             if (hasHappy) SetWeight(happyKey, reactionWeight * remaining);
             else if (hasSurprised) SetWeight(surprisedKey, reactionWeight * remaining);

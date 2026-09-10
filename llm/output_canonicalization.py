@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from dialogue_semantics import (
     AssistantEmojiStreamSanitizer,
+    AssistantOuterParentheticalActionNormalizer,
     AssistantParentheticalActionNormalizer,
 )
+
+
+class ModelOutputError(RuntimeError):
+    """Raised when provider output has no publishable visible response."""
 
 
 class ModelOutputCanonicalizer:
@@ -26,6 +31,7 @@ class ModelOutputCanonicalizer:
         self._removed_reasoning = False
         self._visible_started = False
         self._emoji = AssistantEmojiStreamSanitizer()
+        self._outer_parenthetical_actions = AssistantOuterParentheticalActionNormalizer()
         self._parenthetical_actions = AssistantParentheticalActionNormalizer()
 
     def feed(self, value: object) -> str:
@@ -65,14 +71,33 @@ class ModelOutputCanonicalizer:
     def _visible(self, text: str) -> str:
         if self._removed_reasoning and not self._visible_started:
             text = text.lstrip()
-        text = self._parenthetical_actions.feed(self._emoji.feed(text))
+        text = self._parenthetical_actions.feed(
+            self._outer_parenthetical_actions.feed(self._emoji.feed(text))
+        )
         if text:
             self._visible_started = True
         return text
 
     def _finish_visible(self) -> str:
         emoji_tail = self._emoji.finish()
-        return self._parenthetical_actions.feed(emoji_tail) + self._parenthetical_actions.finish()
+        normalized = (
+            self._outer_parenthetical_actions.feed(emoji_tail)
+            + self._outer_parenthetical_actions.finish()
+        )
+        return self._parenthetical_actions.feed(normalized) + self._parenthetical_actions.finish()
+
+    def structural_diagnostics(self) -> dict[str, int | bool]:
+        """Return text-free generated-action normalization counts."""
+        return {
+            "normalized_parenthesized_star_action_count": int(
+                self._parenthetical_actions.normalized_parenthesized_star_actions
+            ),
+            "normalized_starred_parenthetical_action_count": int(
+                self._outer_parenthetical_actions.normalized_starred_parenthetical_actions
+            ),
+            "reasoning_content_present": bool(self._removed_reasoning),
+            "visible_content_present": bool(self._visible_started),
+        }
 
     @staticmethod
     def _marker_prefix_length(value: str, marker: str) -> int:
@@ -83,6 +108,19 @@ class ModelOutputCanonicalizer:
         return 0
 
 
-def canonicalize_model_output(value: object) -> str:
+def canonicalize_model_output(
+    value: object, *, diagnostics: dict[str, int | bool] | None = None,
+) -> str:
     canonicalizer = ModelOutputCanonicalizer()
-    return canonicalizer.feed(value) + canonicalizer.finish()
+    rendered = canonicalizer.feed(value) + canonicalizer.finish()
+    if diagnostics is not None:
+        diagnostics.update(canonicalizer.structural_diagnostics())
+    return rendered
+
+
+def require_visible_model_output(value: object) -> str:
+    """Reject reasoning-only or empty provider output before response parsing."""
+    rendered = str(value or "")
+    if not rendered.strip():
+        raise ModelOutputError("The model did not return a response. Please try again.")
+    return rendered

@@ -49,11 +49,11 @@ CANCELLATION_FORMS = (
     "Actually I'm not doing that anymore.",
 )
 DIRECT_RP_FORMS = (
-    "Why don't we pretend we're hanging out in Gensokyo for a while?",
-    "Why don't we pretend we're in Gensokyo?",
-    "why dont we roleplay in gensokyo",
-    "Why don't we role play that we're in Gensokyo?",
-    "Why don't we start an RP in Gensokyo?",
+    "Why don't we pretend we're hanging out in Silvervale for a while?",
+    "Why don't we pretend we're in Silvervale?",
+    "why dont we roleplay in silvervale",
+    "Why don't we role play that we're in Silvervale?",
+    "Why don't we start an RP in Silvervale?",
     "Why don't we pretend we're adventurers for a bit?",
     "Why don't we pretend we're on a spaceship?",
     "why dont we do a scenario in pokemon",
@@ -65,15 +65,15 @@ RP_ENACTMENTS = (
     "Could we start an RP?",
     "Okay, let's start a scenario.",
 )
-RP_LABELS = ("Gensokyo.", "Pokemon.")
+RP_LABELS = ("Silvervale.", "Pokemon.")
 ADVERSARIAL_SINGLE_TURNS = (
     "I'm gonna mess around and wait up for a bit.",
     "Wait up, I forgot my keys.",
-    "What if we lived in Gensokyo?",
+    "What if we lived in Silvervale?",
     "If we roleplayed in Pokemon, what would happen?",
     "Pokemon is a roleplaying game.",
     "The movie asks why we don't pretend we're astronauts.",
-    'She said "Why don\'t we roleplay in Gensokyo?"',
+    'She said "Why don\'t we roleplay in Silvervale?"',
     '"Let\'s roleplay."',
     "I got it.",
     "It showed up.",
@@ -82,10 +82,10 @@ ADVERSARIAL_SINGLE_TURNS = (
     "Forget that.",
     "The graphics card is fast.",
     "My GPU driver needs an update.",
-    "Why don't we discuss Gensokyo?",
+    "Why don't we discuss Silvervale?",
     "Why don't we watch Pokemon?",
     "Suppose we pretended we were on Mars.",
-    "Imagine that we're in Gensokyo.",
+    "Imagine that we're in Silvervale.",
 )
 
 
@@ -225,7 +225,7 @@ class FullPipelineContinuityReferenceTests(unittest.TestCase):
                 self.assertEqual(2, len(harness.evidence(identifier)))
                 harness.close()
 
-        for label in ("Gensokyo", "Pokemon", "a spaceship", "a haunted mansion"):
+        for label in ("Silvervale", "Pokemon", "a spaceship", "a haunted mansion"):
             with self.subTest(boundary="scope", label=label):
                 harness = self._harness()
                 real_id = harness.repository.active_truth_scope(harness.character_id).truth_scope_id
@@ -359,10 +359,10 @@ class FullPipelineContinuityReferenceTests(unittest.TestCase):
                     harness.close()
 
         correction_sequences = (
-            ("Let's do an RP.", "No, I meant Gensokyo."),
-            ("Gensokyo.", "Okay, let's role play that."),
-            ("Gensokyo.", "Yeah, let's do that one."),
-            ("uh lets roleplay", "okay gensokyo"),
+            ("Let's do an RP.", "No, I meant Silvervale."),
+            ("Silvervale.", "Okay, let's role play that."),
+            ("Silvervale.", "Yeah, let's do that one."),
+            ("uh lets roleplay", "okay silvervale"),
         )
         for first_text, second_text in correction_sequences:
             with self.subTest(kind="correction_or_reference", first=first_text, second=second_text):
@@ -377,12 +377,12 @@ class FullPipelineContinuityReferenceTests(unittest.TestCase):
         harness = self._harness()
         self.assertEqual("ignored", harness.turn("Let's roleplay.")["state"])
         harness.restart()
-        self.assertEqual("applied", harness.turn("Gensokyo.")["state"])
-        self.assertEqual("Gensokyo", harness.repository.active_truth_scope(harness.character_id).label)
+        self.assertEqual("applied", harness.turn("Silvervale.")["state"])
+        self.assertEqual("Silvervale", harness.repository.active_truth_scope(harness.character_id).label)
         harness.close()
 
         harness = self._harness()
-        self.assertEqual("ignored", harness.turn("Gensokyo.")["state"])
+        self.assertEqual("ignored", harness.turn("Silvervale.")["state"])
         harness.turn("Let's roleplay that we're in Pokemon.")
         self.assertEqual("scenario", harness.repository.active_truth_scope(harness.character_id).kind)
         harness.turn("Back to real life.")
@@ -392,32 +392,54 @@ class FullPipelineContinuityReferenceTests(unittest.TestCase):
         self.assertEqual("real_world", harness.repository.active_truth_scope(harness.character_id).kind)
         harness.close()
 
+    def test_real_player_rp_repair_sequence_uses_the_full_bounded_user_frame(self):
+        harness = self._harness()
+        harness.turn("Let's roleplay that we're in Silvervale.")
+        harness.turn("Back to reality.")
+        self.assertEqual("ignored", harness.turn("So I want to role play something.")["state"])
+        for misheard in (
+            "Again secure again",
+            "Again, so, kill.",
+            "Sorry, I said get so killed again.",
+        ):
+            with self.subTest(misheard=misheard):
+                self.assertEqual("ignored", harness.turn(misheard)["state"])
+                self.assertEqual("real_world", harness.repository.active_truth_scope(harness.character_id).kind)
+
+        result = harness.turn("sorry I meant silvervale again. you misheard")
+        self.assertEqual("applied", result["state"])
+        self.assertEqual(("enter_scenario",), result["extraction_intents"])
+        self.assertTrue(result["scope_changed"])
+        scope = harness.repository.active_truth_scope(harness.character_id)
+        self.assertEqual("scenario", scope.kind)
+        self.assertEqual("Silvervale", scope.label)
+        harness.close()
 
     def test_rp_desire_declaration_and_deictic_forms_use_structural_grammar(self):
         direct_forms = (
-            "We are roleplaying Gensokyo.",
-            "okay so we are roleplaying gensokyo",
-            "I want to roleplay in Gensokyo.",
-            "We want to role play in Gensokyo.",
+            "We are roleplaying Silvervale.",
+            "okay so we are roleplaying silvervale",
+            "I want to roleplay in Silvervale.",
+            "We want to role play in Silvervale.",
         )
         for text in direct_forms:
             with self.subTest(kind="direct", text=text):
                 harness = self._harness()
                 result = harness.turn(text)
                 self.assertEqual("applied", result["state"])
-                self.assertEqual("gensokyo", harness.repository.active_truth_scope(harness.character_id).label.casefold())
+                self.assertEqual("silvervale", harness.repository.active_truth_scope(harness.character_id).label.casefold())
                 harness.close()
 
         split_forms = (
-            ("I want to roleplay something.", "Gensokyo."),
-            ("Gensokyo.", "okay so we're rping there now"),
+            ("I want to roleplay something.", "Silvervale."),
+            ("Silvervale.", "okay so we're rping there now"),
         )
         for first, second in split_forms:
             with self.subTest(kind="split", first=first, second=second):
                 harness = self._harness()
                 self.assertEqual("ignored", harness.turn(first)["state"])
                 self.assertEqual("applied", harness.turn(second)["state"])
-                self.assertEqual("Gensokyo", harness.repository.active_truth_scope(harness.character_id).label)
+                self.assertEqual("Silvervale", harness.repository.active_truth_scope(harness.character_id).label)
                 harness.close()
 
     def test_rp_desire_and_declaration_neighbors_abstain(self):
@@ -425,10 +447,10 @@ class FullPipelineContinuityReferenceTests(unittest.TestCase):
             "I want to play a roleplaying game.",
             "I want to talk about roleplaying.",
             "We are discussing roleplaying games.",
-            "I want to talk about Gensokyo.",
-            "They are roleplaying Gensokyo.",
-            "My friends want to roleplay Gensokyo.",
-            "We are not roleplaying Gensokyo.",
+            "I want to talk about Silvervale.",
+            "They are roleplaying Silvervale.",
+            "My friends want to roleplay Silvervale.",
+            "We are not roleplaying Silvervale.",
         )
         for text in negatives:
             with self.subTest(text=text):
@@ -438,7 +460,7 @@ class FullPipelineContinuityReferenceTests(unittest.TestCase):
                 harness.close()
 
         harness = self._harness()
-        self.assertEqual("ignored", harness.turn("Gensokyo.")["state"])
+        self.assertEqual("ignored", harness.turn("Silvervale.")["state"])
         self.assertEqual("ignored", harness.turn("I want to talk about roleplaying.")["state"])
         self.assertEqual("real_world", harness.repository.active_truth_scope(harness.character_id).kind)
         harness.close()
@@ -465,9 +487,9 @@ class FullPipelineContinuityReferenceTests(unittest.TestCase):
                 "The weather is pleasant today.", "I made a cup of tea.",
                 "My desk needs some cleaning.", "The window is open now.",
                 "I found an old notebook.", "This music sounds very calm.",
-            ), "Gensokyo."),
-            ("Gensokyo.", ("Pokemon.",), "Okay, let's roleplay that."),
-            ("Let's discuss roleplaying games.", ("Gensokyo.",), "Yeah, that one."),
+            ), "Silvervale."),
+            ("Silvervale.", ("Pokemon.",), "Okay, let's roleplay that."),
+            ("Let's discuss roleplaying games.", ("Silvervale.",), "Yeah, that one."),
         )
         for first, middle, last in stale_or_ambiguous:
             with self.subTest(kind="stale_or_ambiguous", first=first, last=last):
@@ -481,7 +503,7 @@ class FullPipelineContinuityReferenceTests(unittest.TestCase):
                 harness.close()
 
         harness = self._harness()
-        harness.turn("Sounds good.", assistant="Let's roleplay in Gensokyo.")
+        harness.turn("Sounds good.", assistant="Let's roleplay in Silvervale.")
         result = harness.turn("Okay, let's do that.")
         self.assertEqual("ignored", result["state"])
         self.assertEqual("real_world", harness.repository.active_truth_scope(harness.character_id).kind)

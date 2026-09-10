@@ -29,7 +29,8 @@ class OpenAICompatibleLLM:
                  fresh_request_seeds: bool = False,
                  seed_source: Callable[[], int] | None = None,
                  sampling_preset: str = "",
-                 sampling_options: dict[str, int | float] | None = None) -> None:
+                 sampling_options: dict[str, int | float] | None = None,
+                 companion_memory_realization: bool = False) -> None:
         if not str(base_url).strip():
             raise RuntimeError("An OpenAI-compatible endpoint is required.")
         if not str(model).strip():
@@ -38,6 +39,7 @@ class OpenAICompatibleLLM:
         self.model = str(model).strip()
         self.context_budget_chars = int(context_budget_chars) if context_budget_chars else None
         self.fresh_request_seeds = bool(fresh_request_seeds)
+        self.companion_memory_realization = bool(companion_memory_realization)
         options = dict(sampling_options or {})
         unknown = set(options).difference(self._SAMPLING_FIELDS)
         if unknown:

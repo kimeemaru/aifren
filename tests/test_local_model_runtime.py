@@ -244,6 +244,7 @@ class LocalModelRuntimeTests(unittest.TestCase):
                 "llama_perf_context_print: prompt eval time = 12 ms\n"
             )
 
+            runtime._process = process
             runtime._drain_output(process)
 
             self.assertEqual(2, len(forwarded))
@@ -260,6 +261,7 @@ class LocalModelRuntimeTests(unittest.TestCase):
             )
             process = _Process(); process.stdout = io.StringIO("CUDA Graph id 8 reused\n")
 
+            runtime._process = process
             runtime._drain_output(process)
 
             self.assertEqual(1, len(forwarded))
@@ -281,6 +283,43 @@ class LocalModelRuntimeTests(unittest.TestCase):
             self.assertEqual("CPU", result["compute"])
             self.assertNotIn("--n_gpu_layers", commands[0])
             self.assertEqual(16384, LocalModelRuntime(root, model_directory=model_dir, context_size=16384).context_size)
+
+    def test_windows_managed_launch_uses_native_creation_flags_and_direct_owned_stop(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory); model_dir = root / "models"; model_dir.mkdir()
+            (model_dir / "first.gguf").write_bytes(b"GGUF")
+            captured, ready = [], {"value": False}
+            process = _Process()
+
+            def factory(command, **options):
+                captured.append((command, options))
+                ready["value"] = True
+                return process
+
+            def open_url(_request, timeout):
+                if not ready["value"]:
+                    raise OSError("offline")
+                return _Response({"data": [{"id": "first.gguf"}]})
+
+            runtime = LocalModelRuntime(
+                root,
+                model_directory=model_dir,
+                process_factory=factory,
+                urlopen=open_url,
+                gpu_offload_probe=lambda: False,
+                readiness_timeout_seconds=.25,
+                process_platform="nt",
+            )
+            result = runtime.start(
+                endpoint="http://127.0.0.1:8000/v1", selected_model="first.gguf",
+            )
+
+            self.assertEqual(("ready", "managed"), (result["state"], result["ownership"]))
+            self.assertIn("creationflags", captured[0][1])
+            self.assertNotIn("start_new_session", captured[0][1])
+            self.assertFalse((root / ".aifren_managed_local_runtime.json").exists())
+            runtime.stop()
+            self.assertTrue(process.terminated)
 
     def test_slow_owned_shutdown_escalates_only_that_owned_process(self):
         with TemporaryDirectory() as directory:

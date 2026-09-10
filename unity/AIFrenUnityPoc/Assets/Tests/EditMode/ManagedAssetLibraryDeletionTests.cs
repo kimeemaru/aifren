@@ -1,3 +1,4 @@
+using PlayerPrefs = AIFren.UnityPoc.PresentationPreferences;
 using System;
 using System.IO;
 using System.Reflection;
@@ -300,8 +301,19 @@ namespace AIFren.UnityPoc.Tests.EditMode
             string link = Path.Combine(root, "AssetLibrary", "Models", "linked.vrm");
             Directory.CreateDirectory(Path.GetDirectoryName(link));
             MethodInfo createLink = typeof(File).GetMethod("CreateSymbolicLink", BindingFlags.Public | BindingFlags.Static);
-            if (createLink == null) Assert.Ignore("This Unity runtime does not expose File.CreateSymbolicLink.");
-            createLink.Invoke(null, new object[] { link, external });
+            if (createLink != null) createLink.Invoke(null, new object[] { link, external });
+            else if (Application.platform == RuntimePlatform.LinuxEditor)
+            {
+                var start = new System.Diagnostics.ProcessStartInfo("/usr/bin/ln") { UseShellExecute = false };
+                start.ArgumentList.Add("-s"); start.ArgumentList.Add("--");
+                start.ArgumentList.Add(external); start.ArgumentList.Add(link);
+                using (var process = System.Diagnostics.Process.Start(start))
+                {
+                    Assert.That(process.WaitForExit(5000), Is.True, "Synthetic symlink creation timed out.");
+                    Assert.That(process.ExitCode, Is.Zero);
+                }
+            }
+            else Assert.Ignore("Native symlink fixture is unavailable on this platform.");
             LoadTampered(new ManagedAssetRecord { id = "symlink", kind = ManagedAssetLibrary.ModelKind, path = link });
 
             Assert.IsTrue(File.Exists(external));

@@ -24,7 +24,7 @@ class _Llm:
     is_available = True
 
     def generate(self, *_args, **_kwargs):
-        return "[]"
+        return "Okay."
 
     def __init__(self):
         self.cancelled = 0
@@ -87,14 +87,18 @@ class CharacterSwitchOwnershipTests(unittest.TestCase):
             self.root, character_id=character_id, display_name=selected.display_name,
             memory_file=paths["memory"],
         )
-        writer.reconcile()
-        unsubscribe = memory.subscribe_mutations(writer.observe)
+        from memory_v2_store import MemoryV2Repository
+        from memory_v2_authority import DevelopmentV2MemoryAuthority
+        from test_memory_v2_embeddings import ToyEmbeddingProvider
+        MemoryV2Repository(writer.store).ensure_character(character_id, selected.display_name)
+        writer._embedding_provider = ToyEmbeddingProvider()
+        authority = DevelopmentV2MemoryAuthority(writer.store, character_id, conversation.messages,
+                                               embedding_provider=ToyEmbeddingProvider())
         return AssistantService(
             llm, memory, conversation, object(), character,
             build_character_prompt(character, personality), _Tts(),
-            response_generator=lambda *_args: "Okay.",
             memory_v2_shadow_writer=writer, character_id=character_id,
-            memory_v2_unsubscribe=unsubscribe,
+            memory_authority="v2", memory_v2_authority=authority,
         )
 
     def _turn(self, text):
@@ -118,6 +122,25 @@ class CharacterSwitchOwnershipTests(unittest.TestCase):
     @staticmethod
     def _snapshot_text(snapshot):
         return json.dumps(snapshot, sort_keys=True).casefold()
+
+    def test_expression_request_context_resets_on_a_b_a_switch(self):
+        self.service._response_generator = None
+        calls = []
+        response = '{"dialogue":"Lovely.","presentation":{"emotion":"happy"}}'
+        def generate(context, prompt):
+            # Memory processing is a separate pre-existing inference owner.
+            if "AUTHORITATIVE RESPONSE FORMAT" not in prompt: return "[]"
+            calls.append(prompt)
+            return response
+        self.service.llm.generate = generate
+        self._turn("Hello there.")
+        response = "I am listening."
+        self._turn("Let us continue.")
+        self.assertIn("Last published model-metadata facial request: happy", calls[-1])
+        self._switch(self.b); self._turn("Hello there.")
+        self.assertIn("No model-metadata facial request has been published", calls[-1])
+        self._switch(self.a); self._turn("Hello again.")
+        self.assertIn("No model-metadata facial request has been published", calls[-1])
 
     def test_a_b_a_b_state_history_scope_threads_and_capabilities_are_isolated(self):
         self._turn("Let's roleplay that we're in the Blue Room.")
@@ -238,3 +261,46 @@ class CharacterSwitchOwnershipTests(unittest.TestCase):
         self.assertEqual([], self.service.conversation.messages)
         self.assertGreaterEqual(self.service.llm.cancelled, 1)
         self.assertGreaterEqual(self.service.tts.stop_calls, 1)
+
+    def test_switch_clears_prior_memory_authority_diagnostics(self):
+        self.service._last_memory_authority_diagnostics = {
+            "memory_query_intent": "user_historical_source",
+            "requested_speaker": "user",
+        }
+
+        self._switch(self.b)
+
+        self.assertEqual({}, self.service._last_memory_authority_diagnostics)
+
+    def test_memory_viewer_rejects_stale_character_after_runtime_preserving_switch(self):
+        old_id = self.a.character_id
+        llm = self.service.llm
+        tts = self.service.tts
+        self.memory = self.service.memory
+        self.memory.add_memory("test", "Only character A remembers this.", source="synthetic_test")
+        page = self.service.memory_view_page(character_id=old_id, lane="v1")
+        self.assertIn("Only character A", page["items"][0]["content"])
+
+        self._switch(self.b)
+
+        self.assertIs(llm, self.service.llm)
+        self.assertIs(tts, self.service.tts)
+        with self.assertRaises(RuntimeError):
+            self.service.memory_view_page(character_id=old_id, lane="v1")
+        with self.assertRaises(RuntimeError):
+            self.service.memory_view_detail(
+                character_id=old_id, lane="v2_claims", record_id="stale-claim",
+            )
+        current = self.service.memory_view_page(character_id=self.b.character_id, lane="v1")
+        self.assertEqual([], current["items"])
+
+    def test_memory_viewer_fails_open_without_waiting_on_an_active_turn(self):
+        self.assertTrue(self.service._turn_lock.acquire(blocking=False))
+        try:
+            page = self.service.memory_view_page(character_id=self.a.character_id, lane="v1")
+        finally:
+            self.service._turn_lock.release()
+
+        self.assertEqual("busy", page["availability"])
+        self.assertEqual([], page["items"])
+        self.assertIn("briefly unavailable", page["warning"])

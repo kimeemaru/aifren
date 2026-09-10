@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 
 from character_registry import CharacterRegistry
 from conversation.conversation import load_json
-from llm.llm import create_llm
+from llm.maintenance import configured_maintenance_provider
 from memory_v2_episode_compaction import (
     COMPACTION_VERSION,
     ERA_COMPACTION_VERSION,
@@ -54,12 +54,18 @@ def main() -> None:
         reconciliation = writer.reconcile()
         if reconciliation.get("state") != "ok":
             raise SystemExit("Memory V2 reconciliation failed")
-        report = EpisodeCompactionCache(writer.store, character.character_id).rebuild(
-            messages, EpisodeCompactor(create_llm()),
-        )
+        with configured_maintenance_provider(ROOT) as provider:
+            report = EpisodeCompactionCache(writer.store, character.character_id).rebuild(
+                messages, EpisodeCompactor(provider.provider),
+            )
         # Numeric/structural report only; no conversation or derived prose.
         print(json.dumps({
             "state": "complete",
+            "provider_adapter": provider.adapter,
+            "provider_model": provider.model,
+            "provider_mode": provider.mode,
+            "runtime_compute": provider.runtime_compute,
+            "runtime_ownership": provider.runtime_ownership,
             "compaction_version": COMPACTION_VERSION,
             "era_compaction_version": ERA_COMPACTION_VERSION,
             "era_retention_gate_version": ERA_RETENTION_GATE_VERSION,

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import uuid
 
-from memory_v2_store.retrieval_models import RetrievalQuery
+from benchmarks.memory_v2.models import RetrievalQuery
 from memory_v2_store import (
     ActiveSceneSubjectIntroduction, ActiveStateProposal, ActiveStateProposalUpdate,
     EmbeddingLifecycle, HnswClaimIndex, MemoryV2Repository, MemoryV2Store,

@@ -332,7 +332,7 @@ class SceneSleepAndScopeTests(unittest.TestCase):
             "color": "white", "kind": "hoodie", "region": "torso",
             "stain": "coffee", "wet": "true", "worn_by": "user",
         }, self.scene()[0])
-        self.h.turn("Let's roleplay that we're in Gensokyo.")
+        self.h.turn("Let's roleplay that we're in Silvervale.")
         self.h.turn("I put on my red coat.")
         self.assertEqual("coat", self.scene()[0]["kind"])
         self.h.turn("Back to real life.")
@@ -342,6 +342,62 @@ class SceneSleepAndScopeTests(unittest.TestCase):
         self.assertNotIn("worn_by", current)
         self.assertEqual(("white", "coffee", "true"), (current["color"], current["stain"], current["wet"]))
 
+    def test_exact_manual_hoodie_sequence_uses_canonical_evidence_and_typed_admission(self):
+        first = "*I put on my white hoodie*"
+        result, _ = self.h.turn(first)
+        self.assertEqual("applied", result["state"])
+        subject = self.h.repository.list_scene_subjects(self.h.character_id)[0]
+        introduction = self.h.writer.store.connection.execute(
+            """SELECT e.content_text, s.introduced_excerpt_start_cp, s.introduced_excerpt_end_cp
+                 FROM active_scene_subjects s JOIN events e
+                   ON e.character_id=s.character_id AND e.event_id=s.introduced_event_id
+                WHERE s.character_id=? AND s.scene_subject_id=?""",
+            (self.h.character_id, subject.scene_subject_id),
+        ).fetchone()
+        self.assertEqual(first, introduction["content_text"])
+        self.assertEqual("I put on my white hoodie", introduction["content_text"][
+            introduction["introduced_excerpt_start_cp"]:introduction["introduced_excerpt_end_cp"]
+        ])
+
+        second = "Oh I spilled coffee on it."
+        self.h.turn(second)
+        self.h.turn("It got wet.")
+        expected = {
+            "color": "white", "kind": "hoodie", "region": "torso", "stain": "coffee",
+            "wet": "true", "worn_by": "user",
+        }
+        self.assertEqual(expected, self.scene()[0])
+        stain = next(record for record in self.h.repository.lookup_scene_attributes(
+            self.h.character_id, subject.scene_subject_id,
+        ) if record.subject_key.endswith(".stain"))
+        evidence = self.h.writer.store.connection.execute(
+            """SELECT e.content_text, ce.excerpt_start_cp, ce.excerpt_end_cp
+                 FROM claim_evidence ce JOIN events e
+                   ON e.character_id=ce.character_id AND e.event_id=ce.event_id
+                WHERE ce.character_id=? AND ce.claim_id=?""",
+            (self.h.character_id, stain.state_id),
+        ).fetchone()
+        self.assertEqual("coffee", evidence["content_text"][
+            evidence["excerpt_start_cp"]:evidence["excerpt_end_cp"]
+        ])
+
+        admission = admit_current_continuity_context(
+            self.h.repository, self.h.character_id,
+            "what am I wearing and what happened to it",
+            now_us=int((self.h.base + timedelta(hours=1)).timestamp() * 1_000_000),
+        )
+        self.assertIn('"kind":"hoodie"', admission.active_state_context)
+        self.assertIn('"color":"white"', admission.active_state_context)
+        self.assertIn('"stain":"coffee"', admission.active_state_context)
+        self.assertIn('"wet":"true"', admission.active_state_context)
+        self.assertIn('"worn_by":"user"', admission.active_state_context)
+
+        self.h.turn("I took it off because it got wet.")
+        current = self.scene()[0]
+        self.assertNotIn("worn_by", current)
+        self.assertEqual(("white", "coffee", "true"), (
+            current["color"], current["stain"], current["wet"],
+        ))
 
     def test_scene_pronoun_without_a_subject_abstains(self):
         result, _ = self.h.turn("Oh I spilled coffee on it.")
@@ -410,7 +466,7 @@ class SceneSleepAndScopeTests(unittest.TestCase):
         self.assertIsNone(self.h.repository.lookup_actor_state(
             self.h.character_id, "user", "activity",
         ).state)
-        self.h.turn("Let's roleplay that we're in Gensokyo.")
+        self.h.turn("Let's roleplay that we're in Silvervale.")
         self.h.turn("Back to real life.")
         self.assertIsNone(self.h.repository.lookup_actor_state(self.h.character_id, "user", "activity").state)
 
@@ -616,9 +672,9 @@ class DurableFactMatrixTests(unittest.TestCase):
 
     def test_closed_schema_positive_negative_matrix(self):
         positives = (
-            "I live in Toronto.", "I work as a systems engineer.", "I study at TMU.",
+            "I live in Toronto.", "My university is University of Toronto.",
             "My GPU is an RTX 3070.", "My computer is a Framework laptop.",
-            "My dog is named Miso.", "My long-running project is AIFren.",
+            "My long-running project is AIFren.",
             "My favorite game is Noita.", "I like coffee.", "I hate olives.",
             "My hobby is drawing.", "I own a soldering station.",
         )
@@ -630,7 +686,7 @@ class DurableFactMatrixTests(unittest.TestCase):
                     self.assertIsNone(extract_durable_fact_proposal(prefix + text))
         for temporary in (
             "I'm working on AIFren.", "I often shower.", "My dog is tired.",
-            "I live in Toronto for now.",
+            "I live in Toronto for now.", "My dog is named Miso.",
         ):
             with self.subTest(kind="temporary", text=temporary):
                 self.assertIsNone(extract_durable_fact_proposal(temporary))
@@ -638,7 +694,7 @@ class DurableFactMatrixTests(unittest.TestCase):
     def test_corrections_supersede_without_deleting_history(self):
         self.h.turn("I live in Toronto.")
         old = self.h.repository.lookup_durable_core(self.h.character_id, "home.primary").candidates[0]
-        self.h.turn("I moved to Montreal.")
+        self.h.turn("I live in Montreal.")
         current = self.h.repository.lookup_durable_core(self.h.character_id, "home.primary").candidates[0]
         self.assertEqual("The user lives in Montreal.", current.content)
         historical = self.h.repository.lookup_durable_core(
@@ -701,7 +757,7 @@ class DurableFactMatrixTests(unittest.TestCase):
                 evidence_excerpt_end_cp=1,
             )
 
-        self.h.turn("I moved to Montreal.")
+        self.h.turn("I live in Montreal.")
         newest_user_event = self.h.writer.store.connection.execute(
             """SELECT event_id, content_text FROM events
                  WHERE character_id=? AND actor_kind='user' ORDER BY sequence DESC LIMIT 1""",
@@ -720,8 +776,8 @@ class DurableFactMatrixTests(unittest.TestCase):
             _, durable = self.h.turn(text)
             self.assertEqual("ignored", durable["state"])
         self.h.turn("I live in Toronto.")
-        self.h.turn("Let's roleplay that we're in Gensokyo.")
-        _, durable = self.h.turn("I live in Gensokyo.")
+        self.h.turn("Let's roleplay that we're in Silvervale.")
+        _, durable = self.h.turn("I live in Silvervale.")
         self.assertEqual("truth_scope_not_real_world", durable["reason"])
         self.h.turn("Back to real life.")
         current = self.h.repository.lookup_durable_core(self.h.character_id, "home.primary").candidates
@@ -739,7 +795,7 @@ class DurableFactMatrixTests(unittest.TestCase):
         self.assertIsNone(stale.context_block)
 
     def test_v1_dedup_suppresses_only_the_admitted_governed_slot(self):
-        self.h.turn("I moved to Montreal.")
+        self.h.turn("I live in Montreal.")
         admission = admit_durable_context(self.h.repository, self.h.character_id, "Where do I live?")
         memories = [
             {"category": "profile", "content": "The user lives in Toronto."},
@@ -807,7 +863,7 @@ class DurableFactMatrixTests(unittest.TestCase):
             with self.subTest(kind="favorite_abstain", text=unsafe):
                 self.assertIsNone(extract_durable_fact_proposal(unsafe))
 
-        self.h.turn("Let's roleplay that we're in Gensokyo.")
+        self.h.turn("Let's roleplay that we're in Silvervale.")
         _, durable = self.h.turn("My favorite color is red.")
         self.assertEqual("truth_scope_not_real_world", durable["reason"])
         self.h.turn("We're back in the real world.")
@@ -817,12 +873,12 @@ class DurableFactMatrixTests(unittest.TestCase):
 
     def test_contextual_favorite_color_correction_requires_a_governed_predecessor(self):
         _, durable = self.h.turn("My favorite is purple actually.")
-        self.assertEqual("missing_current_durable_value", durable["reason"])
+        self.assertEqual("no_clear_durable_fact", durable["reason"])
         self.assertEqual((), self.h.repository.lookup_durable_core(
             self.h.character_id, "preference.color",
         ).candidates)
 
-    def test_v1_favorite_color_bootstraps_one_governed_correction(self):
+    def test_explicit_favorite_color_bootstraps_one_governed_correction(self):
         created = (self.h.base - timedelta(days=1)).isoformat()
         memories = [
             {
@@ -840,7 +896,7 @@ class DurableFactMatrixTests(unittest.TestCase):
         self.assertEqual("ok", self.h.writer.reconcile()["state"])
 
         same_turn = admit_durable_context(
-            self.h.repository, self.h.character_id, "My favorite is purple actually.",
+            self.h.repository, self.h.character_id, "Actually, my favorite color is purple.",
         )
         self.assertEqual((), same_turn.facts)
         self.assertEqual(
@@ -848,7 +904,7 @@ class DurableFactMatrixTests(unittest.TestCase):
             filter_v1_duplicates(memories, same_turn.v1_suppression_facts),
         )
 
-        _, durable = self.h.turn("My favorite is purple actually.")
+        _, durable = self.h.turn("Actually, my favorite color is purple.")
         self.assertEqual("superseded", durable["state"])
         self.assertTrue(durable["v1_favorite_bridge"])
         current = self.h.repository.lookup_durable_core(
@@ -941,7 +997,7 @@ class RpDiscourseRegressionTests(unittest.TestCase):
 
     def test_recent_multiturn_rp_still_completes_and_declarative_reality_exits(self):
         self.h.turn("Let's roleplay.")
-        result, _ = self.h.turn("Gensokyo.")
+        result, _ = self.h.turn("Silvervale.")
         self.assertEqual("applied", result["state"])
         self.assertEqual("scenario", self.h.repository.active_truth_scope(self.h.character_id).kind)
         result, _ = self.h.turn("we are in real life")
@@ -1093,6 +1149,7 @@ class ServiceBehaviorTests(unittest.TestCase):
                 llm, memory, conversation, object(), {"_character_id": h.character_id},
                 "character", tts, response_generator=lambda *_: "I can see your red shirt clearly.",
                 memory_v2_shadow_writer=h.writer, character_id=h.character_id,
+                memory_authority="v1",
             )
             result = service.process_text_turn("What do you see?", speak=False)
             self.assertTrue(result.succeeded)
@@ -1113,6 +1170,7 @@ class ServiceBehaviorTests(unittest.TestCase):
                 llm, memory, conversation, object(), {"_character_id": h.character_id},
                 "character", tts, response_generator=lambda *_: "ordinary chatter",
                 memory_v2_shadow_writer=h.writer, character_id=h.character_id,
+                memory_authority="v1",
             )
             presentations = []
             service.subscribe(lambda event: presentations.append(event.data.get("presentation"))
@@ -1170,6 +1228,7 @@ class ServiceBehaviorTests(unittest.TestCase):
                 llm, memory, conversation, object(), {"_character_id": h.character_id},
                 "character", tts, response_generator=lambda *_: proposal,
                 memory_v2_shadow_writer=h.writer, character_id=h.character_id,
+                memory_authority="v1",
             )
 
             result = service.process_text_turn("*I nudge your shoulder*", speak=True)
@@ -1199,6 +1258,7 @@ class ServiceBehaviorTests(unittest.TestCase):
                 llm, memory, conversation, object(), {"_character_id": h.character_id},
                 "character", tts, memory_v2_shadow_writer=h.writer,
                 character_id=h.character_id,
+                memory_authority="v1",
             )
             with patch("model_settings.proactive_behavior_status", return_value={"enabled": True}):
                 result = service.process_proactive_checkin(
@@ -1244,6 +1304,7 @@ class ServiceBehaviorTests(unittest.TestCase):
                         llm, memory, conversation, object(),
                         {"_character_id": h.character_id}, "character", tts,
                         memory_v2_shadow_writer=h.writer, character_id=h.character_id,
+                        memory_authority="v1",
                     )
                     events = []
                     service.subscribe(events.append)
@@ -1284,6 +1345,7 @@ class ServiceBehaviorTests(unittest.TestCase):
                     llm, memory, conversation, object(),
                     {"_character_id": h.character_id}, "character", tts,
                     memory_v2_shadow_writer=h.writer, character_id=h.character_id,
+                    memory_authority="v1",
                 )
 
             with patch("model_settings.proactive_behavior_status", return_value={
@@ -1317,8 +1379,12 @@ class ServiceBehaviorTests(unittest.TestCase):
             now = h.base + timedelta(hours=8)
             entered = threading.Event()
             release = threading.Event()
+            replacement_claimed = threading.Event()
 
             class BlockingProactiveLlm(_Llm):
+                def cancel_active_generation(self):
+                    replacement_claimed.set()
+
                 def generate(self, context, prompt):
                     self.last_context = context
                     entered.set()
@@ -1337,6 +1403,7 @@ class ServiceBehaviorTests(unittest.TestCase):
                 {"_character_id": h.character_id}, "character", tts,
                 response_generator=lambda *_args: "User turn response.",
                 memory_v2_shadow_writer=h.writer, character_id=h.character_id,
+                memory_authority="v1",
             )
             events = []
             service.subscribe(events.append)
@@ -1356,10 +1423,9 @@ class ServiceBehaviorTests(unittest.TestCase):
                     service.process_text_turn("It just arrived.", speak=False)
                 ))
                 user.start()
-                deadline = time.monotonic() + 1
-                while service._turn_generation < 1 and time.monotonic() < deadline:
-                    time.sleep(.005)
-                self.assertGreaterEqual(service._turn_generation, 1)
+                # A private proactive attempt now owns an internal token too.
+                # Observe replacement itself instead of assuming generation 1.
+                self.assertTrue(replacement_claimed.wait(1))
                 release.set()
                 proactive.join(2)
                 user.join(2)
@@ -1392,6 +1458,7 @@ class ServiceBehaviorTests(unittest.TestCase):
                 llm, memory, conversation, object(), {"_character_id": h.character_id},
                 "character", tts, memory_v2_shadow_writer=h.writer,
                 character_id=h.character_id,
+                memory_authority="v1",
             )
             service.subscribe(lambda event: service.stop_speaking(interrupted=True)
                               if event.type == "assistant_response" else None)

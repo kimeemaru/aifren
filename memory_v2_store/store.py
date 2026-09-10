@@ -1,4 +1,4 @@
-"""Transactional SQLite storage for character-scoped Memory V2 continuity."""
+"""Transactional, synthetic-safe SQLite storage for the Memory V2 shadow store."""
 
 from __future__ import annotations
 
@@ -46,7 +46,9 @@ from .scene_relation_contract import (
 )
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 21
+HISTORICAL_EVIDENCE = "historical_evidence"
+HISTORICAL_EVIDENCE_ASSERTION_SCOPE = "historical_occurrence"
 VALID_STATUSES = {
     "active", "superseded", "expired", "cancelled", "disputed", "retracted",
     "archived", "hidden", "redacted",
@@ -59,7 +61,7 @@ DISTINCT_DORMANT_RETIRE_AFTER_US = 180 * 24 * 60 * 60 * 1_000_000
 
 
 class StoreError(ValueError):
-    """Raised when a store operation would violate its data contract."""
+    """Raised when a shadow-store operation would violate its data contract."""
 
 
 def utc_now_us() -> int:
@@ -84,7 +86,7 @@ def _require_uuid(value: str) -> str:
 
 
 class MemoryV2Store:
-    """Repository for an append-oriented character-scoped SQLite database."""
+    """Repository for an isolated, append-oriented SQLite shadow database."""
 
     def __init__(self, path: str = ":memory:") -> None:
         self.path = path
@@ -113,7 +115,7 @@ class MemoryV2Store:
         self.connection.execute("PRAGMA busy_timeout = 5000")
         self.connection.execute("PRAGMA synchronous = FULL")
         # SQLite uses an in-memory journal for :memory: databases; file-backed
-        # File stores use WAL as the intended operational mode.
+        # shadow stores use WAL as the intended operational mode.
         if self.path != ":memory:":
             self.connection.execute("PRAGMA journal_mode = WAL")
 
@@ -293,7 +295,7 @@ class MemoryV2Store:
                     "CREATE VIRTUAL TABLE IF NOT EXISTS claims_fts USING fts5(character_id UNINDEXED, claim_id UNINDEXED, searchable_text)"
                 )
             except sqlite3.OperationalError as error:
-                raise StoreError("SQLite FTS5 is required for the Memory V2 retrieval engine.") from error
+                raise StoreError("SQLite FTS5 is required for the isolated Memory V2 retrieval engine.") from error
             with self.transaction():
                 self.connection.execute("INSERT INTO schema_migrations(version, applied_at_us) VALUES (?, ?)", (3, utc_now_us()))
                 self.connection.execute("UPDATE database_meta SET value = ? WHERE key = 'schema_version'", ("3",))
@@ -880,6 +882,129 @@ class MemoryV2Store:
                 self.connection.execute(
                     "UPDATE database_meta SET value = ? WHERE key = 'schema_version'", ("17",),
                 )
+            version = 17
+        if version < 18:
+            # Historical conversation evidence records only that a canonical
+            # source occurred. It is deliberately a different claim type from
+            # present-tense durable truth, and an unknown historical scope is
+            # represented explicitly with a NULL truth_scope_id.
+            self.connection.executescript(
+                """
+                BEGIN IMMEDIATE;
+                CREATE TABLE historical_evidence (
+                    character_id TEXT NOT NULL,
+                    claim_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    canonical_index INTEGER NOT NULL CHECK(canonical_index >= 0),
+                    canonical_record_id TEXT NOT NULL,
+                    speaker_role TEXT NOT NULL CHECK(speaker_role IN ('user','assistant')),
+                    speech_act TEXT NOT NULL CHECK(speech_act IN ('assertion','question','other')),
+                    source_class TEXT NOT NULL,
+                    scope_state TEXT NOT NULL CHECK(scope_state IN ('real_world','scenario','unknown_scope')),
+                    truth_scope_id TEXT,
+                    source_content_sha256 TEXT NOT NULL,
+                    projection_version INTEGER NOT NULL CHECK(projection_version >= 1),
+                    retrieval_eligible INTEGER NOT NULL CHECK(retrieval_eligible IN (0,1)),
+                    PRIMARY KEY(character_id, claim_id),
+                    UNIQUE(character_id, canonical_record_id),
+                    FOREIGN KEY(character_id, claim_id) REFERENCES claims(character_id, claim_id),
+                    FOREIGN KEY(character_id, event_id) REFERENCES events(character_id, event_id),
+                    FOREIGN KEY(character_id, truth_scope_id)
+                        REFERENCES truth_scopes(character_id, truth_scope_id),
+                    CHECK(
+                        (scope_state='unknown_scope' AND truth_scope_id IS NULL)
+                        OR (scope_state IN ('real_world','scenario') AND truth_scope_id IS NOT NULL)
+                    )
+                );
+                CREATE INDEX historical_evidence_source_lookup
+                    ON historical_evidence(character_id, canonical_index, claim_id);
+                CREATE INDEX historical_evidence_retrieval_lookup
+                    ON historical_evidence(character_id, retrieval_eligible, scope_state,
+                                           truth_scope_id, claim_id);
+                CREATE VIRTUAL TABLE historical_evidence_fts USING fts5(
+                    character_id UNINDEXED,
+                    claim_id UNINDEXED,
+                    searchable_text
+                );
+                CREATE TABLE historical_evidence_checkpoints (
+                    character_id TEXT PRIMARY KEY,
+                    policy_version TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    next_index INTEGER NOT NULL CHECK(next_index >= 0),
+                    source_prefix_digest TEXT NOT NULL,
+                    source_archive_digest TEXT NOT NULL,
+                    source_record_count INTEGER NOT NULL CHECK(source_record_count >= 0),
+                    state TEXT NOT NULL CHECK(state IN ('running','complete')),
+                    updated_at_us INTEGER NOT NULL,
+                    FOREIGN KEY(character_id) REFERENCES characters(character_id)
+                );
+                INSERT INTO schema_migrations(version, applied_at_us)
+                    VALUES (18, CAST((julianday('now') - 2440587.5) * 86400000000 AS INTEGER));
+                UPDATE database_meta SET value = '18' WHERE key = 'schema_version';
+                COMMIT;
+                """
+            )
+
+        if self.connection.execute("SELECT 1 FROM schema_migrations WHERE version=19").fetchone() is None:
+            self.connection.executescript("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE canonical_observation_progress (
+                    character_id TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    consumer TEXT NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    next_index INTEGER NOT NULL CHECK(next_index >= 0),
+                    prefix_digest TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('pending','complete','unresolved','failed')),
+                    reason TEXT NOT NULL,
+                    updated_at_us INTEGER NOT NULL,
+                    PRIMARY KEY(character_id, source_key, consumer, policy_version),
+                    FOREIGN KEY(character_id) REFERENCES characters(character_id)
+                );
+                INSERT INTO schema_migrations(version, applied_at_us)
+                    VALUES (19, CAST((julianday('now') - 2440587.5) * 86400000000 AS INTEGER));
+                UPDATE database_meta SET value='19' WHERE key='schema_version';
+                COMMIT;
+            """)
+
+        if self.connection.execute("SELECT 1 FROM schema_migrations WHERE version=20").fetchone() is None:
+            self.connection.executescript("""
+                BEGIN IMMEDIATE;
+                ALTER TABLE active_scene_relations ADD COLUMN locus TEXT
+                    CHECK(locus IS NULL OR length(locus) BETWEEN 1 AND 96);
+                DROP INDEX active_scene_relation_current_identity;
+                CREATE UNIQUE INDEX active_scene_relation_current_identity
+                    ON active_scene_relations(character_id,truth_scope_id,target_kind,target_actor,
+                        COALESCE(facet,''),COALESCE(side,''),predicate,cause_kind,cause,
+                        COALESCE(cause_subject_id,''),COALESCE(locus,'')) WHERE valid_to_us IS NULL;
+                INSERT INTO schema_migrations(version,applied_at_us)
+                    VALUES (20,CAST((julianday('now')-2440587.5)*86400000000 AS INTEGER));
+                UPDATE database_meta SET value='20' WHERE key='schema_version';
+                COMMIT;
+            """)
+
+        if self.connection.execute("SELECT 1 FROM schema_migrations WHERE version=21").fetchone() is None:
+            self.connection.executescript("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE canonical_observation_dispositions (
+                    character_id TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    consumer TEXT NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    source_index INTEGER NOT NULL CHECK(source_index >= 0),
+                    source_digest TEXT NOT NULL,
+                    truth_scope_id TEXT NOT NULL,
+                    reason TEXT NOT NULL CHECK(reason IN ('non_mutating_question','superseded_actor_activity')),
+                    witness_event_id TEXT,
+                    decided_at_us INTEGER NOT NULL,
+                    PRIMARY KEY(character_id,source_key,consumer,policy_version,source_index),
+                    FOREIGN KEY(character_id) REFERENCES characters(character_id)
+                );
+                INSERT INTO schema_migrations(version,applied_at_us)
+                    VALUES (21,CAST((julianday('now')-2440587.5)*86400000000 AS INTEGER));
+                UPDATE database_meta SET value='21' WHERE key='schema_version';
+                COMMIT;
+            """)
 
     def _close_exclusive_relation_conflicts(
         self,
@@ -896,6 +1021,8 @@ class MemoryV2Store:
         excerpt_hash: str,
     ) -> tuple[str, ...]:
         """Close impossible current ownership/location peers before one set."""
+        if proposal.locus is not None:
+            return ()  # No implicit exclusive occupancy for explicit loci.
         if proposal.target_kind == "scene" and proposal.predicate in {"located_on", "located_in"}:
             rows = self.connection.execute(
                 """SELECT * FROM active_scene_relations
@@ -1060,6 +1187,18 @@ class MemoryV2Store:
                     character_id, cause_subject_id, effective_at_us, scope_id,
                 ):
                     raise StoreError("scene relation object is not a current scoped subject")
+                if proposal.locus is not None:
+                    prior = self.connection.execute(
+                        """SELECT 1 FROM active_scene_relations WHERE character_id=? AND truth_scope_id=?
+                           AND target_kind=? AND target_actor=? AND cause_subject_id=? AND locus=?
+                           AND predicate=? AND valid_to_us IS NULL LIMIT 1""",
+                        (character_id, scope_id, proposal.target_kind, target, cause_subject_id,
+                         proposal.locus, proposal.predicate),
+                    ).fetchone()
+                    # Attribute relabels and cause-specific clears can retain
+                    # an already evidenced locus; an establishment must cite it.
+                    if prior is None and proposal.locus not in content[proposal.excerpt_start_cp:proposal.excerpt_end_cp]:
+                        raise StoreError("relation locus is not literal source evidence")
                 if proposal.target_kind == "scene":
                     touched_subjects.add(target)
                 if cause_subject_id is not None:
@@ -1078,6 +1217,7 @@ class MemoryV2Store:
                         ("facet", proposal.facet), ("side", proposal.side),
                         ("predicate", proposal.predicate), ("cause_kind", proposal.cause_kind),
                         ("cause", proposal.cause), ("cause_subject_id", cause_subject_id),
+                        ("locus", proposal.locus),
                     ):
                         if value is not None:
                             clauses.append(f"{column}=?")
@@ -1108,7 +1248,7 @@ class MemoryV2Store:
 
                 identity = (
                     proposal.target_kind, target, proposal.facet, proposal.side,
-                    proposal.predicate, proposal.cause_kind, proposal.cause, cause_subject_id,
+                    proposal.predicate, proposal.cause_kind, proposal.cause, cause_subject_id, proposal.locus,
                 )
                 if identity in seen_set_identities:
                     raise StoreError("one relation batch cannot establish the same current identity twice")
@@ -1123,10 +1263,10 @@ class MemoryV2Store:
                     """SELECT relation_id, semantic_family, quantity, effect_state, valid_from_us FROM active_scene_relations
                          WHERE character_id=? AND truth_scope_id=? AND target_kind=? AND target_actor=?
                            AND facet IS ? AND side IS ? AND predicate=? AND cause_kind=? AND cause=?
-                           AND cause_subject_id IS ? AND valid_to_us IS NULL LIMIT 2""",
+                           AND cause_subject_id IS ? AND locus IS ? AND valid_to_us IS NULL LIMIT 2""",
                     (character_id, scope_id, proposal.target_kind, target, proposal.facet,
                      proposal.side, proposal.predicate, proposal.cause_kind, proposal.cause,
-                     cause_subject_id),
+                     cause_subject_id, proposal.locus),
                 ).fetchall()
                 if len(current) > 1:
                     raise StoreError("duplicate current scene relation identity exists")
@@ -1180,12 +1320,12 @@ class MemoryV2Store:
                         """INSERT INTO active_scene_relations(
                                character_id, relation_id, truth_scope_id, target_kind, target_actor,
                                facet, side, predicate, cause_kind, cause, cause_subject_id,
-                               semantic_family, quantity, effect_state, valid_from_us, valid_to_us)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
+                               semantic_family, quantity, effect_state, valid_from_us, valid_to_us, locus)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
                         (character_id, relation_id, scope_id, proposal.target_kind, target,
                          proposal.facet, proposal.side, proposal.predicate, proposal.cause_kind,
                          proposal.cause, cause_subject_id, proposal.semantic_family,
-                         proposal.quantity, proposal.effect_state, effective_at_us),
+                         proposal.quantity, proposal.effect_state, effective_at_us, proposal.locus),
                     )
                     operation = "set"
                 self.connection.execute(
@@ -1350,11 +1490,27 @@ class MemoryV2Store:
 
     def default_truth_scope_id(self, character_id: str) -> str:
         character_id = _require_uuid(character_id)
+        scope_id = default_real_world_scope_id(character_id)
+        row = self.connection.execute(
+            "SELECT truth_scope_id FROM truth_scopes "
+            "WHERE character_id=? AND truth_scope_id=?",
+            (character_id, scope_id),
+        ).fetchone()
+        if row is not None:
+            return scope_id
         with self.transaction():
             return self._ensure_default_truth_scope(character_id)
 
     def active_truth_scope_id(self, character_id: str) -> str:
         character_id = _require_uuid(character_id)
+        row = self.connection.execute(
+            "SELECT active_truth_scope_id FROM characters WHERE character_id=?",
+            (character_id,),
+        ).fetchone()
+        if row is None:
+            raise StoreError("character is absent from the Memory V2 store.")
+        if row["active_truth_scope_id"]:
+            return str(row["active_truth_scope_id"])
         with self.transaction():
             default_scope = self._ensure_default_truth_scope(character_id)
             row = self.connection.execute(
@@ -1382,6 +1538,8 @@ class MemoryV2Store:
         self,
         character_id: str,
         truth_scope_id: str | None = None,
+        *,
+        include_historical_evidence: bool = False,
     ) -> tuple[str, tuple[object, ...]]:
         """Return the one generic-retrieval truth boundary and its SQL values.
 
@@ -1399,9 +1557,36 @@ class MemoryV2Store:
             require_active=False,
         )
         real_scope_id = self.default_truth_scope_id(character_id)
+        ordinary = (
+            "(c.claim_type<>? AND "
+            "(c.truth_scope_id=? OR (c.claim_type=? AND c.truth_scope_id=?)))"
+        )
+        ordinary_arguments: tuple[object, ...] = (
+            HISTORICAL_EVIDENCE, requested_scope_id, DURABLE_CORE_FACT, real_scope_id,
+        )
+        if include_historical_evidence:
+            historical = (
+                "(c.claim_type=? AND EXISTS ("
+                "SELECT 1 FROM historical_evidence h "
+                "WHERE h.character_id=c.character_id AND h.claim_id=c.claim_id "
+                # User occurrences retain their explicit retrieval-eligible
+                # bit. Assistant records may be generated as bounded callback
+                # candidates, but the retriever must still prove an explicit
+                # assistant/shared-conversation intent before selecting them.
+                "AND (h.retrieval_eligible=1 OR h.speaker_role='assistant') "
+                "AND (h.truth_scope_id=? "
+                "OR (h.scope_state='unknown_scope' AND ?=1))))"
+            )
+            return (
+                f"({ordinary} OR {historical})",
+                (
+                    *ordinary_arguments, HISTORICAL_EVIDENCE, requested_scope_id,
+                    int(requested_scope_id == real_scope_id),
+                ),
+            )
         return (
-            "(c.truth_scope_id=? OR (c.claim_type=? AND c.truth_scope_id=?))",
-            (requested_scope_id, DURABLE_CORE_FACT, real_scope_id),
+            ordinary,
+            ordinary_arguments,
         )
 
     def _write_truth_scope_id(self, character_id: str, truth_scope_id: str | None) -> str:
@@ -1500,7 +1685,8 @@ class MemoryV2Store:
             self.connection.execute(
                 """INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL)""",
                 (_require_uuid(character_id), str(event_id), sequence, event_type, actor_kind,
-                 recorded_at_us or utc_now_us(), occurred_from_us, occurred_to_us,
+                 recorded_at_us if recorded_at_us is not None else utc_now_us(),
+                 occurred_from_us, occurred_to_us,
                  temporal_precision, content_text, json.dumps(payload or {}, sort_keys=True),
                  payload_schema, source_origin, source_reference, content_hash),
             )
@@ -1526,6 +1712,163 @@ class MemoryV2Store:
                 truth_scope_id=truth_scope_id,
             )
 
+    def add_historical_evidence(
+        self,
+        character_id: str,
+        claim_id: str,
+        *,
+        event_id: str,
+        canonical_index: int,
+        canonical_record_id: str,
+        speaker_role: str,
+        speech_act: str,
+        source_class: str,
+        scope_state: str,
+        truth_scope_id: str | None,
+        source_content_sha256: str,
+        searchable_text: str,
+        recorded_at_us: int,
+        source_reference: str,
+        retrieval_eligible: bool,
+        projection_version: int = 1,
+    ) -> bool:
+        """Append one source-owned historical occurrence projection.
+
+        The row says only that the canonical message occurred. It cannot be
+        created through ``add_durable_claim`` and an unknown scope remains
+        NULL rather than being coerced into the real-world truth scope.
+        """
+        character_id = _require_uuid(character_id)
+        if isinstance(canonical_index, bool) or canonical_index < 0:
+            raise StoreError("historical canonical index is invalid")
+        if speaker_role not in {"user", "assistant"}:
+            raise StoreError("historical speaker role is invalid")
+        if speech_act not in {"assertion", "question", "other"}:
+            raise StoreError("historical speech act is invalid")
+        if scope_state not in {"real_world", "scenario", "unknown_scope"}:
+            raise StoreError("historical scope state is invalid")
+        if scope_state == "unknown_scope":
+            if truth_scope_id is not None:
+                raise StoreError("unknown historical scope cannot name a truth scope")
+            stored_scope_id = None
+        else:
+            if truth_scope_id is None:
+                raise StoreError("known historical scope requires an identity")
+            stored_scope_id = self._require_truth_scope(
+                character_id, truth_scope_id, require_active=False,
+            )
+            scope_kind = self.connection.execute(
+                "SELECT scope_kind FROM truth_scopes WHERE character_id=? AND truth_scope_id=?",
+                (character_id, stored_scope_id),
+            ).fetchone()
+            if scope_kind is None or str(scope_kind[0]) != scope_state:
+                raise StoreError("historical scope identity and kind disagree")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(source_content_sha256)):
+            raise StoreError("historical source content hash is invalid")
+        if not str(canonical_record_id).strip() or len(str(canonical_record_id)) > 160:
+            raise StoreError("historical canonical record identity is invalid")
+        if not str(source_class).strip() or len(str(source_class)) > 64:
+            raise StoreError("historical source class is invalid")
+        if not str(source_reference).strip() or len(str(source_reference)) > 500:
+            raise StoreError("historical source reference is invalid")
+        if not str(searchable_text).strip() or len(str(searchable_text)) > 1_400:
+            raise StoreError("historical searchable projection is invalid")
+        if isinstance(recorded_at_us, bool) or not isinstance(recorded_at_us, int):
+            raise StoreError("historical source timestamp is invalid")
+        if isinstance(projection_version, bool) or projection_version < 1:
+            raise StoreError("historical projection version is invalid")
+
+        existing = self.connection.execute(
+            """SELECT h.*, c.content, e.source_reference, e.recorded_at_us
+                 FROM historical_evidence h
+                 JOIN claims c ON c.character_id=h.character_id AND c.claim_id=h.claim_id
+                 JOIN events e ON e.character_id=h.character_id AND e.event_id=h.event_id
+                WHERE h.character_id=? AND h.canonical_record_id=?""",
+            (character_id, str(canonical_record_id)),
+        ).fetchone()
+        if existing is not None:
+            expected = (
+                str(claim_id), str(event_id), canonical_index, speaker_role, speech_act,
+                source_class, scope_state, stored_scope_id, source_content_sha256,
+                int(projection_version), int(bool(retrieval_eligible)), str(searchable_text),
+                str(source_reference), recorded_at_us,
+            )
+            actual = (
+                str(existing["claim_id"]), str(existing["event_id"]),
+                int(existing["canonical_index"]), str(existing["speaker_role"]),
+                str(existing["speech_act"]), str(existing["source_class"]),
+                str(existing["scope_state"]), existing["truth_scope_id"],
+                str(existing["source_content_sha256"]), int(existing["projection_version"]),
+                int(existing["retrieval_eligible"]), str(existing["content"]),
+                str(existing["source_reference"]), int(existing["recorded_at_us"]),
+            )
+            if actual != expected:
+                raise StoreError("historical canonical identity conflicts with indexed evidence")
+            return False
+
+        with self.transaction():
+            sequence = int(self.connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE character_id=?",
+                (character_id,),
+            ).fetchone()[0])
+            self.add_event(
+                character_id, event_id, sequence,
+                event_type="canonical_historical_message",
+                actor_kind=speaker_role, recorded_at_us=recorded_at_us,
+                temporal_precision="instant", content_text=str(searchable_text),
+                source_origin="canonical_conversation",
+                source_reference=str(source_reference),
+                payload={
+                    "schema": "aifren.memory_v2.historical_evidence",
+                    "version": int(projection_version),
+                    "canonical_index": canonical_index,
+                    "canonical_record_id": str(canonical_record_id),
+                    "speaker_role": speaker_role,
+                    "speech_act": speech_act,
+                    "source_class": source_class,
+                    "scope_state": scope_state,
+                    "source_content_sha256": source_content_sha256,
+                },
+            )
+            self._insert_claim(
+                character_id, claim_id,
+                claim_type=HISTORICAL_EVIDENCE,
+                assertion_scope=HISTORICAL_EVIDENCE_ASSERTION_SCOPE,
+                subject_key=f"canonical_record:{canonical_record_id}",
+                content=str(searchable_text), importance=3, confidence=1.0,
+                valid_from_us=recorded_at_us, valid_to_us=None,
+                temporal_precision="instant", temporal_expression=None,
+                provenance_state="complete", curator_name="canonical_historical_evidence",
+                curator_version=str(projection_version),
+                curator_policy_version="source_occurrence_v1",
+                legacy_metadata=None, created_at_us=recorded_at_us,
+                updated_at_us=recorded_at_us, truth_scope_id=stored_scope_id,
+                allow_unknown_scope=True,
+            )
+            self.connection.execute(
+                """INSERT INTO claim_evidence(
+                       character_id, claim_id, event_id, evidence_role,
+                       excerpt_start_cp, excerpt_end_cp, excerpt_hash,
+                       evidence_strength, curator_confidence, created_at_us)
+                   VALUES (?, ?, ?, 'canonical_historical_source', NULL, NULL, NULL, 1.0, 1.0, ?)""",
+                (character_id, str(claim_id), str(event_id), recorded_at_us),
+            )
+            self.connection.execute(
+                """INSERT INTO historical_evidence(
+                       character_id, claim_id, event_id, canonical_index,
+                       canonical_record_id, speaker_role, speech_act, source_class,
+                       scope_state, truth_scope_id, source_content_sha256,
+                       projection_version, retrieval_eligible)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    character_id, str(claim_id), str(event_id), canonical_index,
+                    str(canonical_record_id), speaker_role, speech_act, source_class,
+                    scope_state, stored_scope_id, source_content_sha256,
+                    int(projection_version), int(bool(retrieval_eligible)),
+                ),
+            )
+        return True
+
     @staticmethod
     def _validate_claim_values(content, importance, valid_from_us, valid_to_us) -> None:
         if not str(content).strip():
@@ -1541,10 +1884,14 @@ class MemoryV2Store:
                       temporal_expression: Optional[str], provenance_state: str, curator_name: Optional[str],
                       curator_version: Optional[str], curator_policy_version: Optional[str],
                       legacy_metadata: Optional[dict], created_at_us: Optional[int], updated_at_us: Optional[int],
-                      truth_scope_id: str | None = None) -> None:
-        truth_scope_id = self._require_truth_scope(
-            character_id, truth_scope_id or self.default_truth_scope_id(character_id),
-        )
+                      truth_scope_id: str | None = None,
+                      allow_unknown_scope: bool = False) -> None:
+        if truth_scope_id is None and allow_unknown_scope:
+            validated_scope_id = None
+        else:
+            validated_scope_id = self._require_truth_scope(
+                character_id, truth_scope_id or self.default_truth_scope_id(character_id),
+            )
         self.connection.execute(
             """INSERT INTO claims(character_id, claim_id, claim_type, assertion_scope, subject_key, content,
                    importance, confidence, valid_from_us, valid_to_us, temporal_precision, temporal_expression,
@@ -1554,9 +1901,12 @@ class MemoryV2Store:
             (_require_uuid(character_id), str(claim_id), claim_type, assertion_scope, subject_key,
              str(content), importance, confidence, valid_from_us, valid_to_us,
              temporal_precision, temporal_expression, provenance_state, curator_name,
-             curator_version, curator_policy_version, created_at_us or utc_now_us(),
+             curator_version, curator_policy_version,
+             created_at_us if created_at_us is not None else utc_now_us(),
              json.dumps(legacy_metadata, ensure_ascii=False, sort_keys=True) if legacy_metadata is not None else None,
-             updated_at_us if updated_at_us is not None else (created_at_us or utc_now_us()), truth_scope_id),
+             updated_at_us if updated_at_us is not None else (
+                 created_at_us if created_at_us is not None else utc_now_us()
+             ), validated_scope_id),
         )
 
     def add_durable_claim(self, character_id: str, claim_id: str, *, subject_key: str, content: str,
@@ -1583,7 +1933,7 @@ class MemoryV2Store:
         self._validate_claim_values(content, importance, valid_from_us, valid_to_us)
         character_id = _require_uuid(character_id)
         event = self.connection.execute(
-            """SELECT event_id, content_text FROM events WHERE character_id=? AND event_id=?
+            """SELECT event_id, recorded_at_us, content_text FROM events WHERE character_id=? AND event_id=?
                AND actor_kind='user' AND redaction_state='active' AND content_text IS NOT NULL""",
             (character_id, str(evidence_event_id)),
         ).fetchone()
@@ -1603,26 +1953,39 @@ class MemoryV2Store:
             excerpt_hash = None
         with self.transaction():
             truth_scope_id = self.default_truth_scope_id(character_id)
+            source_at_us = int(event["recorded_at_us"])
+            watermark = self.durable_subject_watermark_us(character_id, subject_key)
+            if watermark is not None and source_at_us < watermark:
+                raise StoreError("durable evidence predates the subject lifecycle watermark.")
             if supersedes_claim_id is None and is_singleton_durable_key(subject_key):
-                now = utc_now_us()
                 existing = self.connection.execute(
                     """SELECT 1 FROM claims c WHERE c.character_id=? AND c.claim_type=? AND c.subject_key=?
                        AND COALESCE((SELECT status FROM claim_status_events s
                          WHERE s.character_id=c.character_id AND s.claim_id=c.claim_id
                          ORDER BY s.status_event_id DESC LIMIT 1), 'active') NOT IN ('superseded', 'expired', 'cancelled', 'retracted', 'archived', 'hidden', 'redacted')
-                       AND (c.valid_from_us IS NULL OR c.valid_from_us <= ?)
-                       AND (c.valid_to_us IS NULL OR c.valid_to_us > ?)
+                       AND c.valid_to_us IS NULL
                        LIMIT 1""",
-                    (character_id, DURABLE_CORE_FACT, subject_key, now, now),
+                    (character_id, DURABLE_CORE_FACT, subject_key),
                 ).fetchone()
                 if existing is not None:
                     raise StoreError("current durable singleton already exists; create a correction with supersedes_claim_id.")
             if supersedes_claim_id is not None:
                 predecessor = self.connection.execute(
-                    "SELECT claim_type, subject_key FROM claims WHERE character_id=? AND claim_id=?",
+                    """SELECT c.claim_type, c.subject_key, c.valid_to_us,
+                              c.provenance_state, c.truth_scope_id,
+                              COALESCE((SELECT status FROM claim_status_events s
+                                WHERE s.character_id=c.character_id AND s.claim_id=c.claim_id
+                                ORDER BY s.status_event_id DESC LIMIT 1), 'active') AS effective_status
+                         FROM claims c WHERE c.character_id=? AND c.claim_id=?""",
                     (character_id, str(supersedes_claim_id)),
                 ).fetchone()
-                if predecessor is None or predecessor["claim_type"] != DURABLE_CORE_FACT or predecessor["subject_key"] != subject_key:
+                if (predecessor is None
+                        or predecessor["claim_type"] != DURABLE_CORE_FACT
+                        or predecessor["subject_key"] != subject_key
+                        or predecessor["valid_to_us"] is not None
+                        or predecessor["provenance_state"] != "complete"
+                        or predecessor["truth_scope_id"] != truth_scope_id
+                        or predecessor["effective_status"] in CURRENT_EXCLUDED_STATUSES):
                     raise StoreError("durable correction must supersede the same-character claim with the same subject_key.")
             self._insert_claim(
                 character_id, claim_id, claim_type=DURABLE_CORE_FACT, assertion_scope=DURABLE_ASSERTION_SCOPE,
@@ -1637,10 +2000,11 @@ class MemoryV2Store:
             self.connection.execute(
                 "INSERT INTO claim_evidence VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, NULL, ?)",
                 (character_id, str(claim_id), str(evidence_event_id), evidence_role,
-                 evidence_excerpt_start_cp, evidence_excerpt_end_cp, excerpt_hash, utc_now_us()),
+                 evidence_excerpt_start_cp, evidence_excerpt_end_cp, excerpt_hash,
+                 int(event["recorded_at_us"])),
             )
             if supersedes_claim_id is not None:
-                now = created_at_us if created_at_us is not None else utc_now_us()
+                now = source_at_us
                 self.connection.execute(
                     "INSERT INTO claim_relations(character_id, from_claim_id, to_claim_id, relation_type, created_at_us) VALUES (?, ?, ?, 'supersedes', ?)",
                     (character_id, str(claim_id), str(supersedes_claim_id), now),
@@ -1658,6 +2022,110 @@ class MemoryV2Store:
                            AND (valid_to_us IS NULL OR valid_to_us > ?)""",
                     (now, character_id, str(supersedes_claim_id), now),
                 )
+
+    def durable_subject_watermark_us(
+        self,
+        character_id: str,
+        subject_key: str,
+    ) -> int | None:
+        """Return the latest source-owned lifecycle time for one governed slot."""
+        try:
+            subject_key = validate_durable_subject_key(subject_key)
+        except ValueError as error:
+            raise StoreError(str(error)) from error
+        character_id = _require_uuid(character_id)
+        scope_id = self.default_truth_scope_id(character_id)
+        row = self.connection.execute(
+            """WITH subject_claims AS (
+                   SELECT claim_id, valid_from_us, valid_to_us, created_at_us
+                     FROM claims WHERE character_id=? AND claim_type=?
+                       AND assertion_scope=? AND subject_key=?
+                       AND truth_scope_id=? AND provenance_state='complete'
+                 ), lifecycle_times(authoritative_at_us) AS (
+                   SELECT COALESCE(valid_from_us, created_at_us) FROM subject_claims
+                   UNION ALL
+                   SELECT valid_to_us FROM subject_claims WHERE valid_to_us IS NOT NULL
+                   UNION ALL
+                   SELECT e.recorded_at_us FROM claim_evidence ce
+                     JOIN subject_claims c ON c.claim_id=ce.claim_id
+                     JOIN events e ON e.character_id=? AND e.event_id=ce.event_id
+                    WHERE ce.character_id=?
+                   UNION ALL
+                   SELECT s.created_at_us FROM claim_status_events s
+                     JOIN subject_claims c ON c.claim_id=s.claim_id
+                    WHERE s.character_id=?
+                 )
+                 SELECT MAX(authoritative_at_us) FROM lifecycle_times""",
+            (
+                character_id, DURABLE_CORE_FACT, DURABLE_ASSERTION_SCOPE,
+                subject_key, scope_id, character_id, character_id, character_id,
+            ),
+        ).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else None
+
+    def retire_durable_claim(
+        self,
+        character_id: str,
+        claim_id: str,
+        *,
+        subject_key: str,
+        expected_content: str,
+        evidence_event_id: str,
+    ) -> None:
+        """Close one exact governed value from direct canonical user evidence."""
+        try:
+            subject_key = validate_durable_subject_key(subject_key)
+        except ValueError as error:
+            raise StoreError(str(error)) from error
+        character_id = _require_uuid(character_id)
+        event = self.connection.execute(
+            """SELECT recorded_at_us FROM events WHERE character_id=? AND event_id=?
+                 AND actor_kind='user' AND redaction_state='active'
+                 AND content_text IS NOT NULL""",
+            (character_id, str(evidence_event_id)),
+        ).fetchone()
+        if event is None:
+            raise StoreError("durable retirement requires active same-character user evidence.")
+        if self.active_truth_scope_id(character_id) != self.default_truth_scope_id(character_id):
+            raise StoreError("durable facts may only be retired in the active real-world truth scope.")
+        at_us = int(event["recorded_at_us"])
+        claim = self.connection.execute(
+            """SELECT c.valid_from_us, c.valid_to_us,
+                      COALESCE((SELECT status FROM claim_status_events s
+                        WHERE s.character_id=c.character_id AND s.claim_id=c.claim_id
+                        ORDER BY s.status_event_id DESC LIMIT 1), 'active') AS effective_status
+                 FROM claims c WHERE c.character_id=? AND c.claim_id=?
+                   AND c.claim_type=? AND c.assertion_scope=?
+                   AND c.subject_key=? AND c.content=?
+                   AND c.truth_scope_id=? AND c.provenance_state='complete'""",
+            (
+                character_id, str(claim_id), DURABLE_CORE_FACT,
+                DURABLE_ASSERTION_SCOPE, subject_key, str(expected_content),
+                self.default_truth_scope_id(character_id),
+            ),
+        ).fetchone()
+        if (claim is None or claim["valid_to_us"] is not None
+                or claim["effective_status"] in CURRENT_EXCLUDED_STATUSES):
+            raise StoreError("durable retirement requires one exact current governed fact.")
+        watermark = self.durable_subject_watermark_us(character_id, subject_key)
+        if watermark is not None and at_us < watermark:
+            raise StoreError("durable retirement predates the subject lifecycle watermark.")
+        with self.transaction():
+            self.connection.execute(
+                """INSERT INTO claim_status_events(
+                       character_id, claim_id, status, reason, source_event_id,
+                       actor_kind, created_at_us)
+                     VALUES (?, ?, 'expired', 'durable_user_retirement', ?, 'user', ?)""",
+                (character_id, str(claim_id), str(evidence_event_id), at_us),
+            )
+            updated = self.connection.execute(
+                """UPDATE claims SET valid_to_us=?,
+                       updated_at_us=MAX(COALESCE(updated_at_us, ?), ?)
+                     WHERE character_id=? AND claim_id=? AND valid_to_us IS NULL""",
+                (at_us, at_us, at_us, character_id, str(claim_id)),
+            ).rowcount
+            if updated != 1:
+                raise StoreError("durable retirement raced with another lifecycle update.")
 
     def add_legacy_favorite_color_predecessor(
         self,
@@ -1733,7 +2201,7 @@ class MemoryV2Store:
         if self.active_truth_scope_id(character_id) != self.default_truth_scope_id(character_id):
             raise StoreError("durable facts may only be reconfirmed in the active real-world truth scope.")
         claim = self.connection.execute(
-            """SELECT c.valid_from_us, c.valid_to_us, c.truth_scope_id,
+            """SELECT c.subject_key, c.valid_from_us, c.valid_to_us, c.truth_scope_id,
                       COALESCE((SELECT status FROM claim_status_events s
                         WHERE s.character_id=c.character_id AND s.claim_id=c.claim_id
                         ORDER BY s.status_event_id DESC LIMIT 1), 'active') AS effective_status
@@ -1752,8 +2220,11 @@ class MemoryV2Store:
         if event is None:
             raise StoreError("durable confirmation requires active same-character user evidence.")
         recorded_at_us = int(event["recorded_at_us"])
-        if claim["valid_from_us"] is not None and recorded_at_us < int(claim["valid_from_us"]):
-            raise StoreError("durable confirmation predates the current claim.")
+        watermark = self.durable_subject_watermark_us(
+            character_id, str(claim["subject_key"]),
+        )
+        if watermark is not None and recorded_at_us < watermark:
+            raise StoreError("durable confirmation predates the subject lifecycle watermark.")
         content = event["content_text"]
         start, end = evidence_excerpt_start_cp, evidence_excerpt_end_cp
         if (isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, int)
@@ -2679,9 +3150,12 @@ class MemoryV2Store:
         row = self.connection.execute(statement + " ORDER BY status_event_id DESC LIMIT 1", arguments).fetchone()
         return row[0] if row else "active"
 
-    def structural_claims(self, character_id: str, at_us: int, *, historical: bool = False, exclude_claim_ids: tuple[str, ...] = (), claim_ids: tuple[str, ...] = (), claim_types: tuple[str, ...] = (), limit: Optional[int] = None, truth_scope_id: str | None = None) -> list[sqlite3.Row]:
+    def structural_claims(self, character_id: str, at_us: int, *, historical: bool = False, exclude_claim_ids: tuple[str, ...] = (), claim_ids: tuple[str, ...] = (), claim_types: tuple[str, ...] = (), limit: Optional[int] = None, truth_scope_id: str | None = None, include_historical_evidence: bool = False) -> list[sqlite3.Row]:
         character_id = _require_uuid(character_id)
-        scope_sql, scope_arguments = self._retrieval_scope_sql(character_id, truth_scope_id)
+        scope_sql, scope_arguments = self._retrieval_scope_sql(
+            character_id, truth_scope_id,
+            include_historical_evidence=include_historical_evidence,
+        )
         statement = """
             SELECT c.*, COALESCE((
                 SELECT status FROM claim_status_events s
@@ -2725,12 +3199,16 @@ class MemoryV2Store:
         limit: int,
         *,
         truth_scope_id: str | None = None,
+        include_historical_evidence: bool = False,
     ) -> list[str]:
         """Bound exact substring lane using SQL parameters, never FTS syntax."""
         if not terms or limit < 1:
             return []
         character_id = _require_uuid(character_id)
-        scope_sql, scope_arguments = self._retrieval_scope_sql(character_id, truth_scope_id)
+        scope_sql, scope_arguments = self._retrieval_scope_sql(
+            character_id, truth_scope_id,
+            include_historical_evidence=include_historical_evidence,
+        )
         predicates = " OR ".join("instr(lower(content), lower(?)) > 0" for _ in terms)
         rows = self.connection.execute(
             f"SELECT c.claim_id FROM claims c WHERE c.character_id = ? AND {scope_sql} "
@@ -2745,19 +3223,46 @@ class MemoryV2Store:
         claim_ids: Iterable[str],
         *,
         truth_scope_id: str | None = None,
+        include_historical_evidence: bool = False,
     ) -> set[str]:
         """Filter bounded derived candidates through canonical truth scope."""
         values = tuple(dict.fromkeys(str(claim_id) for claim_id in claim_ids))
         if not values:
             return set()
         character_id = _require_uuid(character_id)
-        scope_sql, scope_arguments = self._retrieval_scope_sql(character_id, truth_scope_id)
+        scope_sql, scope_arguments = self._retrieval_scope_sql(
+            character_id, truth_scope_id,
+            include_historical_evidence=include_historical_evidence,
+        )
         rows = self.connection.execute(
             f"SELECT c.claim_id FROM claims c WHERE c.character_id=? AND {scope_sql} "
             f"AND c.claim_id IN ({','.join('?' for _ in values)})",
             [character_id, *scope_arguments, *values],
         ).fetchall()
         return {str(row[0]) for row in rows}
+
+    def historical_evidence_metadata(
+        self,
+        character_id: str,
+        claim_ids: Iterable[str],
+        *,
+        limit: int = 256,
+    ) -> dict[str, sqlite3.Row]:
+        """Return bounded structural metadata, never canonical source text."""
+        if isinstance(limit, bool) or not 1 <= int(limit) <= 256:
+            raise StoreError("historical evidence metadata limit is invalid")
+        values = tuple(dict.fromkeys(str(value) for value in claim_ids))[: int(limit)]
+        if not values:
+            return {}
+        character_id = _require_uuid(character_id)
+        rows = self.connection.execute(
+            """SELECT h.* FROM historical_evidence h
+                WHERE h.character_id=? AND h.claim_id IN ("""
+            + ",".join("?" for _ in values)
+            + ") ORDER BY h.claim_id LIMIT ?",
+            (character_id, *values, int(limit)),
+        ).fetchall()
+        return {str(row["claim_id"]): row for row in rows}
 
     def fts_available(self) -> bool:
         try:
@@ -2768,10 +3273,13 @@ class MemoryV2Store:
 
     def rebuild_fts(self) -> int:
         """Rebuild derived FTS rows from canonical claims; never changes claims."""
-        if not self.fts_available():
+        if not self.fts_available() or self.connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='historical_evidence_fts'",
+        ).fetchone()[0] != 1:
             raise StoreError("SQLite FTS5 is unavailable; cannot build derived claim index.")
         with self.transaction():
             self.connection.execute("DELETE FROM claims_fts")
+            self.connection.execute("DELETE FROM historical_evidence_fts")
             rows = self.connection.execute(
                 """
                 SELECT c.character_id, c.claim_id, c.claim_type, c.subject_key, c.content,
@@ -2791,8 +3299,13 @@ class MemoryV2Store:
                     continue
                 searchable = " ".join(part for part in (row["claim_type"], row["subject_key"], row["content"]) if part)
                 digest.update(f"{row['character_id']}\0{row['claim_id']}\0{searchable}\0{row['status']}\n".encode("utf-8"))
+                target = (
+                    "historical_evidence_fts"
+                    if row["claim_type"] == HISTORICAL_EVIDENCE
+                    else "claims_fts"
+                )
                 self.connection.execute(
-                    "INSERT INTO claims_fts(character_id, claim_id, searchable_text) VALUES (?, ?, ?)",
+                    f"INSERT INTO {target}(character_id, claim_id, searchable_text) VALUES (?, ?, ?)",
                     (row["character_id"], row["claim_id"], searchable),
                 )
                 indexed += 1
@@ -2825,13 +3338,106 @@ class MemoryV2Store:
         for row in rows:
             searchable = " ".join(part for part in (row["claim_type"], row["subject_key"], row["content"]) if part)
             digest.update(f"{row['character_id']}\0{row['claim_id']}\0{searchable}\0{row['status']}\n".encode("utf-8"))
-        expected = len(rows)
-        actual = self.connection.execute("SELECT count(*) FROM claims_fts").fetchone()[0]
+        expected_claims = sum(row["claim_type"] != HISTORICAL_EVIDENCE for row in rows)
+        expected_historical = len(rows) - expected_claims
+        actual_claims = self.connection.execute("SELECT count(*) FROM claims_fts").fetchone()[0]
+        try:
+            actual_historical = self.connection.execute(
+                "SELECT count(*) FROM historical_evidence_fts",
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            return False
         stored = self.connection.execute("SELECT value FROM database_meta WHERE key = 'fts_claims_digest'").fetchone()
-        return expected == actual and stored is not None and stored[0] == digest.hexdigest()
+        return (
+            expected_claims == actual_claims
+            and expected_historical == actual_historical
+            and stored is not None
+            and stored[0] == digest.hexdigest()
+        )
 
     def ensure_fts(self) -> int:
         return 0 if self.fts_is_current() else self.rebuild_fts()
+
+    def refresh_fts_sources(self, character_id: str, source_references: Sequence[str]) -> int:
+        """Refresh only claims touched by a bounded canonical observation page.
+
+        Original events, claims and correction lifecycle are never deleted.
+        The existing drift digest is recomputed, not the full FTS projection.
+        Its validation is linear; changed row writes are bounded independently.
+        """
+        character_id = _require_uuid(character_id)
+        references = tuple(dict.fromkeys(source_references))
+        if not references:
+            return 0
+        if len(references) > 256 or any(not isinstance(v, str) or len(v) > 500 for v in references):
+            raise StoreError("canonical FTS page is out of bounds")
+        placeholders = ",".join("?" for _ in references)
+        identifiers = tuple(row[0] for row in self.connection.execute(
+            f"""SELECT ce.claim_id FROM claim_evidence ce JOIN events e
+                   ON e.character_id=ce.character_id AND e.event_id=ce.event_id
+                 WHERE e.character_id=? AND e.source_reference IN ({placeholders})
+                 UNION SELECT s.claim_id FROM claim_status_events s JOIN events e
+                   ON e.character_id=s.character_id AND e.event_id=s.source_event_id
+                 WHERE e.character_id=? AND e.source_reference IN ({placeholders}) LIMIT 513""",
+            (character_id, *references, character_id, *references),
+        ))
+        if len(identifiers) > 512:
+            raise StoreError("canonical FTS claim page is out of bounds")
+        with self.transaction():
+            for claim_id in identifiers:
+                for table in ("claims_fts", "historical_evidence_fts"):
+                    self.connection.execute(f"DELETE FROM {table} WHERE character_id=? AND claim_id=?",
+                                            (character_id, claim_id))
+                row = self.connection.execute(
+                    """SELECT c.*, COALESCE((SELECT status FROM claim_status_events s
+                         WHERE s.character_id=c.character_id AND s.claim_id=c.claim_id
+                         ORDER BY status_event_id DESC LIMIT 1),'active') AS status
+                       FROM claims c WHERE c.character_id=? AND c.claim_id=? AND EXISTS
+                       (SELECT 1 FROM claim_evidence e WHERE e.character_id=c.character_id
+                        AND e.claim_id=c.claim_id)""", (character_id, claim_id),
+                ).fetchone()
+                if row is not None and row["status"] not in {"retracted", "archived", "hidden", "redacted"}:
+                    searchable = " ".join(part for part in (row["claim_type"], row["subject_key"], row["content"]) if part)
+                    table = "historical_evidence_fts" if row["claim_type"] == HISTORICAL_EVIDENCE else "claims_fts"
+                    self.connection.execute(f"INSERT INTO {table} VALUES (?,?,?)", (character_id, claim_id, searchable))
+            # Do not claim unrelated existing drift was fixed. Compare retained
+            # rows with the canonical claim projection before stamping it current.
+            digest = hashlib.sha256()
+            expected_count = 0
+            for row in self.connection.execute(
+                """SELECT c.character_id,c.claim_id,c.claim_type,c.subject_key,c.content,
+                   COALESCE((SELECT status FROM claim_status_events s
+                     WHERE s.character_id=c.character_id AND s.claim_id=c.claim_id
+                     ORDER BY status_event_id DESC LIMIT 1),'active') AS status
+                   FROM claims c WHERE EXISTS (SELECT 1 FROM claim_evidence e
+                     WHERE e.character_id=c.character_id AND e.claim_id=c.claim_id)
+                   ORDER BY c.character_id,c.claim_id""",
+            ):
+                if row["status"] in {"retracted", "archived", "hidden", "redacted"}:
+                    continue
+                searchable = " ".join(part for part in (row["claim_type"], row["subject_key"], row["content"]) if part)
+                expected_count += 1
+                digest.update(f"{row['character_id']}\0{row['claim_id']}\0{searchable}\0{row['status']}\n".encode())
+            actual_digest = hashlib.sha256()
+            actual_count = 0
+            for row in self.connection.execute(
+                """SELECT f.character_id,f.claim_id,f.searchable_text,f.historical,c.claim_type,
+                   COALESCE((SELECT status FROM claim_status_events s
+                     WHERE s.character_id=c.character_id AND s.claim_id=c.claim_id
+                     ORDER BY status_event_id DESC LIMIT 1),'active') AS status
+                   FROM (SELECT *,0 AS historical FROM claims_fts UNION ALL
+                         SELECT *,1 AS historical FROM historical_evidence_fts) f
+                   LEFT JOIN claims c ON c.character_id=f.character_id AND c.claim_id=f.claim_id
+                   ORDER BY f.character_id,f.claim_id""",
+            ):
+                if (row["claim_type"] == HISTORICAL_EVIDENCE) != bool(row["historical"]):
+                    return len(identifiers)
+                actual_count += 1
+                actual_digest.update(f"{row['character_id']}\0{row['claim_id']}\0{row['searchable_text']}\0{row['status']}\n".encode())
+            if actual_count != expected_count or actual_digest.digest() != digest.digest():
+                return len(identifiers)
+            self.connection.execute("INSERT OR REPLACE INTO database_meta VALUES ('fts_claims_digest',?)", (digest.hexdigest(),))
+        return len(identifiers)
 
     # The following embedding helpers exclusively maintain derived V2 state.
     # They intentionally have no path to the production JSON memory database.
@@ -2840,17 +3446,25 @@ class MemoryV2Store:
         *,
         include_legacy_unverified: bool = False,
         claim_ids: Iterable[str] | None = None,
+        character_id: str | None = None,
     ) -> list[sqlite3.Row]:
         provenance = "('complete', 'legacy_unverified')" if include_legacy_unverified else "('complete')"
         statement = f"""SELECT c.* FROM claims c
                WHERE c.provenance_state IN {provenance}
+                 AND (c.claim_type<>? OR EXISTS (
+                       SELECT 1 FROM historical_evidence h
+                        WHERE h.character_id=c.character_id AND h.claim_id=c.claim_id
+                          AND h.retrieval_eligible=1))
                  AND EXISTS (SELECT 1 FROM claim_evidence e
                              WHERE e.character_id=c.character_id AND e.claim_id=c.claim_id)
                  AND COALESCE((SELECT status FROM claim_status_events s
                     WHERE s.character_id=c.character_id AND s.claim_id=c.claim_id
                     ORDER BY s.status_event_id DESC LIMIT 1), 'active')
                     NOT IN ('retracted', 'archived', 'hidden', 'redacted')"""
-        arguments: list[object] = []
+        arguments: list[object] = [HISTORICAL_EVIDENCE]
+        if character_id is not None:
+            statement += " AND c.character_id=?"
+            arguments.append(_require_uuid(character_id))
         values = tuple(str(value) for value in claim_ids) if claim_ids is not None else ()
         if claim_ids is not None:
             if not values:
@@ -2943,7 +3557,7 @@ class MemoryV2Store:
                  getattr(provider, "model_version", None), provider.dimensions, provider.dtype,
                  int(bool(provider.normalized)), provider.preprocessing_fingerprint,
                  self._content_sha256(claim["content"]), self._content_sha256(claim["content"]),
-                 utc_now_us(), str(reason)[:500]),
+                 utc_now_us(), "embedding_failed"),
             )
 
     def embedding_health(self, provider: Any, *, include_legacy_unverified: bool = False) -> dict[str, int]:
@@ -2974,21 +3588,29 @@ class MemoryV2Store:
         limit: int,
         *,
         truth_scope_id: str | None = None,
+        include_historical_evidence: bool = False,
     ) -> list[tuple[str, float]]:
         """Brute-force cosine over current, character-scoped derived vectors."""
         if limit < 1 or len(query_vector) != provider.dimensions:
             return []
         character_id = _require_uuid(character_id)
-        scope_sql, scope_arguments = self._retrieval_scope_sql(character_id, truth_scope_id)
+        scope_sql, scope_arguments = self._retrieval_scope_sql(
+            character_id, truth_scope_id,
+            include_historical_evidence=include_historical_evidence,
+        )
         rows = self.connection.execute(
             f"""SELECT e.*, c.content FROM claim_embeddings e JOIN claims c
                     ON c.character_id=e.character_id AND c.claim_id=e.claim_id
                WHERE e.character_id=? AND e.provider=? AND e.model=?
                  AND e.preprocessing_fingerprint=? AND e.state='current'
                  AND e.dimensions=? AND e.dtype=? AND e.normalized=?
+                 AND ((?=1 AND c.claim_type=?) OR (?=0 AND c.claim_type<>?))
                  AND {scope_sql}""",
             (character_id, provider.provider, provider.model, provider.preprocessing_fingerprint,
-             provider.dimensions, provider.dtype, int(bool(provider.normalized)), *scope_arguments),
+             provider.dimensions, provider.dtype, int(bool(provider.normalized)),
+             int(bool(include_historical_evidence)), HISTORICAL_EVIDENCE,
+             int(bool(include_historical_evidence)), HISTORICAL_EVIDENCE,
+             *scope_arguments),
         ).fetchall()
         scores = []
         for row in rows:
@@ -3004,7 +3626,13 @@ class MemoryV2Store:
             scores.append((row["claim_id"], score))
         return sorted(scores, key=lambda item: (-item[1], item[0]))[:limit]
 
-    def ann_embedding_rows(self, character_id: str, provider: Any) -> list[sqlite3.Row]:
+    def ann_embedding_rows(
+        self,
+        character_id: str,
+        provider: Any,
+        *,
+        include_historical_evidence: bool = False,
+    ) -> list[sqlite3.Row]:
         """Return current provider vectors for rebuilding a derived ANN index.
 
         This intentionally includes lifecycle tombstones; retrieval performs
@@ -3014,37 +3642,63 @@ class MemoryV2Store:
         character_id = _require_uuid(character_id)
         return self.connection.execute(
             """SELECT e.claim_id, e.vector_blob FROM claim_embeddings e
+               JOIN claims c ON c.character_id=e.character_id AND c.claim_id=e.claim_id
                WHERE e.character_id=? AND e.provider=? AND e.model=?
                  AND e.preprocessing_fingerprint=? AND e.state='current'
                  AND e.dimensions=? AND e.dtype=? AND e.normalized=?
+                 AND ((?=1 AND c.claim_type=?) OR (?=0 AND c.claim_type<>?))
                ORDER BY e.claim_id""",
             (character_id, provider.provider, provider.model,
              provider.preprocessing_fingerprint, provider.dimensions,
-             provider.dtype, int(bool(provider.normalized))),
+             provider.dtype, int(bool(provider.normalized)),
+             int(bool(include_historical_evidence)), HISTORICAL_EVIDENCE,
+             int(bool(include_historical_evidence)), HISTORICAL_EVIDENCE),
         ).fetchall()
 
-    def iter_ann_embedding_rows(self, character_id: str, provider: Any):
+    def iter_ann_embedding_rows(
+        self,
+        character_id: str,
+        provider: Any,
+        *,
+        include_historical_evidence: bool = False,
+    ):
         """Stream derived vectors for large rebuilds without materializing text."""
         character_id = _require_uuid(character_id)
         cursor = self.connection.execute(
             """SELECT e.claim_id, e.vector_blob FROM claim_embeddings e
+               JOIN claims c ON c.character_id=e.character_id AND c.claim_id=e.claim_id
                WHERE e.character_id=? AND e.provider=? AND e.model=?
                  AND e.preprocessing_fingerprint=? AND e.state='current'
                  AND e.dimensions=? AND e.dtype=? AND e.normalized=?
+                 AND ((?=1 AND c.claim_type=?) OR (?=0 AND c.claim_type<>?))
                ORDER BY e.claim_id""",
             (character_id, provider.provider, provider.model,
              provider.preprocessing_fingerprint, provider.dimensions,
-             provider.dtype, int(bool(provider.normalized))),
+             provider.dtype, int(bool(provider.normalized)),
+             int(bool(include_historical_evidence)), HISTORICAL_EVIDENCE,
+             int(bool(include_historical_evidence)), HISTORICAL_EVIDENCE),
         )
         yield from cursor
 
-    def ann_embedding_count(self, character_id: str, provider: Any) -> int:
+    def ann_embedding_count(
+        self,
+        character_id: str,
+        provider: Any,
+        *,
+        include_historical_evidence: bool = False,
+    ) -> int:
         character_id = _require_uuid(character_id)
         return int(self.connection.execute(
-            """SELECT COUNT(*) FROM claim_embeddings WHERE character_id=? AND provider=? AND model=?
-               AND preprocessing_fingerprint=? AND state='current' AND dimensions=? AND dtype=? AND normalized=?""",
+            """SELECT COUNT(*) FROM claim_embeddings e
+               JOIN claims c ON c.character_id=e.character_id AND c.claim_id=e.claim_id
+               WHERE e.character_id=? AND e.provider=? AND e.model=?
+                 AND e.preprocessing_fingerprint=? AND e.state='current'
+                 AND e.dimensions=? AND e.dtype=? AND e.normalized=?
+                 AND ((?=1 AND c.claim_type=?) OR (?=0 AND c.claim_type<>?))""",
             (character_id, provider.provider, provider.model, provider.preprocessing_fingerprint,
-             provider.dimensions, provider.dtype, int(bool(provider.normalized))),
+             provider.dimensions, provider.dtype, int(bool(provider.normalized)),
+             int(bool(include_historical_evidence)), HISTORICAL_EVIDENCE,
+             int(bool(include_historical_evidence)), HISTORICAL_EVIDENCE),
         ).fetchone()[0])
 
     def search_fts(
@@ -3054,16 +3708,21 @@ class MemoryV2Store:
         limit: int,
         *,
         truth_scope_id: str | None = None,
+        include_historical_evidence: bool = False,
     ) -> list[sqlite3.Row]:
         if limit < 1 or not safe_query.strip():
             return []
         character_id = _require_uuid(character_id)
-        scope_sql, scope_arguments = self._retrieval_scope_sql(character_id, truth_scope_id)
+        scope_sql, scope_arguments = self._retrieval_scope_sql(
+            character_id, truth_scope_id,
+            include_historical_evidence=include_historical_evidence,
+        )
+        table = "historical_evidence_fts" if include_historical_evidence else "claims_fts"
         return self.connection.execute(
-            f"""SELECT f.claim_id, bm25(claims_fts) AS fts_score
-                  FROM claims_fts f JOIN claims c
+            f"""SELECT f.claim_id, bm25({table}) AS fts_score
+                  FROM {table} f JOIN claims c
                     ON c.character_id=f.character_id AND c.claim_id=f.claim_id
-                 WHERE claims_fts MATCH ? AND f.character_id = ? AND {scope_sql}
+                 WHERE {table} MATCH ? AND f.character_id = ? AND {scope_sql}
                  ORDER BY fts_score LIMIT ?""",
             (safe_query, character_id, *scope_arguments, limit),
         ).fetchall()

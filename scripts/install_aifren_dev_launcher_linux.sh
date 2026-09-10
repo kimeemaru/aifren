@@ -16,15 +16,7 @@ Exec="$gui_launcher"
 Path=$repository_root
 Terminal=false
 Categories=Development;
-Actions=StartCurrent;RebuildStart;StartDevelopment;RebuildDevelopment;
-
-[Desktop Action StartCurrent]
-Name=Start Current Build
-Exec="$gui_launcher" --launch current
-
-[Desktop Action RebuildStart]
-Name=Rebuild + Start
-Exec="$gui_launcher" --launch rebuild
+Actions=StartDevelopment;RebuildDevelopment;
 
 [Desktop Action StartDevelopment]
 Name=Start Development Build

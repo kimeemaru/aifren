@@ -135,7 +135,7 @@ namespace AIFren.UnityPoc.UI
             string first = words[0].Trim('"', '\'', '.', ',', '!', '?', ';', ':').ToLowerInvariant();
             if (ActionVerbs.Contains(first)) return true;
             // Keep existing third-person stage directions such as
-            // "*Serval waves*" action-like without classifying ordinary
+            // "*Lyra waves*" action-like without classifying ordinary
             // inline emphasis such as "*very close*" as an emote.
             if (words.Length < 2) return false;
             string second = words[1].Trim('"', '\'', '.', ',', '!', '?', ';', ':').ToLowerInvariant();

@@ -1,3 +1,4 @@
+using PlayerPrefs = AIFren.UnityPoc.PresentationPreferences;
 using System.Linq;
 using System.Reflection;
 using AIFren.UnityPoc.Protocol;
@@ -139,6 +140,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             try
             {
                 AIFrenPocController controller = root.GetComponent<AIFrenPocController>();
+                root.GetComponent<RectTransform>().sizeDelta = new Vector2(900f, 1600f);
                 SetField(controller, "theme", PresentationThemes.Dark);
                 SetField(controller, "font", TMP_Settings.defaultFontAsset);
                 typeof(AIFrenPocController).GetMethod(
@@ -160,8 +162,18 @@ namespace AIFren.UnityPoc.Tests.EditMode
                 Assert.That(scroll.vertical, Is.True);
                 Assert.That(scroll.horizontal, Is.False);
                 Assert.That(scroll.verticalScrollbar, Is.Null);
-                Assert.That(panel.GetComponent<Image>().color.a, Is.EqualTo(.30f).Within(.001f));
+                Assert.That(panel.GetComponent<Image>().color.a, Is.EqualTo(.96f).Within(.001f));
+                Assert.That(panel.activeSelf, Is.False, "Enabled drawer starts collapsed.");
+                var drawer = (SceneDrawerPresenter)Field(controller, "sceneDrawer");
+                drawer.Pointer(true, true, 0); drawer.Tick(0, .2f, false);
                 Assert.That(panel.activeSelf, Is.True);
+                TMP_Text title = panel.GetComponentsInChildren<TMP_Text>().Single(x => x.text == "CURRENT SCENE");
+                title.ForceMeshUpdate();
+                Assert.That(title.rectTransform.rect.height, Is.GreaterThanOrEqualTo(title.preferredHeight),
+                    "A one-row scene must leave enough height for the actual title glyphs.");
+                Bounds header = RectTransformUtility.CalculateRelativeRectTransformBounds(panel.transform, title.transform);
+                Bounds body = RectTransformUtility.CalculateRelativeRectTransformBounds(panel.transform, scroll.viewport);
+                Assert.That(header.min.y, Is.GreaterThan(body.max.y), "The scroll mask must remain below the title.");
                 Assert.That(PlayerPrefs.GetInt(preference), Is.EqualTo(1));
                 SetField(controller, "interfaceHidden", true);
                 typeof(AIFrenPocController).GetMethod(
@@ -172,7 +184,20 @@ namespace AIFren.UnityPoc.Tests.EditMode
                 typeof(AIFrenPocController).GetMethod(
                     "RefreshSceneOverlay", BindingFlags.Instance | BindingFlags.NonPublic
                 ).Invoke(controller, new object[] { Field(controller, "authoritativeContinuity") });
-                Assert.That(panel.activeSelf, Is.True);
+                Assert.That(panel.activeSelf, Is.False, "Show restores the affordance, not an obstructive pinned panel.");
+                Assert.That(((Button)Field(controller, "sceneDrawerTab")).gameObject.activeSelf, Is.True);
+                GameObject scrim = new GameObject("synthetic modal scrim");
+                scrim.transform.SetParent(root.transform);
+                SetField(controller, "modalScrim", scrim);
+                typeof(AIFrenPocController).GetMethod("RefreshSceneDrawerAvailability", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .Invoke(controller, null);
+                Assert.That(((Button)Field(controller, "sceneDrawerTab")).gameObject.activeSelf, Is.False,
+                    "Modal navigation must not reach a drawer behind the scrim.");
+                scrim.SetActive(false);
+                typeof(AIFrenPocController).GetMethod("RefreshSceneDrawerAvailability", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .Invoke(controller, null);
+                Assert.That(((Button)Field(controller, "sceneDrawerTab")).gameObject.activeSelf, Is.True);
+                Assert.That(panel.activeSelf, Is.False);
             }
             finally
             {

@@ -1,3 +1,4 @@
+using PlayerPrefs = AIFren.UnityPoc.PresentationPreferences;
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -47,8 +48,8 @@ namespace AIFren.UnityPoc.UI
         internal static void Remember(string path)
         {
             string directory = Path.GetDirectoryName(path);
-            if (Directory.Exists(directory)) UnityEngine.PlayerPrefs.SetString(RecentDirectoryKey, directory);
-            UnityEngine.PlayerPrefs.Save();
+            if (Directory.Exists(directory)) PlayerPrefs.SetString(RecentDirectoryKey, directory);
+            PlayerPrefs.Save();
         }
 
         private static Result PickInBackground(string title, string[] filters, string initialDirectory, long requestedAt)
@@ -73,22 +74,16 @@ namespace AIFren.UnityPoc.UI
                 {
                     if (process == null) throw new InvalidOperationException("Could not start zenity.");
                     long processStartedAt = Stopwatch.GetTimestamp();
-                    if (!process.WaitForExit(300000))
-                    {
-                        process.Kill();
-                        throw new TimeoutException("Native file picker timed out.");
-                    }
-
-                    string selected = process.StandardOutput.ReadToEnd().Trim();
-                    string standardError = process.StandardError.ReadToEnd().Trim();
-                    Result result = InterpretProcessResult(process.ExitCode, selected, standardError);
+                    NativeProcessOutput.Result capture = NativeProcessOutput.Collect(process, 300000, 4096);
+                    if (capture.Truncated) return new Result(string.Empty, "Native file picker result was too long.");
+                    Result result = InterpretProcessResult(process.ExitCode, capture.Output.Trim(), string.Empty);
                     return new Result(result.path, result.error, requestedAt, processStartedAt, Stopwatch.GetTimestamp());
                 }
             }
-            catch (Exception exception)
+            catch (Exception)
             {
                 // Do not call UnityEngine APIs here. The main-thread caller logs once.
-                return new Result(string.Empty, "native file picker failed: " + exception.Message,
+                return new Result(string.Empty, "Native file picker could not complete. Retry or choose another file.",
                     requestedAt, 0, Stopwatch.GetTimestamp());
             }
         }
@@ -110,12 +105,12 @@ namespace AIFren.UnityPoc.UI
 
             // Zenity uses exit code 1 for cancellation. This is a normal no-op.
             if (exitCode == 1) return new Result(string.Empty, string.Empty);
-            return new Result(string.Empty, "zenity failed (exit " + exitCode + "): " + (standardError ?? string.Empty));
+            return new Result(string.Empty, "Native file picker failed (exit " + exitCode + "). Please retry.");
         }
 
         private static string RecentDirectory()
         {
-            string saved = UnityEngine.PlayerPrefs.GetString(RecentDirectoryKey, string.Empty);
+            string saved = PlayerPrefs.GetString(RecentDirectoryKey, string.Empty);
             return Directory.Exists(saved) ? saved : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         }
     }

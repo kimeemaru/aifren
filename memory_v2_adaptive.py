@@ -1,6 +1,6 @@
 """Bounded, non-authoritative V2 dual-read retrieval policy.
 
-This module is deliberately used only by privacy-safe retrieval telemetry. It must never
+This module is deliberately used only by shadow telemetry.  It must never
 change V1 prompt construction or persistence.
 """
 from __future__ import annotations
@@ -10,7 +10,7 @@ import re
 import time
 from typing import Iterable
 
-from memory_v2_store.retrieval_models import RetrievalQuery
+from benchmarks.memory_v2.models import RetrievalHealth, RetrievalLaneHealth, RetrievalQuery
 from memory_v2_store import SemanticRetrievalV2
 
 
@@ -64,6 +64,7 @@ class AdaptiveShadowRetrieval:
     def __init__(self, store, provider, cache: WorkingRecallCache | None = None) -> None:
         self.store, self.provider = store, provider
         self.cache = cache or WorkingRecallCache()
+        self.last_health = RetrievalHealth()
 
     def decide(self, character_id: str, text: str) -> AdaptiveDecision:
         tokens = _terms(text)
@@ -79,6 +80,7 @@ class AdaptiveShadowRetrieval:
     def retrieve(self, query: RetrievalQuery):
         decision = self.decide(query.character_id, query.current_user_text)
         if decision.mode == "skip":
+            self.last_health = RetrievalHealth((RetrievalLaneHealth("claims", "unused", "routing", "not_applicable"),))
             return (), "adaptive_skip", decision.reason
         cached = self.cache.get(query.character_id, query.current_user_text)
         if cached:
@@ -86,6 +88,7 @@ class AdaptiveShadowRetrieval:
             rows = self.store.structural_claims(query.character_id, 2**63 - 1, historical=False, claim_ids=cached)
             ids = tuple(row["claim_id"] for row in rows)
             if ids:
+                self.last_health = RetrievalHealth((RetrievalLaneHealth("claims", "complete", "cache"),))
                 return ids, "adaptive_cached", decision.reason
             self.cache.clear(query.character_id)
         deep = decision.mode == "deep"
@@ -96,7 +99,7 @@ class AdaptiveShadowRetrieval:
             ann_ef=4096 if deep else 256,
             ann_candidate_multiplier=16 if deep else 4,
         ).retrieve(query)
-        if not outcome.claim_ids and not deep:
+        if not outcome.claim_ids and not deep and not outcome.health.incomplete:
             # A conservative normal pass never manufactures a result; only a
             # weak/empty normal result receives the measured deep retry.
             outcome = SemanticRetrievalV2(
@@ -106,6 +109,7 @@ class AdaptiveShadowRetrieval:
             strategy = "adaptive_normal_then_deep"
         else:
             strategy = "adaptive_deep" if deep else "adaptive_normal"
-        if outcome.claim_ids:
+        self.last_health = outcome.health
+        if outcome.claim_ids and not outcome.health.incomplete:
             self.cache.put(query.character_id, query.current_user_text, outcome.claim_ids)
-        return outcome.claim_ids, strategy, outcome.abstention_reason
+        return outcome.claim_ids, strategy, "shadow_failure" if outcome.health.incomplete else outcome.abstention_reason

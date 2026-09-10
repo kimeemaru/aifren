@@ -33,6 +33,17 @@ namespace AIFren.UnityPoc.Protocol
         public string action;
         public string action_token;
         public string expected_revision;
+        public string request_id;
+        public string memory_lane;
+        public string query;
+        public string status_filter;
+        public string scope_filter;
+        public int limit;
+        public int offset;
+        public string record_id;
+        public string content;
+        public string category;
+        public int importance;
         public int unity_pid;
     }
 
@@ -195,6 +206,131 @@ namespace AIFren.UnityPoc.Protocol
     }
 
     [Serializable]
+    public sealed class MemoryViewPage
+    {
+        public string character_id;
+        public string lane;
+        public string query;
+        public string status_filter;
+        public string scope_filter;
+        public int offset;
+        public int limit;
+        public bool has_more;
+        public string availability;
+        public string authority_label;
+        public string warning;
+        public MemoryViewItem[] items;
+    }
+
+    [Serializable]
+    public sealed class MemoryViewItem
+    {
+        public string record_id;
+        public string lane;
+        public string authority;
+        public string content;
+        public string category;
+        public int importance;
+        public string status;
+        public string scope;
+        public string provenance;
+        public string source_reference;
+        public string created_at;
+        public string updated_at;
+        public string valid_to;
+        public string corrected_by;
+        public string supersedes;
+        public bool editable;
+        public bool retirable;
+        public bool derived;
+    }
+
+    [Serializable]
+    public sealed class MemoryViewEvidence
+    {
+        public string event_id;
+        public string evidence_role;
+        public string source_class;
+        public string source_type;
+        public string source_origin;
+        public string source_reference;
+        public string source_status;
+        public int sequence;
+        public string recorded_at;
+        public string occurred_from;
+        public string occurred_to;
+        public string redaction_state;
+        public string excerpt;
+        public string linked_at;
+    }
+
+    [Serializable]
+    public sealed class MemoryViewStatusAudit
+    {
+        public int status_event_id;
+        public string status;
+        public string reason;
+        public string actor_kind;
+        public string source_event_id;
+        public string source_reference;
+        public string created_at;
+    }
+
+    [Serializable]
+    public sealed class MemoryViewRelationAudit
+    {
+        public int relation_id;
+        public string relation_type;
+        public string direction;
+        public string related_claim_id;
+        public string created_at;
+    }
+
+    [Serializable]
+    public sealed class MemoryViewDetailData
+    {
+        public string kind;
+        public string claim_id;
+        public string claim_type;
+        public string subject_key;
+        public string status;
+        public string scope;
+        public string truth_scope_id;
+        public string provenance_state;
+        public string created_at;
+        public string valid_from;
+        public string valid_to;
+        public MemoryViewEvidence[] evidence;
+        public MemoryViewStatusAudit[] status_history;
+        public MemoryViewRelationAudit[] relations;
+        public string episode_id;
+        public string summary_level;
+        public string diagnostic_state;
+        public string diagnostic_reason;
+        public string cache_state;
+        public string cache_reason;
+        public string generation_id;
+        public int source_start_sequence;
+        public int source_end_sequence;
+        public int source_count;
+        public string[] lower_episode_ids;
+    }
+
+    [Serializable]
+    public sealed class MemoryViewDetail
+    {
+        public string character_id;
+        public string lane;
+        public string record_id;
+        public int limit;
+        public int offset;
+        public bool has_more;
+        public string availability;
+        public string warning;
+        public MemoryViewDetailData detail;
+    }
+
+    [Serializable]
     public sealed class TtsSnapshot
     {
         public float volume;
@@ -280,6 +416,12 @@ namespace AIFren.UnityPoc.Protocol
         public bool accepted;
         public bool duplicate;
         public ContinuitySnapshot continuity;
+        public string request_id;
+        public string record_id;
+        public string replacement_record_id;
+        public string character_id;
+        public MemoryViewPage memory_page;
+        public MemoryViewDetail memory_detail;
         public float minimum_available_ram_mb;
         public float swap_in_pages_total;
         public float swap_out_pages_total;

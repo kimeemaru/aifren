@@ -1,5 +1,4 @@
 using System.IO;
-using System.Linq;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
@@ -29,6 +28,23 @@ namespace AIFren.UnityPoc.Editor
                 BuildOptions.Development);
         }
 
+        /// <summary>Same production scene/resources; separate application preferences for finite QA.</summary>
+        public static void BuildLinuxDevelopmentQa()
+        {
+            string product = PlayerSettings.productName;
+            try
+            {
+                PlayerSettings.productName = "AIFren QA";
+                BuildStandalone(BuildTarget.StandaloneLinux64, "LinuxDevelopmentQA",
+                    "AIFrenPoc.x86_64", BuildOptions.Development);
+            }
+            finally
+            {
+                PlayerSettings.productName = product;
+                AssetDatabase.SaveAssets();
+            }
+        }
+
         private static void BuildStandalone(
             BuildTarget target,
             string platformDirectory,
@@ -37,49 +53,106 @@ namespace AIFren.UnityPoc.Editor
         {
             string projectRoot = Directory.GetParent(Application.dataPath).FullName;
             RefuseLocalPresentationAssetsByDefault();
+            EnsureBundledAvatarImported();
             string outputDirectory = Path.Combine(projectRoot, "Builds", platformDirectory);
-            Directory.CreateDirectory(outputDirectory);
-
-            BuildPlayerOptions options = new BuildPlayerOptions
+            BuildWithLastGoodRetention(outputDirectory, playerName, staging =>
             {
-                scenes = new[] { "Assets/Scenes/AIFrenPoc.unity" },
-                locationPathName = Path.Combine(outputDirectory, playerName),
-                target = target,
-                options = buildOptions
-            };
+                BuildPlayerOptions options = new BuildPlayerOptions
+                {
+                    scenes = new[] { "Assets/Scenes/AIFrenPoc.unity" },
+                    locationPathName = Path.Combine(staging, playerName),
+                    target = target,
+                    options = buildOptions
+                };
+                BuildReport report = BuildPipeline.BuildPlayer(options);
+                if (report.summary.result != BuildResult.Succeeded)
+                    throw new System.Exception("AIFren standalone build failed: " + report.summary.result);
+            });
+            Debug.Log("AIFren standalone build completed.");
+        }
 
-            BuildReport report = BuildPipeline.BuildPlayer(options);
-            if (report.summary.result != BuildResult.Succeeded)
+        // Build only into a fresh owned sibling. Failed compilation/import/build
+        // cannot damage the last completed manual-QA target.
+        public static void BuildWithLastGoodRetention(string destination, string playerName, System.Action<string> build)
+        {
+            if (Directory.Exists(destination) && (File.GetAttributes(destination) & FileAttributes.ReparsePoint) != 0)
+                throw new System.IO.IOException("Build target cannot be a link.");
+            string staging = destination + ".building-" + System.Guid.NewGuid().ToString("N");
+            string previous = destination + ".previous-" + System.Guid.NewGuid().ToString("N");
+            Directory.CreateDirectory(staging);
+            try
             {
-                throw new System.Exception("AIFren standalone build failed: " + report.summary.result);
+                build(staging);
+                if (!File.Exists(Path.Combine(staging, playerName))) throw new IOException("Completed player is missing.");
+                if (Directory.Exists(destination)) Directory.Move(destination, previous);
+                try { Directory.Move(staging, destination); }
+                catch
+                {
+                    if (Directory.Exists(previous) && !Directory.Exists(destination)) Directory.Move(previous, destination);
+                    throw;
+                }
+                if (Directory.Exists(previous)) Directory.Delete(previous, true);
             }
-
-            Debug.Log("AIFren standalone build: " + options.locationPathName);
+            finally { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
         }
 
         private static void RefuseLocalPresentationAssetsByDefault()
         {
-            if (System.Environment.GetEnvironmentVariable("AIFREN_INCLUDE_LOCAL_PRESENTATION_ASSETS") == "1")
-            {
-                return;
-            }
-
             string resources = Path.Combine(Application.dataPath, "Resources");
-            string localCharacter = Path.Combine(resources, "LocalCharacter");
-            bool hasLocalCharacter = Directory.Exists(localCharacter) &&
-                Directory.EnumerateFileSystemEntries(localCharacter).Any(entry =>
-                {
-                    string name = Path.GetFileName(entry);
-                    return name != "model.vrm" && name != "model.vrm.meta";
-                });
-            bool hasLocalBackground = Directory.Exists(Path.Combine(resources, "LocalBackground"));
-            if (hasLocalCharacter || hasLocalBackground)
+            ValidatePublicPresentationInputs(resources);
+        }
+
+        // A first package import can reach the VRM before its shader is available.
+        // Unity can otherwise report a successful build with no avatar resource.
+        public static void EnsureBundledAvatarImported()
+        {
+            const string assetPath = "Assets/Resources/LocalCharacter/model.vrm";
+            if (!File.Exists(assetPath)) return;
+            GameObject avatar = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
+            if (!HasRenderableAvatar(avatar))
             {
-                throw new System.Exception(
-                    "Refusing to package ignored local avatar/background assets. " +
-                    "Use a clean project copy for a shareable test build, or set " +
-                    "AIFREN_INCLUDE_LOCAL_PRESENTATION_ASSETS=1 only for a local development build."
-                );
+                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate |
+                    ImportAssetOptions.ForceSynchronousImport);
+                avatar = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
+            }
+            if (!HasRenderableAvatar(avatar))
+                throw new IOException("Bundled avatar import is incomplete; refusing an avatar-free build.");
+        }
+
+        private static bool HasRenderableAvatar(GameObject avatar)
+        {
+            if (avatar == null) return false;
+            Animator animator = avatar.GetComponentInChildren<Animator>(true);
+            if (animator == null || animator.avatar == null || !animator.avatar.isHuman) return false;
+            foreach (SkinnedMeshRenderer renderer in avatar.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (renderer.sharedMesh != null && renderer.sharedMesh.vertexCount > 0 &&
+                    renderer.sharedMaterials.Length > 0 &&
+                    System.Array.TrueForAll(renderer.sharedMaterials, material =>
+                        material != null && material.shader != null)) return true;
+            }
+            return false;
+        }
+
+        public static void ValidatePublicPresentationInputs(string resources)
+        {
+            string character = Path.Combine(resources, "LocalCharacter");
+            if (Directory.Exists(Path.Combine(resources, "LocalBackground")))
+                throw new IOException("Local backgrounds must not be included in a public build.");
+            if (!Directory.Exists(character)) return; // Avatar import remains optional.
+            if ((File.GetAttributes(character) & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("Bundled avatar directory cannot be a link.");
+            foreach (string entry in Directory.EnumerateFileSystemEntries(character))
+            {
+                string name = Path.GetFileName(entry);
+                if ((File.GetAttributes(entry) & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0 ||
+                    (name != "model.vrm" && name != "model.vrm.meta"))
+                    throw new IOException("Unreviewed local presentation input in build.");
+                string expected = name == "model.vrm" ? "831c87cf61f60071426b92978f43cfbacb3df19c83ed6d0a8d7629d2a6f2d1d2" : "0aab561cff42ba07cdbd4368456d43b2f94cbc6e454609120550a45934819cc0";
+                using var input = File.OpenRead(entry);
+                using var sha = System.Security.Cryptography.SHA256.Create();
+                string actual = System.BitConverter.ToString(sha.ComputeHash(input)).Replace("-", "").ToLowerInvariant();
+                if (actual != expected) throw new IOException("Bundled sample differs from the reviewed public resource.");
             }
         }
     }

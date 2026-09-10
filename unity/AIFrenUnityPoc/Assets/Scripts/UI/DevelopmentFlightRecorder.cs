@@ -25,7 +25,7 @@ namespace AIFren.UnityPoc.UI
         private const float ResourceInterval = .2f;
         private const float AutomaticPostSeconds = 10f;
         private const float IncidentCooldownSeconds = 60f;
-        private const string DirectoryPrefix = "/tmp/aifren-flight-recorder-";
+        private static readonly string DirectoryPrefix = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "companion-flight-recorder-");
 
         private sealed class FrameRecord
         {
@@ -316,7 +316,7 @@ namespace AIFren.UnityPoc.UI
             JsonProperty(builder, "swap_out_pages_total", backend != null ? backend.swap_out_pages_total : -1f, true);
             JsonProperty(builder, "peak_gpu_utilization_percent", backend != null ? backend.peak_gpu_utilization_percent : -1f, true);
             JsonProperty(builder, "peak_vram_mb", backend != null ? backend.peak_vram_mb : -1f, true);
-            JsonProperty(builder, "model_generating_at_worst_frame", StateAt(allEvents, worst, "turn_started", "assistant_final"), true);
+            JsonProperty(builder, "qwen_generating_at_worst_frame", StateAt(allEvents, worst, "turn_started", "assistant_final"), true);
             JsonProperty(builder, "kokoro_synthesizing_at_worst_frame", StateAt(allEvents, worst, "tts_submit", "playback_started"), true);
             JsonProperty(builder, "portaudio_playing_at_worst_frame", StateAt(allEvents, worst, "playback_started", "playback_stopped"), true);
             JsonProperty(builder, "whisper_active_at_worst_frame", StateAt(allEvents, worst, "stt_start", "stt_final"), true);

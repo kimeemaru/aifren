@@ -40,20 +40,39 @@ class IdentityNamePopulationTests(unittest.TestCase):
             self.root, character_id=self.character_a, display_name="A",
             memory_file=self.root / "memories.json",
         )
+        MemoryV2Repository(self.writer.store).ensure_character(self.character_a, "A")
 
     def tearDown(self):
         self.writer.close()
         self.temp.cleanup()
 
     def observe(self, content, *, index, timestamp, writer=None, role="user"):
-        message = {"role": role, "content": content, "timestamp": timestamp}
+        target = writer or self.writer
+        repository = MemoryV2Repository(target.store)
+        repository.ensure_character(
+            target.character_id, target.display_name, legacy_config_key="characters/default",
+        )
+        scope = repository.active_truth_scope(target.character_id)
+        provenance = {"kind": scope.kind, "scope_id": scope.truth_scope_id}
+        message = {
+            "role": role, "content": content, "timestamp": timestamp,
+            "truth_scope": provenance,
+        }
         records = json.loads(self.conversation.read_text(encoding="utf-8"))
-        while len(records) <= index:
-            records.append({"role": "assistant", "content": "filler", "timestamp": timestamp})
-        records[index] = message
+        record_index = index * 2
+        while len(records) <= record_index + 1:
+            records.append({
+                "role": "assistant", "content": "filler", "timestamp": timestamp,
+                "truth_scope": provenance,
+            })
+        records[record_index] = message
+        records[record_index + 1] = {
+            "role": "assistant", "content": "completed", "timestamp": timestamp,
+            "truth_scope": provenance,
+        }
         self.conversation.write_text(json.dumps(records), encoding="utf-8")
-        return (writer or self.writer).observe_canonical_user_message(
-            message, conversation_index=index, conversation_file=self.conversation,
+        return target.observe_canonical_user_message(
+            message, conversation_index=record_index, conversation_file=self.conversation,
         )
 
     def lookup(self, *, at=None, character=None, writer=None):

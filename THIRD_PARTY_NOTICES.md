@@ -24,8 +24,8 @@ local testing.
 | faster-whisper, embedding, and other inference packages | **Needs notice / review** | `faster-whisper` is MIT-licensed; retain its notice. Verify every final package/native dependency in the runtime SBOM. |
 | Kokoro, STT, embedding, and other downloaded models | **Needs review** | Model weights are not tracked. Verify each selected model's redistribution terms before bundling; do not infer them from the Python package license. |
 | PyTorch/CUDA and NVIDIA runtime components | **Needs review** | A portable GPU runtime needs its own NVIDIA/PyTorch redistribution review and notices. |
-| VRoidPreset_A default avatar | **Safe to publish and bundle; conditions apply** | The clean public root will include `Assets/Resources/LocalCharacter/model.vrm` and its `.meta` file. The model remains under the official [VRoidPreset_A - Z conditions](https://vroid.pixiv.help/hc/en-us/articles/4402394424089-VRoidPreset-A-Z), not `LICENSE.md`. The conditions permit for-profit/non-profit use, application-avatar use, alteration, and redistribution without attribution. Do not distribute it as CC0 or sell the raw/unmodified sample model/VRM for a fee; comply with the remaining conditions. |
-| AIFren heart logo, bedroom backgrounds, and static presentation audio | **AIFren project-generated assets** | `logo.png`, `bedroom_day.png`, `bedroom_night.png`, `ui_tap.wav`, `interrupt_cue.wav`, and `cozy_vn_piano_loop.ogg` were generated specifically for AIFren using ChatGPT. Their `kit/` copies are duplicates/reference material. They are covered by the AIFren Public Source License, not an external asset-pack license. |
+| VRoidPreset_A default avatar | **Safe to publish and bundle; conditions apply** | The public tree retains `Assets/Resources/LocalCharacter/model.vrm` and its `.meta` file. The model remains under the official [VRoidPreset_A - Z conditions](https://vroid.pixiv.help/hc/en-us/articles/4402394424089-VRoidPreset-A-Z), not `LICENSE.md`. The conditions permit for-profit/non-profit use, application-avatar use, alteration, and redistribution without attribution. Do not distribute it as CC0 or sell the raw/unmodified sample model/VRM for a fee; comply with the remaining conditions. |
+| AIFren heart logo, bedroom backgrounds, and static presentation audio | **AIFren project-generated assets** | `logo.png`, `bedroom_day.png`, `bedroom_night.png`, `ui_tap.wav`, `interrupt_cue.wav`, and `cozy_vn_piano_loop.ogg` were generated specifically for AIFren using ChatGPT. They are covered by the AIFren Public Source License, not an external asset-pack license. |
 | Obsolete PTT indicator PNGs and EmojiOne TMP sample | **Exclude** | The current PTT control loads the attributed Game-icons `Presentation/Icons/microphone` SVG and recolors it by state. The standalone indicator PNGs are unused. EmojiOne is a TMP sample/default sprite asset with no AIFren C# usage and is not needed for current text rendering. Exclude these leftovers from public and portable release trees. |
 
 Unity itself and a Unity player are not included in this source repository.
@@ -58,3 +58,13 @@ Game-icons.net. Attribution is retained here and must accompany redistribution.
 The vector importer is Unity's `com.unity.vectorgraphics` package. The SVGs
 remain monochrome source art; Unity UI applies foreground tint and provides all
 interactive button/panel chrome.
+
+## Nunito SemiBold (hidden subtitles)
+
+The unmodified static font from [Google Fonts](https://github.com/google/fonts/blob/c7e2740188205a85323c7385547f6f59b4f2245a/ofl/nunito/Nunito-SemiBold.ttf)
+is redistributed under SIL OFL 1.1. Copyright 2014 The Nunito Project Authors.
+The complete notice is retained at
+`unity/AIFrenUnityPoc/Assets/StreamingAssets/ThirdPartyNotices/Nunito-OFL.txt`.
+The font keeps its own license; generated TMP resources do not change it.
+No newly supplied avatar, external VRMA, motion-trial file or animation pack is
+included in this source sync.

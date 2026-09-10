@@ -1,6 +1,5 @@
-import json
-import os
 import time
+from conversation.persistence import ConversationPersistenceError, load_json, save_json
 from config import RECENT_CONTEXT_MAX_CHARS, RECENT_CONTEXT_MAX_MESSAGES
 from conversation.context_hygiene import ContextHygiene
 from conversation.temporal_context import (
@@ -38,73 +37,6 @@ MAX_RECENT_CHARS = RECENT_CONTEXT_MAX_CHARS
 # Number of recent messages that should always be preserved
 # before older messages are considered for removal.
 MIN_RECENT_MESSAGES = 6
-
-
-# ============================================================
-# JSON Helpers
-# ============================================================
-
-def load_json(
-    filename,
-    default
-):
-
-    if not os.path.exists(filename):
-
-        return default
-
-    try:
-        with open(
-            filename,
-            "r",
-            encoding="utf-8"
-        ) as file:
-
-            return json.load(file)
-
-    except (
-        json.JSONDecodeError,
-        OSError
-    ):
-
-        print(
-            f"Warning: Could not load {filename}."
-        )
-
-        return default
-
-
-def save_json(
-    filename,
-    data
-):
-
-    try:
-
-        os.makedirs(
-            os.path.dirname(os.path.abspath(filename)),
-            exist_ok=True
-        )
-
-        with open(
-            filename,
-            "w",
-            encoding="utf-8"
-        ) as file:
-
-            json.dump(
-                data,
-                file,
-                ensure_ascii=False,
-                indent=2
-            )
-
-    except OSError as e:
-
-        print(
-            f"Warning: Could not save "
-            f"{filename}: {e}"
-        )
 
 
 # ============================================================
@@ -359,6 +291,8 @@ END AUTHORITATIVE LIFELONG MEMORIES.
         admitted_open_thread_context=None,
         admitted_durable_context=None,
         admitted_episode_context=None,
+        admitted_memory_v2_context=None,
+        admitted_recent_conversation_boundary=None,
         temporal_context=None,
         max_context_chars=None,
     ):
@@ -402,6 +336,14 @@ END AUTHORITATIVE LIFELONG MEMORIES.
                 "content": str(admitted_durable_context),
             })
 
+        # The Development-only V2 authority owner renders a bounded typed
+        # long-term block. It stays distinct from current governed facts.
+        if admitted_memory_v2_context:
+            context.append({
+                "role": "user",
+                "content": str(admitted_memory_v2_context),
+            })
+
         # The rolling summary describes only older continuity.  It follows
         # authoritative, admitted state/facts and remains before verbatim raw
         # conversation, whose latest user message has the practical final say.
@@ -417,6 +359,12 @@ END AUTHORITATIVE LIFELONG MEMORIES.
             context.append({
                 "role": "user",
                 "content": str(admitted_episode_context),
+            })
+
+        if admitted_recent_conversation_boundary:
+            context.append({
+                "role": "user",
+                "content": str(admitted_recent_conversation_boundary),
             })
 
         # ----------------------------------------------------
@@ -509,24 +457,21 @@ class Conversation:
         episode_compaction_cache=None,
         episode_compaction_rollover=None,
         clock=None,
+        memory_authority="v1",
     ):
 
         self.llm = llm
         self.conversation_file = conversation_file or CONVERSATION_FILE
         self.summary_file = summary_file or SUMMARY_FILE
 
-        self.messages = load_json(
-            self.conversation_file,
-            []
+        self._load_error = None
+        self._memory_authority = None
+        self.messages, self._archive_exists = load_json(
+            self.conversation_file, [], record_kind="conversation",
         )
-
-        self.summary_data = load_json(
-            self.summary_file,
-            {
-                "summary": "",
-                "summarized_messages": 0
-            }
-        )
+        self._persisted_message_count = len(self.messages)
+        self.summary_data = {"summary": "", "summarized_messages": 0}
+        self.set_memory_authority(memory_authority)
 
         self.context_manager = (
             ContextManager()
@@ -542,16 +487,76 @@ class Conversation:
     # ========================================================
 
     def save(self):
+        """Save canonical messages only, reconciling failed pending mutations."""
+        self._ensure_loaded()
+        try:
+            save_json(self.conversation_file, self.messages, record_kind="conversation")
+        except ConversationPersistenceError as error:
+            if error.committed:
+                self._archive_exists = True
+                self._persisted_message_count = len(self.messages)
+            else:
+                # Read only on failure; do not keep a second lifetime archive
+                # in RAM. Preserve the list referenced by V2 context owners.
+                try:
+                    self._reload_messages()
+                except ConversationPersistenceError:
+                    # _reload_messages blocks further use until explicit reload
+                    # succeeds, without replacing either disk or memory data.
+                    raise self._load_error from error
+            raise
+        self._archive_exists = True
+        self._persisted_message_count = len(self.messages)
 
-        save_json(
-            self.conversation_file,
-            self.messages
-        )
+    def save_summary(self):
+        """The sole summary write boundary; V2 compatibility data is read-only."""
+        if self._memory_authority != "v1":
+            return
+        self._ensure_loaded()
+        try:
+            save_json(self.summary_file, self.summary_data, record_kind="summary")
+        except ConversationPersistenceError as error:
+            if not error.committed:
+                try:
+                    self.summary_data, _ = load_json(
+                        self.summary_file, {"summary": "", "summarized_messages": 0},
+                        record_kind="summary",
+                    )
+                except ConversationPersistenceError as load_error:
+                    self._load_error = load_error
+                    raise load_error from error
+            raise
 
-        save_json(
-            self.summary_file,
-            self.summary_data
-        )
+    def set_memory_authority(self, memory_authority):
+        if memory_authority not in {"v1", "v2"}:
+            raise ValueError("memory authority must be v1 or v2")
+        if memory_authority == "v1" and self._memory_authority != "v1":
+            self.summary_data, _ = load_json(
+                self.summary_file, {"summary": "", "summarized_messages": 0},
+                record_kind="summary",
+            )
+        self._memory_authority = memory_authority
+
+    def _ensure_loaded(self):
+        if self._load_error is not None:
+            raise self._load_error
+
+    def is_message_persisted(self, index, message):
+        return (0 <= index < self._persisted_message_count
+                and index < len(self.messages) and self.messages[index] == message)
+
+    def _reload_messages(self):
+        try:
+            messages, exists = load_json(
+                self.conversation_file, [], record_kind="conversation",
+                allow_missing=not self._archive_exists,
+            )
+        except ConversationPersistenceError as error:
+            self._load_error = error
+            raise
+        self.messages[:] = messages
+        self._archive_exists = exists
+        self._persisted_message_count = len(messages)
 
     def start_episode_compaction_rollover(self):
         rollover = getattr(self, "episode_compaction_rollover", None)
@@ -579,6 +584,7 @@ class Conversation:
         truth_scope=None,
         origin=None,
     ):
+        self._ensure_loaded()
         record = {
                 "role": "user",
                 "content": content,
@@ -598,6 +604,7 @@ class Conversation:
         *,
         truth_scope=None,
     ):
+        self._ensure_loaded()
         record = {
                 "role": "assistant",
                 "content": content,
@@ -680,22 +687,31 @@ class Conversation:
         active_truth_scope=None,
         max_context_chars=None,
         current_user_projection=None,
+        long_term_memory_authority="v1",
+        admitted_v2_memory_context=None,
+        recent_message_limit=None,
+        recent_character_limit=None,
+        recent_context_policy=None,
+        memory_query_decision=None,
     ):
 
         semantic_query = (
             str(current_user_projection)
             if current_user_projection is not None else user_message
         )
+        if recent_context_policy is None:
+            from config import V2_AUTHORITY_RECENT_POLICY
+            recent_context_policy = V2_AUTHORITY_RECENT_POLICY
 
         # ----------------------------------------------------
         # Retrieve memories
         # ----------------------------------------------------
 
+        if long_term_memory_authority not in {"v1", "v2"}:
+            raise ValueError("long-term memory authority must be v1 or v2")
         relevant_memories = (
-            self.get_relevant_memories(
-                memory,
-                semantic_query
-            )
+            self.get_relevant_memories(memory, semantic_query)
+            if long_term_memory_authority == "v1" else []
         )
         if admitted_durable_facts:
             try:
@@ -706,12 +722,24 @@ class Conversation:
             except Exception:
                 # V1 remains available if the narrow dedup projection fails.
                 pass
+        if getattr(self, "_capture_v1_retrieval_diagnostics", False):
+            # This is the exact post-admission V1 set that can reach the
+            # provider context, not the earlier raw lookup result.
+            self._last_v1_prompt_diagnostics = tuple(
+                {
+                    "id": str(item.get("id")),
+                    "category": str(item.get("category", "unknown")),
+                    "rank": rank,
+                }
+                for rank, item in enumerate(relevant_memories, 1)
+                if isinstance(item, dict) and item.get("id") is not None
+            )
 
         # ----------------------------------------------------
         # Display retrieved memories
         # ----------------------------------------------------
 
-        if relevant_memories:
+        if relevant_memories and long_term_memory_authority == "v1":
 
             print(
                 "\n[Relevant memories]"
@@ -728,7 +756,7 @@ class Conversation:
                 "[End relevant memories]\n"
             )
 
-        else:
+        elif long_term_memory_authority == "v1":
 
             print(
                 "\n[No relevant memories found]\n"
@@ -744,6 +772,8 @@ class Conversation:
                 ""
             )
         )
+        if long_term_memory_authority == "v2":
+            summary = ""
         active_scope = active_scope_from_provenance(active_truth_scope)
         # The legacy rolling summary has no source-level scope provenance.
         # Once the backend supplies an authoritative scope, scoped raw history
@@ -758,7 +788,7 @@ class Conversation:
         episode_selection = None
         cache = getattr(self, "episode_compaction_cache", None)
         rollover = getattr(self, "episode_compaction_rollover", None)
-        if cache is not None:
+        if cache is not None and long_term_memory_authority == "v1":
             try:
                 selector = rollover if rollover is not None else cache
                 episode_selection = selector.select_for_context(
@@ -795,6 +825,33 @@ class Conversation:
             raw_recent_messages,
             active_scope,
         )
+        recent_conversation_boundary = None
+        if long_term_memory_authority == "v2":
+            from memory_v2_source_containment import (
+                RECENT_CONVERSATION_BOUNDARY,
+                select_recent_messages,
+            )
+            raw_recent_messages = list(select_recent_messages(
+                raw_recent_messages,
+                recent_context_policy,
+                maximum_messages=(recent_message_limit or 12),
+                memory_query_decision=memory_query_decision,
+            ))
+            recent_conversation_boundary = RECENT_CONVERSATION_BOUNDARY
+        if recent_message_limit is not None:
+            try:
+                bounded_messages = max(1, int(recent_message_limit))
+            except (TypeError, ValueError):
+                bounded_messages = 1
+            raw_recent_messages = raw_recent_messages[-bounded_messages:]
+        if recent_character_limit is not None and raw_recent_messages:
+            try:
+                bounded_characters = max(1, int(recent_character_limit))
+            except (TypeError, ValueError):
+                bounded_characters = 1
+            raw_recent_messages = ContextManager(
+                max_recent_chars=bounded_characters,
+            ).build_recent_context(raw_recent_messages)
         raw_recent_messages = self.context_manager.build_recent_context(raw_recent_messages)
         hygiene = getattr(self, "context_hygiene", None)
         if hygiene is None:
@@ -802,11 +859,7 @@ class Conversation:
             self.context_hygiene = hygiene
         hygiene_result = hygiene.filter(raw_recent_messages)
         recent_messages = list(hygiene_result.messages)
-        temporal_facts = derive_temporal_context_facts(
-            self.messages,
-            semantic_query,
-            clock=getattr(self, "_clock", None),
-        )
+        temporal_facts = self.temporal_context_facts(semantic_query, active_truth_scope=active_truth_scope)
         temporal_context = build_temporal_context_block(temporal_facts)
 
         # ----------------------------------------------------
@@ -822,6 +875,8 @@ class Conversation:
                 admitted_active_state_context=admitted_active_state_context,
                 admitted_open_thread_context=admitted_open_thread_context,
                 admitted_durable_context=admitted_durable_context,
+                admitted_memory_v2_context=admitted_v2_memory_context,
+                admitted_recent_conversation_boundary=recent_conversation_boundary,
                 admitted_episode_context=(
                     episode_selection.context_block if episode_selection is not None else None
                 ),
@@ -846,9 +901,17 @@ class Conversation:
             "exchange_pairs_suppressed": stats.exchange_pairs_suppressed_count,
             "raw_recent_message_count": stats.raw_recent_message_count,
             "admitted_recent_message_count": admitted_recent_count,
+            "recent_context_characters": sum(
+                len(str(message.get("content", ""))) for message in recent_messages
+            ),
+            "recent_context_approximate_tokens": (
+                sum(len(str(message.get("content", ""))) for message in recent_messages) + 3
+            ) // 4,
+            "memory_context_characters": len(str(admitted_v2_memory_context or "")),
             "context_hygiene_removed_characters": stats.removed_characters,
             "context_hygiene_approximate_tokens_removed": (stats.removed_characters + 3) // 4,
             "final_context_characters": final_context_characters,
+            "long_term_memory_authority_v2": int(long_term_memory_authority == "v2"),
             "approximate_final_context_tokens": (final_context_characters + 3) // 4,
             "compaction_version": (
                 episode_selection.compaction_version if episode_selection is not None else 0
@@ -1030,6 +1093,13 @@ class Conversation:
         )
         return projected
 
+    def temporal_context_facts(self, user_message, *, active_truth_scope=None):
+        return derive_temporal_context_facts(
+            self.messages, user_message, clock=getattr(self, "_clock", None),
+            reply_is_human_owned=getattr(self, "_temporal_reply_is_human_owned", None),
+            active_truth_scope=active_truth_scope,
+        )
+
     def _semantic_context_messages(self):
         return [self._semantic_context_message(message) for message in self.messages]
 
@@ -1038,6 +1108,9 @@ class Conversation:
     # ========================================================
 
     def update_summary(self):
+        if self._memory_authority != "v1":
+            return
+        self._ensure_loaded()
 
         summarized_count = (
             self.summary_data.get(
@@ -1191,10 +1264,7 @@ Write plain text only.
             )
         }
 
-        save_json(
-            self.summary_file,
-            self.summary_data
-        )
+        self.save_summary()
 
         print(
             "\nConversation summary updated."
@@ -1338,7 +1408,9 @@ Write plain text only.
         keep_summary=True
     ):
 
-        self.messages = []
+        self._ensure_loaded()
+        self.messages.clear()
+        self.save()
 
         if not keep_summary:
 
@@ -1347,22 +1419,28 @@ Write plain text only.
                 "summarized_messages": 0
             }
 
-        self.save()
+            self.save_summary()
 
     def reload(self):
-
-        self.messages = load_json(
-            self.conversation_file,
-            []
-        )
-
-        self.summary_data = load_json(
-            self.summary_file,
-            {
-                "summary": "",
-                "summarized_messages": 0
-            }
-        )
+        try:
+            messages, exists = load_json(
+                self.conversation_file, [], record_kind="conversation",
+                allow_missing=not self._archive_exists,
+            )
+            summary = self.summary_data
+            if self._memory_authority == "v1":
+                summary, _ = load_json(
+                    self.summary_file, {"summary": "", "summarized_messages": 0},
+                    record_kind="summary",
+                )
+        except ConversationPersistenceError as error:
+            self._load_error = error
+            raise
+        self.messages[:] = messages
+        self._archive_exists = exists
+        self._persisted_message_count = len(messages)
+        self.summary_data = summary
+        self._load_error = None
 
     # ========================================================
     # Status

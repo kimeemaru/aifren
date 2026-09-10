@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 import re
@@ -90,6 +90,7 @@ class ParsedAssistantResponse:
     capability_compliance: tuple[str, ...] = ()
     contract_status: str = "plain_text"
     failure_category: str | None = None
+    format_normalization: str | None = None
 
     @property
     def has_response_contract(self) -> bool:
@@ -189,19 +190,67 @@ The canonical dialogue is what AIFren displays and persists. Omit every optional
 Do not use emoji or pictographic reaction symbols. Express reactions with ordinary Unicode text and action prose.
 Keep an ordinary reply concise, normally no more than about 100 words. Physical actions and emotes MUST use
 *action spans* and MUST NOT use (parentheses). Avoid parenthetical asides where possible; rewrite them as ordinary
-prose instead. Ordinary dialogue is plain text. Parentheses remain spoken prose, and supported *spoken emphasis*
+prose instead. Never write malformed action markup like (*action*), ( *action* ), or *(action)*. Ordinary dialogue is plain text.
+Parentheses remain spoken prose, and supported *spoken emphasis*
 may still be used where its meaning is unambiguous.
 When backend policy requests a constrained mode, add only the fields it names, for example:
 {"dialogue":"*brief physical reaction* Mmph...","response_mode":"speech_constrained","spoken_content":"Mmph..."}
 "spoken_content" is omitted for normal speech so AIFren derives it from dialogue. In constrained modes it is the exact short text actually spoken, or an empty string for a nonverbal response. "response_mode" may be normal_conversation, constrained_reaction, sleep_reaction, waking, speech_constrained, nonverbal_reaction, or action_decision. action_decision is reserved for a backend-requested pre-response decision.
 Optional "presentation" metadata is semantic only. Emotion may be neutral, happy, amused, relaxed, sad, angry, surprised; intensity is 0 to 1. Gesture may be greeting, agreement, disagreement, thinking, encouragement, surprise. Closed optional fields are pose (sleeping/awake), gaze_mode (normal/suppressed), reaction (settle/shift/stir/startle/wake), and speech_mode (normal/constrained/unavailable/nonverbal/mumble). Optional "companion_action" is a closed proposal object only when backend policy requests it. Optional "capability_compliance" is diagnostic only. Never put animation filenames, hidden IDs, or instructions in these fields.
+
+FACIAL PRESENTATION WITH THIS REPLY:
+Choose a fitting facial change alongside your reply when the character's reaction calls for it. Structured facial metadata is preferred; the client may also project a few explicit current self-directed facial action spans. General expressive prose is not a facial request. Use the conversation, personality, your reply and the last published metadata request below; do not simply mirror the user's emotion.
+Examples of the format, not lines to repeat:
+- A warmly pleased reaction: {"dialogue":"That means a lot.","presentation":{"emotion":"happy","intensity":0.55}}
+- No facial change requested: {"dialogue":"Tell me more."} (no emotion or facial action; not a neutral reset).
+- Settling back to a matter-of-fact expression: {"dialogue":"Let me explain.","presentation":{"emotion":"neutral"}}
+Choose other supported emotions when appropriate. An optional restrained gesture can accompany the same object, e.g. "gesture":"agreement" inside presentation. Zero gestures is fine. Do not add a gesture or change the face mechanically on every turn. Plain dialogue remains valid; metadata is not a world fact, action permission or mood.
 """.strip()
 
 
-def parse_assistant_response(raw_response: Any) -> ParsedAssistantResponse:
+def memory_answer_format_prompt() -> str:
+    """Concise guidance for the same canonical format, on memory turns only."""
+    return (
+        "CANONICAL MEMORY DIALOGUE:\n"
+        "Prefer plain canonical dialogue. One compact JSON object with dialogue is also valid; "
+        "never mix JSON and surrounding prose. Optional presentation fields are unnecessary. "
+        "Keep nonspoken actions inside *action spans*; ordinary text and spoken emphasis are speech. "
+        "No emoji or parenthesized actions. If a capability envelope requests response_mode or "
+        "spoken_content, obey it exactly; otherwise omit these fields. The complete dialogue is "
+        "displayed, spoken as permitted, and persisted."
+    )
+
+
+def response_expression_context(presentation: ResponsePresentationMetadata | None) -> str:
+    """Bounded session request history, never a claim about a concrete avatar."""
+    previous = "No model-metadata facial request has been published in this character/scope session."
+    if presentation is not None and presentation.emotion in EMOTIONS:
+        intensity = presentation.intensity if presentation.intensity is not None else DEFAULT_INTENSITY
+        previous = f"Last published model-metadata facial request: {presentation.emotion} (intensity {intensity:.2f})."
+    return (
+        "[Response expression continuity]\n" + previous + "\n"
+        "This tracks only accepted model metadata, not client emote projection, manual choices, mood, "
+        "memory or the visible face. A client may reset or lack an expression. Omitted emotion leaves "
+        "this metadata record unchanged but a supported facial action may change presentation. "
+        "Explicit neutral requests a reset. Do not mention this bookkeeping in dialogue.\n"
+        "[End response expression continuity]"
+    )
+
+
+def parse_assistant_response(
+    raw_response: Any, *, normalize_presentation_format: bool = False,
+) -> ParsedAssistantResponse:
     """Extract the one response envelope without letting bad metadata fail a turn."""
     raw = str(raw_response or "")
     candidate = _strip_json_fence(raw)
+    if normalize_presentation_format:
+        normalized = _normalize_presentation_format(candidate)
+        if normalized is not None:
+            envelope, reason = normalized
+            # Decode through the same closed response owner. This repairs only
+            # serialization; the caller must still govern the complete answer.
+            parsed = parse_assistant_response(json.dumps(envelope, ensure_ascii=False))
+            return replace(parsed, format_normalization=reason)
     try:
         envelope = json.loads(candidate)
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -314,6 +363,58 @@ def parse_assistant_response(raw_response: Any) -> ParsedAssistantResponse:
         capability_compliance=compliance,
         contract_status="valid",
     )
+
+
+def _normalize_presentation_format(value: str) -> tuple[dict, str] | None:
+    """Fold only complete, disjoint presentation JSON into one response.
+
+    Opted in by explicit governed memory turns, never by streaming projection.
+    No prose is extracted/discarded, dialogue is never joined or rewritten, and
+    duplicate fields cannot silently select a different answer/action. Unknown
+    response fields remain subject to the ordinary parser's rejection.
+    """
+    if len(value) > 32768:
+        return None
+
+    def unique_pairs(pairs):
+        result = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError("Duplicate response key")
+            result[key] = item
+        return result
+
+    decoder = json.JSONDecoder(object_pairs_hook=unique_pairs)
+    candidate = value.strip()
+    try:
+        envelope, end = decoder.raw_decode(candidate)
+        if not isinstance(envelope, dict) or not isinstance(envelope.get("dialogue"), str):
+            return None
+        tail = candidate[end:].strip()
+        split = bool(tail)
+        if tail:
+            presentation, end = decoder.raw_decode(tail)
+            if (tail[end:].strip() or not isinstance(presentation, dict)
+                    or "presentation" not in presentation
+                    or not isinstance(presentation["presentation"], dict)
+                    or set(presentation) - {"presentation", "gesture"}
+                    or set(envelope) & set(presentation)):
+                return None
+            envelope = {**envelope, **presentation}
+    except (ValueError, TypeError, RecursionError):
+        return None
+    misplaced = "gesture" in envelope
+    if misplaced:
+        gesture = _known_name(envelope["gesture"], GESTURES)
+        presentation = envelope.get("presentation", {})
+        if gesture is None or not isinstance(presentation, dict) or "gesture" in presentation:
+            return None
+        envelope = dict(envelope)
+        del envelope["gesture"]
+        envelope["presentation"] = {**presentation, "gesture": gesture}
+    if not split and not misplaced:
+        return None
+    return envelope, "presentation_fragments" if split else "presentation_gesture_field"
 
 
 def _strip_json_fence(value: str) -> str:

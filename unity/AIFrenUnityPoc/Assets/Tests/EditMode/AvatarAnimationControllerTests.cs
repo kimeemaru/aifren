@@ -1,12 +1,37 @@
 using AIFren.UnityPoc.Avatar;
 using AIFren.UnityPoc.UI;
 using NUnit.Framework;
+using System.IO;
 using UnityEngine;
 
 namespace AIFren.UnityPoc.Tests.EditMode
 {
     public sealed class AvatarAnimationControllerTests
     {
+        [Test]
+        public void QaFramesStartHiddenEvenInDevelopmentBuilds()
+        {
+            if (AvatarQaVisibility.Visible) AvatarQaVisibility.Toggle();
+            Assert.IsFalse(AvatarQaVisibility.Visible);
+        }
+
+        [Test]
+        public void QaFrameVisibilityStillTogglesOnAndBackOff()
+        {
+            if (AvatarQaVisibility.Visible) AvatarQaVisibility.Toggle();
+            try
+            {
+                AvatarQaVisibility.Toggle();
+                Assert.IsTrue(AvatarQaVisibility.Visible);
+                AvatarQaVisibility.Toggle();
+                Assert.IsFalse(AvatarQaVisibility.Visible);
+            }
+            finally
+            {
+                if (AvatarQaVisibility.Visible) AvatarQaVisibility.Toggle();
+            }
+        }
+
         [Test]
         public void SevenKeyDeveloperSequenceStillMatchesExactlyOnce()
         {
@@ -78,5 +103,71 @@ namespace AIFren.UnityPoc.Tests.EditMode
             Assert.IsFalse(AvatarAnimationMath.IsSameGestureCoolingDown(AvatarGestureIntent.Nod, AvatarGestureIntent.Nod, 1.5f, 1.5f));
         }
 
+        [Test]
+        public void MissingOptionalAuthoredWaveReturnsNoClipWithoutBreakingProceduralSelection()
+        {
+            var method = typeof(AvatarAnimationController).GetMethod("GetAuthoredWaveClip",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.That(method, Is.Not.Null);
+            Assert.That(method.Invoke(null, null), Is.Null);
+            Assert.That(AvatarAnimationMath.GestureEnvelope(.5f), Is.GreaterThan(0));
+        }
+
+        [Test]
+        public void InPlaceVrmaHipsUsesTheVrmaReferenceSoAnAuthoredFirstFrameCrouchIsPreserved()
+        {
+            Vector3 firstSample = new Vector3(.001f, .320f, -.059f);
+            Vector3 sourceReference = new Vector3(0f, .906f, .004f);
+            Vector3 laterSample = new Vector3(.024f, .860f, .254f);
+            Vector3 targetReference = new Vector3(0f, 1.220f, 0f);
+            Vector3 targetBaseline = new Vector3(.010f, 1.145f, -.020f);
+            float scale = targetReference.y / sourceReference.y;
+            Vector3 targetBaselineOffsetInSourceSpace = (targetBaseline - targetReference) / scale;
+
+            Vector3 rebasedFirst = AvatarVrmaGesturePlayer.CalculateInPlaceSourceHips(
+                firstSample, sourceReference, targetBaselineOffsetInSourceSpace);
+            Vector3 rebasedLater = AvatarVrmaGesturePlayer.CalculateInPlaceSourceHips(
+                laterSample, sourceReference, targetBaselineOffsetInSourceSpace);
+            Vector3 targetFirst = targetReference + (rebasedFirst - sourceReference) * scale;
+            Vector3 targetLater = targetReference + (rebasedLater - sourceReference) * scale;
+
+            Assert.Less((targetFirst - targetBaseline - (firstSample - sourceReference) * scale).magnitude, .0001f);
+            Assert.Less((targetLater - targetBaseline - (laterSample - sourceReference) * scale).magnitude, .0001f);
+        }
+
+        [Test]
+        public void OneShotVrmaTimeClampsWithoutWrappingToFrameZero()
+        {
+            Assert.AreEqual(0f, AvatarVrmaGesturePlayer.ClampOneShotTime(-.1f, 2.8f), .0001f);
+            Assert.AreEqual(1.4f, AvatarVrmaGesturePlayer.ClampOneShotTime(1.4f, 2.8f), .0001f);
+            Assert.AreEqual(2.8f, AvatarVrmaGesturePlayer.ClampOneShotTime(4f, 2.8f), .0001f);
+            Assert.AreEqual(0f, AvatarVrmaGesturePlayer.ClampOneShotTime(1f, 0f), .0001f);
+        }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        [Test]
+        public void VrmaQaInventoryUsesDirectFilesAndDeterministicFilenameOrdering()
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "aifren-vrma-qa-" + System.Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                File.WriteAllText(Path.Combine(directory, "zeta.vrma"), "test");
+                File.WriteAllText(Path.Combine(directory, "Alpha.VRMA"), "test");
+                File.WriteAllText(Path.Combine(directory, "ignore.txt"), "test");
+                Directory.CreateDirectory(Path.Combine(directory, "nested"));
+                File.WriteAllText(Path.Combine(directory, "nested", "hidden.vrma"), "test");
+
+                var files = AvatarVrmaGesturePlayer.DiscoverQaFiles(directory);
+
+                CollectionAssert.AreEqual(new[] { "Alpha.VRMA", "zeta.vrma" },
+                    files.ConvertAll(Path.GetFileName));
+            }
+            finally
+            {
+                if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            }
+        }
+#endif
     }
 }

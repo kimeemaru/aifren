@@ -21,7 +21,7 @@ def _scope(kind: str, label: str, identifier: str) -> TruthScopeRecord:
 
 REAL_WORLD = _scope("real_world", "Real world", "scope-real")
 POKEMON = _scope("scenario", "Pokemon world", "scope-pokemon")
-GENSOKYO = _scope("scenario", "Gensokyo", "scope-gensokyo")
+GENSOKYO = _scope("scenario", "Silvervale", "scope-silvervale")
 
 
 def _activity(value: str) -> ActiveStateRecord:
@@ -59,14 +59,14 @@ class NaturalLanguageIntentMatrixTests(unittest.TestCase):
     def test_clear_paraphrase_matrix(self):
         fillers = ("", "Okay, ", "yeah ")
         entries = tuple(prefix + phrase for prefix in fillers for phrase in (
-            "let's roleplay that we're in Gensokyo.",
+            "let's roleplay that we're in Silvervale.",
             "let's role play where we're on a spaceship.",
             "let's do an RP where we are on Mars.",
             "let's pretend we're fantasy adventurers for a while.",
             "let's start a role play in Pokemon!",
             "pretend we're explorers on an alien planet.",
         )) + (
-            "Can we roleplay that we're in Gensokyo?",
+            "Can we roleplay that we're in Silvervale?",
             "Could we do an RP where we're on a space station?",
             "Let's roleplay as wandering detectives.",
             "Let's pretend that we're in a haunted mansion.",
@@ -85,11 +85,11 @@ class NaturalLanguageIntentMatrixTests(unittest.TestCase):
             "End the current RP, please.",
         )
         reentries = (
-            "Let's resume the Gensokyo roleplay.",
-            "Let's continue our Gensokyo scenario.",
-            "Go back to the Gensokyo RP.",
-            "Can we resume our Gensokyo roleplay?",
-            "Let's reenter the Gensokyo scenario.",
+            "Let's resume the Silvervale roleplay.",
+            "Let's continue our Silvervale scenario.",
+            "Go back to the Silvervale RP.",
+            "Can we resume our Silvervale roleplay?",
+            "Let's reenter the Silvervale scenario.",
             "Let's continue our roleplay.",
         )
         activity_starts = (
@@ -191,7 +191,7 @@ class NaturalLanguageIntentMatrixTests(unittest.TestCase):
     def test_adversarial_abstention_matrix(self):
         ordinary_negatives = (
             "Pokemon has a weird world.",
-            "This novel is set in Gensokyo.", "I like roleplaying games.",
+            "This novel is set in Silvervale.", "I like roleplaying games.",
             "We discussed an RP campaign yesterday.", "The movie is on a spaceship.",
             "I died while playing the game.", "Noita is a fantasy world.",
             "That tabletop scenario sounds fun.", "Roleplay mechanics can be complicated.",
@@ -200,13 +200,13 @@ class NaturalLanguageIntentMatrixTests(unittest.TestCase):
         )
         fiction_activities = ("I'm playing Noita.", "I'm watching Alien.")
         hypothetical_or_quoted = (
-            "What if we lived on Mars?", "If we were in Gensokyo, what would happen?",
+            "What if we lived on Mars?", "If we were in Silvervale, what would happen?",
             "Imagine we're adventurers.", "Suppose we roleplayed on a ship.",
             "Hypothetically, let's say we lived in Pokemon.",
-            'She said "let\'s roleplay in Gensokyo."',
+            'She said "let\'s roleplay in Silvervale."',
             '"Let\'s go back to real life."', "Quote: let's stop roleplaying.",
-            "How about a story set in Gensokyo?", "What is roleplaying?",
-            "Let's not roleplay in Gensokyo.", "Don't stop this roleplay.",
+            "How about a story set in Silvervale?", "What is roleplaying?",
+            "Let's not roleplay in Silvervale.", "Don't stop this roleplay.",
             "Actually, no, let's not enter an RP.", "I thought about roleplaying on Mars.",
         )
         activity_negatives = (
@@ -310,14 +310,14 @@ class NaturalLanguageMultiTurnTests(unittest.TestCase):
         return self.repository.list_open_threads(self.character_id).threads
 
     def test_required_conversational_sequences(self):
-        first = self._turn("Let's role play that we're in Gensokyo.")
+        first = self._turn("Let's role play that we're in Silvervale.")
         self.assertEqual("applied", first["state"])
         self.assertEqual("scenario", self._scope().kind)
         self._turn("Okay, let's go back to real life.")
         self.assertEqual("real_world", self._scope().kind)
-        reentered = self._turn("Can we resume our Gensokyo roleplay?")
+        reentered = self._turn("Can we resume our Silvervale roleplay?")
         self.assertEqual("semantic", reentered["extraction_method"])
-        self.assertEqual("Gensokyo", self._scope().label)
+        self.assertEqual("Silvervale", self._scope().label)
         self._turn("Back to reality.")
 
         started = self._turn("I'm gonna play Noita.")

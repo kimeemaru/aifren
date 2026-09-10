@@ -113,7 +113,7 @@ class FakePushToTalk:
 
 
 def fake_response_generator(llm, conversation, memory, message, character_prompt):
-    return "*Serval waves.*\n\nHello!"
+    return "*Lyra waves.*\n\nHello!"
 
 
 class AssistantServiceTests(unittest.TestCase):
@@ -126,11 +126,12 @@ class AssistantServiceTests(unittest.TestCase):
             memory=self.memory,
             conversation=self.conversation,
             voice=object(),
-            character={"name": "Serval"},
+            character={"name": "Lyra"},
             character_prompt="character prompt",
             tts=self.tts,
             response_generator=fake_response_generator,
             ptt_factory=FakePushToTalk,
+            memory_authority="v1",
         )
 
     def test_text_turn_preserves_turn_lifecycle_and_emote_filtering(self):
@@ -140,7 +141,7 @@ class AssistantServiceTests(unittest.TestCase):
         result = self.service.process_text_turn("Hello")
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(result.reply, "*Serval waves.*\n\nHello!")
+        self.assertEqual(result.reply, "*Lyra waves.*\n\nHello!")
         self.assertEqual(result.spoken_text, "Hello!")
         self.assertEqual(self.tts.spoken, ["Hello!"])
         self.assertEqual(
@@ -191,6 +192,29 @@ class AssistantServiceTests(unittest.TestCase):
         )
         self.assertEqual("ready", events[-1].data.get("state"))
 
+    def test_unconfigured_first_attempt_leaves_service_ready_for_a_second_turn(self):
+        self.service.llm = UnavailableLLM()
+        self.service._response_generator = None
+
+        failed = self.service.process_text_turn("First attempt")
+
+        self.assertFalse(failed.succeeded)
+        self.assertFalse(self.service._turn_lock.locked())
+        self.assertIsNone(self.service._active_turn_cancel)
+        self.assertEqual([], self.conversation.messages)
+
+        self.service.replace_llm(object())
+        self.service._response_generator = fake_response_generator
+        succeeded = self.service.process_text_turn("Second attempt", speak=False)
+
+        self.assertTrue(succeeded.succeeded)
+        self.assertFalse(self.service._turn_lock.locked())
+        self.assertIsNone(self.service._active_turn_cancel)
+        self.assertEqual(
+            [("user", "Second attempt"), ("assistant", succeeded.reply)],
+            self.conversation.messages,
+        )
+
     def test_provider_transport_failure_rolls_back_the_unanswered_user_message(self):
         class FailingConversation(FakeConversation):
             def build_context(self, _memory, _user_message, **_kwargs):
@@ -203,7 +227,8 @@ class AssistantServiceTests(unittest.TestCase):
         conversation = FailingConversation()
         service = AssistantService(
             llm=UnreachableLocalAdapter(), memory=self.memory, conversation=conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
         )
         result = service.process_text_turn("Hello", speak=False)
 
@@ -224,8 +249,9 @@ class AssistantServiceTests(unittest.TestCase):
 
         service = AssistantService(
             llm=object(), memory=self.memory, conversation=FakeConversation(), voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
             response_generator=blocking_generator,
+            memory_authority="v1",
         )
         worker = threading.Thread(target=service.process_text_turn, args=("Hello",), kwargs={"speak": False})
         self.assertFalse(service.provider_request_active())
@@ -262,7 +288,8 @@ class AssistantServiceTests(unittest.TestCase):
         conversation = StreamingConversation()
         service = AssistantService(
             llm=StreamingLlm(), memory=self.memory, conversation=conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
         )
         events = []
         service.subscribe(events.append)
@@ -318,6 +345,7 @@ class AssistantServiceTests(unittest.TestCase):
 
             def stream_generate(self, context, prompt, *, seed):
                 self.received_seed = seed
+                self.received_prompt_characters = len(prompt) + sum(len(m["content"]) for m in context)
                 yield "Seeded response."
 
         llm = SeededStreamingLlm()
@@ -325,7 +353,8 @@ class AssistantServiceTests(unittest.TestCase):
         conversation = StreamingConversation()
         service = AssistantService(
             llm=llm, memory=self.memory, conversation=conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
         )
 
         with patch("assistant_service.development_flight_recorder", return_value=recorder):
@@ -346,6 +375,10 @@ class AssistantServiceTests(unittest.TestCase):
         recorder.mark.assert_any_call(
             "context_hygiene",
             turn_id=1,
+            memory_authority="v1",
+            recent_context_policy="production_v1",
+            v1_prompt_retrieval_entered=True,
+            v1_write_path_enabled=True,
             context_hygiene_candidates=3,
             context_hygiene_assistant_only_suppressed=1,
             context_hygiene_suppressed=2,
@@ -366,8 +399,8 @@ class AssistantServiceTests(unittest.TestCase):
             episode_source_record_count=1114,
             compacted_context_characters=4200,
             compacted_context_approximate_tokens=1050,
-            final_prompt_characters=11,
-            approximate_final_prompt_tokens=3,
+            final_prompt_characters=llm.received_prompt_characters,
+            approximate_final_prompt_tokens=(llm.received_prompt_characters + 3) // 4,
         )
 
     def test_streamed_reasoning_is_hidden_from_deltas_tts_persistence_and_memory(self):
@@ -387,7 +420,8 @@ class AssistantServiceTests(unittest.TestCase):
         conversation = StreamingConversation()
         service = AssistantService(
             llm=ReasoningLlm(), memory=self.memory, conversation=conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
         )
         events = []
         service.subscribe(events.append)
@@ -417,6 +451,35 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertEqual(self.tts.spoken, [event.data["content"] for event in streamed_playback])
         self.assertEqual(expected, " ".join(event.data["subtitle_content"] for event in streamed_playback))
 
+    def test_reasoning_only_failure_releases_turn_and_next_generation_succeeds(self):
+        class StreamingConversation(FakeConversation):
+            def build_context(self, memory, user_message, **_kwargs):
+                return [{"role": "user", "content": user_message}]
+
+        class ReasoningOnlyLlm:
+            def stream_generate(self, _context, _prompt):
+                yield "<think>private reasoning with no final answer</think>"
+
+        conversation = StreamingConversation()
+        service = AssistantService(
+            llm=ReasoningOnlyLlm(), memory=self.memory, conversation=conversation,
+            voice=object(), character={"name": "Lyra"}, character_prompt="prompt",
+            tts=self.tts,
+            memory_authority="v1",
+        )
+
+        failed = service.process_text_turn("First", speak=False)
+
+        self.assertFalse(failed.succeeded)
+        self.assertFalse(service._turn_lock.locked())
+        self.assertIsNone(service._active_turn_cancel)
+        self.assertEqual([], conversation.messages)
+
+        service._response_generator = fake_response_generator
+        succeeded = service.process_text_turn("Second", speak=False)
+        self.assertTrue(succeeded.succeeded)
+        self.assertEqual("Second", conversation.messages[-2][1])
+
     def test_split_streamed_emote_is_never_submitted_to_manual_chunk_tts(self):
         class StreamingConversation(FakeConversation):
             def build_context(self, memory, user_message, **_kwargs):
@@ -430,7 +493,8 @@ class AssistantServiceTests(unittest.TestCase):
 
         service = AssistantService(
             llm=SplitEmoteLlm(), memory=self.memory, conversation=StreamingConversation(), voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
         )
 
         result = service.process_text_turn("Hello")
@@ -444,6 +508,108 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertNotIn("leans", " ".join(self.tts.spoken))
         self.assertIn("*leans closer. Still waiting*", result.reply)
 
+    def test_streamed_parenthesized_star_action_is_canonical_before_persistence_and_tts(self):
+        class StreamingConversation(FakeConversation):
+            def build_context(self, memory, user_message, **_kwargs):
+                return []
+
+        canonical = "*shakes her head slowly* This complete spoken sentence remains *really* clear."
+
+        class MalformedActionLlm:
+            def stream_generate(self, context, prompt):
+                yield "( *shakes her"
+                yield " head slowly* ) This complete spoken sentence remains "
+                yield "*really* clear."
+
+        service = AssistantService(
+            llm=MalformedActionLlm(), memory=self.memory, conversation=StreamingConversation(),
+            voice=object(), character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
+        )
+        events = []
+        service.subscribe(events.append)
+
+        result = service.process_text_turn("Hello")
+        service._streaming_speech_queue.join(timeout=1)
+
+        self.assertEqual(canonical, result.reply)
+        self.assertEqual(("assistant", canonical), service.conversation.messages[-1])
+        self.assertEqual(canonical, "".join(
+            event.data["content"] for event in events if event.type == "assistant_delta"
+        ))
+        self.assertEqual(["This complete spoken sentence remains really clear."], self.tts.spoken)
+        self.assertNotIn("shakes", " ".join(self.tts.spoken))
+
+    def test_streamed_outer_parenthesized_action_is_canonical_before_persistence_and_tts(self):
+        class StreamingConversation(FakeConversation):
+            def build_context(self, memory, user_message, **_kwargs):
+                return []
+
+        malformed = "*(She lets out a soft, drawn-out purr.)* This sentence remains *genuinely* spoken."
+        canonical = "*She lets out a soft, drawn-out purr.* This sentence remains *genuinely* spoken."
+
+        class MalformedActionLlm:
+            def stream_generate(self, context, prompt):
+                yield "*"
+                yield "(She lets out a soft, drawn-out"
+                yield " purr.)* This sentence remains *genuinely* spoken."
+
+        conversation = StreamingConversation()
+        service = AssistantService(
+            llm=MalformedActionLlm(), memory=self.memory, conversation=conversation,
+            voice=object(), character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
+        )
+        events = []
+        service.subscribe(events.append)
+
+        result = service.process_text_turn("Hello")
+        service._streaming_speech_queue.join(timeout=1)
+
+        self.assertEqual(canonical, result.reply)
+        self.assertEqual(("assistant", canonical), conversation.messages[-1])
+        self.assertEqual(canonical, "".join(
+            event.data["content"] for event in events if event.type == "assistant_delta"
+        ))
+        self.assertEqual(["This sentence remains genuinely spoken."], self.tts.spoken)
+        self.assertNotIn("purr", " ".join(self.tts.spoken))
+
+    def test_manual_parenthetical_action_is_normalized_before_all_projections(self):
+        class StreamingConversation(FakeConversation):
+            def build_context(self, memory, user_message, **_kwargs):
+                return []
+
+        class ParentheticalActionLlm:
+            def stream_generate(self, context, prompt):
+                yield "Though... (she pauses, sniff"
+                yield "ing the air dramatically)...it feels like my ears are getting all fuzzy."
+
+        conversation = StreamingConversation()
+        service = AssistantService(
+            llm=ParentheticalActionLlm(), memory=self.memory, conversation=conversation,
+            voice=object(), character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
+        )
+        events = []
+        service.subscribe(events.append)
+
+        result = service.process_text_turn("Can you still understand me?")
+        service._streaming_speech_queue.join(timeout=1)
+
+        expected = (
+            "Though... *she pauses, sniffing the air dramatically*...it feels like my ears "
+            "are getting all fuzzy."
+        )
+        self.assertEqual(expected, result.reply)
+        self.assertEqual(expected, "".join(
+            event.data["content"] for event in events if event.type == "assistant_delta"
+        ))
+        self.assertEqual(("assistant", expected), conversation.messages[-1])
+        self.assertEqual(
+            "Though... ...it feels like my ears are getting all fuzzy.",
+            " ".join(self.tts.spoken),
+        )
+        self.assertNotIn("pauses", " ".join(self.tts.spoken))
 
     def test_streamed_sentence_speech_never_changes_canonical_fragment_spacing(self):
         class StreamingConversation(FakeConversation):
@@ -461,7 +627,8 @@ class AssistantServiceTests(unittest.TestCase):
 
         service = AssistantService(
             llm=FragmentedLlm(), memory=self.memory, conversation=StreamingConversation(), voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
         )
         events = []
         service.subscribe(events.append)
@@ -498,7 +665,8 @@ class AssistantServiceTests(unittest.TestCase):
         conversation = StreamingConversation()
         service = AssistantService(
             llm=GroupedLlm(), memory=self.memory, conversation=conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
         )
 
         result = service.process_text_turn("Hello")
@@ -530,7 +698,8 @@ class AssistantServiceTests(unittest.TestCase):
         provider = WholeResponseTts()
         service = AssistantService(
             llm=StreamingLlm(), memory=self.memory, conversation=StreamingConversation(), voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=provider,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=provider,
+            memory_authority="v1",
         )
         events = []
         service.subscribe(events.append)
@@ -546,6 +715,66 @@ class AssistantServiceTests(unittest.TestCase):
             event.type == "tts_state" and event.data.get("state") == "chunk_queued"
             for event in events
         ))
+
+    def test_whole_response_tts_uses_normalized_parenthesized_action(self):
+        class StreamingConversation(FakeConversation):
+            def build_context(self, memory, user_message, **_kwargs):
+                return []
+
+        class WholeResponseTts(FakeTTS):
+            synthesis_strategy = "whole_response"
+
+        malformed = "Before. (*shakes her head slowly.*) I *really* remember."
+        canonical = "Before. *shakes her head slowly.* I *really* remember."
+
+        class WholeResponseLlm:
+            def stream_generate(self, context, prompt):
+                yield malformed
+
+        provider = WholeResponseTts()
+        conversation = StreamingConversation()
+        service = AssistantService(
+            llm=WholeResponseLlm(), memory=self.memory, conversation=conversation, voice=object(),
+            character={"name": "Lyra"}, character_prompt="prompt", tts=provider,
+            memory_authority="v1",
+        )
+
+        result = service.process_text_turn("Hello")
+
+        self.assertEqual(canonical, result.reply)
+        self.assertEqual(("assistant", canonical), conversation.messages[-1])
+        self.assertEqual(["Before. I really remember."], provider.spoken)
+        self.assertNotIn("shakes", provider.spoken[0])
+
+    def test_whole_response_tts_uses_normalized_outer_parenthesized_action(self):
+        class StreamingConversation(FakeConversation):
+            def build_context(self, memory, user_message, **_kwargs):
+                return []
+
+        class WholeResponseTts(FakeTTS):
+            synthesis_strategy = "whole_response"
+
+        malformed = "Before. *(She shakes her head.)* I *really* remember."
+        canonical = "Before. *She shakes her head.* I *really* remember."
+
+        class WholeResponseLlm:
+            def stream_generate(self, context, prompt):
+                yield malformed
+
+        provider = WholeResponseTts()
+        conversation = StreamingConversation()
+        service = AssistantService(
+            llm=WholeResponseLlm(), memory=self.memory, conversation=conversation, voice=object(),
+            character={"name": "Lyra"}, character_prompt="prompt", tts=provider,
+            memory_authority="v1",
+        )
+
+        result = service.process_text_turn("Hello")
+
+        self.assertEqual(canonical, result.reply)
+        self.assertEqual(("assistant", canonical), conversation.messages[-1])
+        self.assertEqual(["Before. I really remember."], provider.spoken)
+        self.assertNotIn("shakes", provider.spoken[0])
 
     def test_ptt_before_first_streamed_speech_chunk_invalidates_later_turn_audio(self):
         class StreamingConversation(FakeConversation):
@@ -567,8 +796,9 @@ class AssistantServiceTests(unittest.TestCase):
         conversation = StreamingConversation()
         service = AssistantService(
             llm=InterruptedLlm(), memory=self.memory, conversation=conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
             ptt_factory=FakePushToTalk,
+            memory_authority="v1",
         )
         events = []
         service.subscribe(events.append)
@@ -606,8 +836,9 @@ class AssistantServiceTests(unittest.TestCase):
         conversation = StreamingConversation()
         service = AssistantService(
             llm=InterruptedGroupedLlm(), memory=self.memory, conversation=conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
             ptt_factory=FakePushToTalk,
+            memory_authority="v1",
         )
 
         result = service.process_text_turn("Hello")
@@ -649,7 +880,8 @@ class AssistantServiceTests(unittest.TestCase):
         conversation = StreamingConversation()
         service = AssistantService(
             llm=EnvelopeLlm(), memory=self.memory, conversation=conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
         )
         events = []
         service.subscribe(events.append)
@@ -694,8 +926,9 @@ class AssistantServiceTests(unittest.TestCase):
         conversation = RolloverConversation()
         service = AssistantService(
             llm=object(), memory=self.memory, conversation=conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
             response_generator=fake_response_generator,
+            memory_authority="v1",
         )
 
         result = service.process_text_turn("Hello", speak=False)
@@ -705,7 +938,7 @@ class AssistantServiceTests(unittest.TestCase):
         saved_count, snapshot = conversation.rollover_calls[0]
         self.assertEqual(2, saved_count)
         self.assertEqual(
-            [("user", "Hello"), ("assistant", "*Serval waves.*\n\nHello!")],
+            [("user", "Hello"), ("assistant", "*Lyra waves.*\n\nHello!")],
             list(snapshot),
         )
 
@@ -915,7 +1148,8 @@ class AssistantServiceTests(unittest.TestCase):
         llm = ReplaceableLlm()
         service = AssistantService(
             llm=llm, memory=self.memory, conversation=conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=self.tts,
+            memory_authority="v1",
         )
         events = []
         service.subscribe(events.append)
@@ -1013,8 +1247,9 @@ class AssistantServiceTests(unittest.TestCase):
         tts = BlockingChunkTts()
         service = AssistantService(
             llm=TwoChunkLlm(), memory=self.memory, conversation=StreamingConversation(), voice=object(),
-            character={"name": "Serval"}, character_prompt="prompt", tts=tts,
+            character={"name": "Lyra"}, character_prompt="prompt", tts=tts,
             ptt_factory=FakePushToTalk,
+            memory_authority="v1",
         )
         events = []
         service.subscribe(events.append)
@@ -1075,8 +1310,9 @@ class AssistantServiceTests(unittest.TestCase):
 
         service = AssistantService(
             llm=object(), memory=self.memory, conversation=self.conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="character prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="character prompt", tts=self.tts,
             response_generator=fake_response_generator, ptt_factory=UnavailablePushToTalk,
+            memory_authority="v1",
         )
         events = []
         service.subscribe(events.append)
@@ -1103,9 +1339,10 @@ class AssistantServiceTests(unittest.TestCase):
 
         service = AssistantService(
             llm=object(), memory=self.memory, conversation=self.conversation, voice=object(),
-            character={"name": "Serval"}, character_prompt="character prompt", tts=self.tts,
+            character={"name": "Lyra"}, character_prompt="character prompt", tts=self.tts,
             response_generator=fake_response_generator, ptt_factory=FakePushToTalk,
             memory_v2_shadow_writer=FailingShadowWriter(),
+            memory_authority="v1",
         )
         events = []
         service.subscribe(events.append)

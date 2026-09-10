@@ -57,23 +57,20 @@ namespace AIFren.UnityPoc.UI
                 };
                 using (Process process = Process.Start(start))
                 {
-                    string output = process.StandardOutput.ReadToEnd();
-                    string error = process.StandardError.ReadToEnd();
-                    if (!process.WaitForExit(35000))
-                    {
-                        process.Kill();
-                        return new Result(false, "Backend lifecycle helper timed out.");
-                    }
-                    string detail = LastNonEmptyLine(process.ExitCode == 0 ? output : error);
-                    if (string.IsNullOrWhiteSpace(detail)) detail = process.ExitCode == 0
+                    NativeProcessOutput.Collect(process, 35000, 0);
+                    string detail = process.ExitCode == 0
                         ? "Repository backend is ready."
                         : "Backend lifecycle helper failed.";
                     return new Result(process.ExitCode == 0, detail);
                 }
             }
-            catch (Exception exception)
+            catch (TimeoutException)
             {
-                return new Result(false, "Could not start backend lifecycle helper: " + exception.Message);
+                return new Result(false, "Backend lifecycle helper timed out. Reconnect can be retried.");
+            }
+            catch (Exception)
+            {
+                return new Result(false, "Could not run backend lifecycle helper. Reconnect can be retried.");
             }
         }
 
@@ -82,11 +79,5 @@ namespace AIFren.UnityPoc.UI
             return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
         }
 
-        private static string LastNonEmptyLine(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
-            string[] lines = value.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            return lines.Length == 0 ? string.Empty : lines[lines.Length - 1].Trim();
-        }
     }
 }

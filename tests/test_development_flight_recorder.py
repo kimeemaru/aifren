@@ -14,7 +14,7 @@ class DevelopmentFlightRecorderTests(unittest.TestCase):
     def setUp(self):
         self.recorder = DevelopmentFlightRecorder(sample_hz=5)
         self.recorder.start(unity_pid=999999, state_provider=lambda: {
-            "turn_tasks": 1, "model_generating": True, "llama_pid": 0,
+            "turn_tasks": 1, "qwen_generating": True, "llama_pid": 0,
         })
 
     def tearDown(self):
@@ -36,6 +36,31 @@ class DevelopmentFlightRecorderTests(unittest.TestCase):
         self.assertNotIn("content", event)
         self.assertNotIn("unexpected", event)
         self.assertNotIn(secret, json.dumps(event))
+
+    def test_memory_realization_categories_remain_labels_without_dialogue(self):
+        self.recorder.mark('response_contract_validation',
+            memory_realization='grounded_core_plus_reaction', reaction_status='accepted',
+            core_dialogue='PRIVATE CORE', reaction_dialogue='PRIVATE TAIL')
+        event=list(self.recorder._events)[-1]
+        self.assertEqual('grounded_core_plus_reaction',event['memory_realization'])
+        self.assertEqual('accepted',event['reaction_status'])
+        self.assertNotIn('PRIVATE',json.dumps(event))
+        self.assertNotIn('core_dialogue',event)
+        self.assertNotIn('reaction_dialogue',event)
+
+    def test_model_preflight_failure_keeps_only_structural_terminal_fields(self):
+        self.recorder.observe_service_event("error", {
+            "source": "model",
+            "code": "model_unconfigured",
+            "generation_stage": "configuration",
+            "provider_called": False,
+            "message": "private user-facing details",
+        })
+        event = list(self.recorder._events)[-1]
+        self.assertEqual("model_unconfigured", event["code"])
+        self.assertEqual("configuration", event["generation_stage"])
+        self.assertFalse(event["provider_called"])
+        self.assertNotIn("message", event)
 
     def test_continuity_event_keeps_only_bounded_snapshot_counts(self):
         self.recorder.observe_service_event("continuity_changed", {
@@ -97,6 +122,24 @@ class DevelopmentFlightRecorderTests(unittest.TestCase):
         self.assertEqual(1, event["intent_count"])
         self.assertNotIn("raw_dialogue", event)
         self.assertNotIn(secret, json.dumps(event))
+
+    def test_generated_dialogue_structure_retains_counts_without_span_text(self):
+        self.recorder.mark(
+            "generated_dialogue_structure",
+            turn_id=8,
+            canonical_action_span_count=2,
+            spoken_emphasis_span_count=1,
+            normalized_parenthesized_star_action_count=1,
+            normalized_starred_parenthetical_action_count=1,
+            spoken_projection_action_count=0,
+            dialogue="private generated action text",
+        )
+        event = list(self.recorder._events)[-1]
+        self.assertEqual(2, event["canonical_action_span_count"])
+        self.assertEqual(1, event["spoken_emphasis_span_count"])
+        self.assertEqual(0, event["spoken_projection_action_count"])
+        self.assertNotIn("dialogue", event)
+        self.assertNotIn("private generated action text", json.dumps(event))
 
     def test_tts_retry_diagnostics_keep_structural_failure_fields_without_text(self):
         class RetryFake:
@@ -233,6 +276,52 @@ class DevelopmentFlightRecorderTests(unittest.TestCase):
         self.assertTrue(event["episode_cache_selector_available"])
         self.assertTrue(event["episode_cache_temporary_grace_active"])
         self.assertNotIn("dialogue", event)
+
+    def test_v2_memory_authority_diagnostics_are_structural_and_text_free(self):
+        private = "private dialogue and /private/source/path"
+        self.recorder.mark(
+            "memory_authority_decision",
+            memory_authority="v2",
+            memory_query_intent="user_historical_source",
+            requested_relation="historical_recall",
+            requested_speaker="user",
+            memory_time_semantics="historical",
+            memory_query_reason="explicit_user_source_grammar",
+            memory_answer_state="no_grounded_evidence",
+            recent_context_policy="memory_query_contained",
+            memory_query_decision_version=1,
+            memory_candidate_count=0,
+            memory_context_characters=640,
+            recent_context_characters=120,
+            recent_context_approximate_tokens=30,
+            final_prompt_characters=4096,
+            approximate_final_prompt_tokens=1024,
+            provider_called=False,
+            provider_bypassed=True,
+            memory_query_applicable=True,
+            authoritative_no_evidence=True,
+            v1_prompt_retrieval_entered=False,
+            v1_write_path_enabled=False,
+            spontaneous_retrospective_claims_detected=False,
+            unsupported_retrospective_claims_rejected=False,
+            dialogue=private,
+            source_reference=private,
+            filesystem_path=private,
+        )
+        event = list(self.recorder._events)[-1]
+        self.assertEqual("v2", event["memory_authority"])
+        self.assertEqual("user_historical_source", event["memory_query_intent"])
+        self.assertEqual("historical_recall", event["requested_relation"])
+        self.assertEqual("no_grounded_evidence", event["memory_answer_state"])
+        self.assertEqual(0, event["memory_candidate_count"])
+        self.assertTrue(event["provider_bypassed"])
+        self.assertFalse(event["v1_prompt_retrieval_entered"])
+        self.assertFalse(event["v1_write_path_enabled"])
+        serialized = json.dumps(event)
+        self.assertNotIn(private, serialized)
+        self.assertNotIn("dialogue", event)
+        self.assertNotIn("source_reference", event)
+        self.assertNotIn("filesystem_path", event)
 
     @patch.object(DevelopmentFlightRecorder, "_gpu_sample", return_value={})
     def test_trigger_preserves_pre_window_and_dump_writes_only_bounded_telemetry(self, _gpu):

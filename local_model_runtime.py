@@ -126,9 +126,10 @@ class LocalModelRuntime:
         verbose_process_logs: bool | None = None,
         enable_thinking: bool = False,
         readiness_timeout_seconds: float = 90.0,
-        process_identity_reader: Callable[[int], dict[str, object] | None] = _linux_process_identity,
+        process_identity_reader: Callable[[int], dict[str, object] | None] | None = None,
         recovered_process_factory: Callable[[int, Callable], object] = _RecoveredProcess,
-        process_group_signaler: Callable[[int, int], None] = os.killpg,
+        process_group_signaler: Callable[[int, int], None] | None = None,
+        process_platform: str | None = None,
     ) -> None:
         self.application_dir = Path(application_dir).resolve()
         self.model_directory = Path(model_directory)
@@ -145,15 +146,57 @@ class LocalModelRuntime:
         self._verbose_process_logs = bool(verbose_process_logs)
         self._enable_thinking = bool(enable_thinking)
         self.readiness_timeout_seconds = float(readiness_timeout_seconds)
-        self._process_identity_reader = process_identity_reader
+        self._process_platform = os.name if process_platform is None else process_platform
+        self._persisted_recovery_supported = self._process_platform != "nt"
+        self._process_identity_reader = process_identity_reader or _linux_process_identity
         self._recovered_process_factory = recovered_process_factory
-        self._process_group_signaler = process_group_signaler
+        self._process_group_signaler = (
+            process_group_signaler
+            if process_group_signaler is not None
+            else (getattr(os, "killpg", None) if self._persisted_recovery_supported else None)
+        )
         self._ownership_metadata_path = self.application_dir / _OWNERSHIP_METADATA_NAME
         self._process = None
         self._gpu_offload_confirmed = False
         self._gpu_offload_event = threading.Event()
         self._status = LocalModelRuntimeStatus()
         self._lock = threading.RLock()
+        self._operation = threading.Event()
+        self._pending_process_work: set[threading.Event] = set()
+        self._retiring: dict[int, tuple[threading.Event, LocalModelRuntimeStatus, threading.Event]] = {}
+
+    def reserve_operation(self) -> threading.Event:
+        """Invalidate late workers before a configuration/task can be replaced."""
+        with self._lock:
+            self._operation.set()
+            self._operation = threading.Event()
+            return self._operation
+
+    def cancel_operation(self, operation: threading.Event) -> None:
+        with self._lock:
+            if operation is self._operation:
+                operation.set()
+
+    def _owns_operation(self, operation: threading.Event) -> bool:
+        # Call under _lock when applying a result or taking a process handle.
+        return operation is self._operation and not operation.is_set()
+
+    @staticmethod
+    def _superseded() -> dict[str, object]:
+        return {"state": "superseded", "ownership": "none"}
+
+    def _wait_for_process_work(self, operation: threading.Event) -> bool:
+        # A newly spawned or retiring owned endpoint must not be mistaken for
+        # an external server by its successor. Only the worker waits here;
+        # settings, snapshot, cancellation and shutdown can acquire the state lock.
+        while True:
+            with self._lock:
+                if not self._owns_operation(operation):
+                    return False
+                pending = next(iter(self._pending_process_work), None)
+            if pending is None:
+                return True
+            pending.wait(0.2)
 
     @staticmethod
     def _display_name(path: Path) -> str:
@@ -214,6 +257,13 @@ class LocalModelRuntime:
         selected_model: str,
         model_path: Path,
     ) -> None:
+        if not self._persisted_recovery_supported:
+            # Windows clean shutdown retains the direct Popen handle. After an
+            # abnormal backend death, a surviving responsive endpoint is
+            # deliberately treated as external instead of weakening process
+            # identity proof or signaling a PID based on stale metadata.
+            self._remove_ownership_metadata()
+            return
         pid = getattr(process, "pid", None)
         if not pid:
             return
@@ -276,77 +326,84 @@ class LocalModelRuntime:
             return False
 
     def _recover_owned_runtime(
-        self,
-        *,
-        endpoint: str,
-        selected_model: str,
-        api_key: str,
+        self, *, endpoint: str, selected_model: str, api_key: str,
+        operation: threading.Event,
     ) -> str:
-        """Return ready, cleaned, or none after proving persisted ownership."""
-        metadata = self._load_ownership_metadata()
-        if metadata is None:
-            return "none"
-        try:
-            pid = int(metadata["pid"])
-        except (KeyError, TypeError, ValueError):
-            self._remove_ownership_metadata()
-            return "none"
-        identity = self._process_identity_reader(pid)
-        if identity is None:
-            self._remove_ownership_metadata()
-            return "none"
-        if not self._metadata_identity_matches(metadata, identity):
-            # The metadata file is ours, but the live PID is not provably the
-            # same AIFren process. Forget the stale reference and never signal it.
-            self._remove_ownership_metadata()
-            self._log("Managed local model ownership proof was rejected; live process left untouched.")
-            return "none"
+        """Prove identity under the state lock; probe/wait outside it."""
+        with self._lock:
+            if not self._owns_operation(operation):
+                return "superseded"
+            if not self._persisted_recovery_supported:
+                self._remove_ownership_metadata()
+                return "none"
+            metadata = self._load_ownership_metadata()
+            if metadata is None:
+                return "none"
+            try:
+                pid = int(metadata["pid"])
+            except (KeyError, TypeError, ValueError):
+                self._remove_ownership_metadata()
+                return "none"
+            identity = self._process_identity_reader(pid)
+            if identity is None:
+                self._remove_ownership_metadata()
+                return "none"
+            if not self._metadata_identity_matches(metadata, identity):
+                # The metadata file is ours, but the live PID is not provably the
+                # same AIFren process. Forget the stale reference and never signal it.
+                self._remove_ownership_metadata()
+                self._log("Managed local model ownership proof was rejected; live process left untouched.")
+                return "none"
 
-        # Keep proving the same immutable identity at every later poll.  If
-        # the owned server exits and Linux reuses its PID before stop(), the
-        # recovered handle must look exited and no process-group signal may be
-        # sent to the replacement.
-        def verified_identity_reader(candidate_pid: int) -> dict[str, object] | None:
-            current = self._process_identity_reader(candidate_pid)
-            if current is None or not self._metadata_identity_matches(metadata, current):
-                return None
-            return current
+            # Keep proving the same immutable identity at every later poll.  If
+            # the owned server exits and Linux reuses its PID before stop(), the
+            # recovered handle must look exited and no process-group signal may be
+            # sent to the replacement.
+            def verified_identity_reader(candidate_pid: int) -> dict[str, object] | None:
+                current = self._process_identity_reader(candidate_pid)
+                if current is None or not self._metadata_identity_matches(metadata, current):
+                    return None
+                return current
 
-        self._process = self._recovered_process_factory(pid, verified_identity_reader)
-        self._status = LocalModelRuntimeStatus(
-            state="starting", ownership="managed", active_model=str(metadata.get("selected_model") or ""),
-            compute="unknown",
-        )
-        resolved = self.resolve_installed(selected_model)
-        try:
-            configuration_matches = (
-                resolved is not None
-                and str(metadata.get("application_dir") or "") == str(self.application_dir)
-                and str(metadata.get("endpoint") or "") == str(endpoint).rstrip("/")
-                and str(metadata.get("selected_model") or "") == str(selected_model)
-                and str(metadata.get("model_path") or "") == str(resolved)
-                and int(metadata.get("context_size", -1)) == self.context_size
-                and metadata.get("enable_thinking") is self._enable_thinking
+            self._process = self._recovered_process_factory(pid, verified_identity_reader)
+            self._status = LocalModelRuntimeStatus(
+                state="starting", ownership="managed", active_model=str(metadata.get("selected_model") or ""),
+                compute="unknown",
             )
-        except (TypeError, ValueError):
-            configuration_matches = False
+            resolved = self.resolve_installed(selected_model)
+            try:
+                configuration_matches = (
+                    resolved is not None
+                    and str(metadata.get("application_dir") or "") == str(self.application_dir)
+                    and str(metadata.get("endpoint") or "") == str(endpoint).rstrip("/")
+                    and str(metadata.get("selected_model") or "") == str(selected_model)
+                    and str(metadata.get("model_path") or "") == str(resolved)
+                    and int(metadata.get("context_size", -1)) == self.context_size
+                    and metadata.get("enable_thinking") is self._enable_thinking
+                )
+            except (TypeError, ValueError):
+                configuration_matches = False
+            process = self._process
         models: tuple[str, ...] = ()
         if configuration_matches:
             try:
                 models = self._probe_models(endpoint, api_key)
             except Exception:
-                models = ()
-        if configuration_matches and selected_model in models:
-            self._status = LocalModelRuntimeStatus(
-                state="ready", ownership="managed", active_model=selected_model,
-                compute="recovered", endpoint_models=models,
-            )
-            self._log("Recovered healthy AIFren-managed local model runtime.")
-            return "ready"
-
-        self._log("Cleaning stale or incompatible AIFren-managed local model runtime.")
-        self._stop_owned_locked()
-        self._status = LocalModelRuntimeStatus(state="off", compute=self._gpu_compute())
+                pass
+        with self._lock:
+            if not self._owns_operation(operation) or self._process is not process:
+                return "superseded"
+            if configuration_matches and selected_model in models:
+                self._status = LocalModelRuntimeStatus(
+                    state="ready", ownership="managed", active_model=selected_model,
+                    compute="recovered", endpoint_models=models,
+                )
+                self._log("Recovered healthy AIFren-managed local model runtime.")
+                return "ready"
+            self._log("Cleaning stale or incompatible AIFren-managed local model runtime.")
+            retired = self._detach_owned_locked()
+            self._status = LocalModelRuntimeStatus()
+        self._stop_process(retired)
         return "cleaned"
 
     @staticmethod
@@ -433,6 +490,8 @@ class LocalModelRuntime:
                 if text:
                     normalized = text.lower()
                     with self._lock:
+                        if process is not self._process:
+                            continue
                         if "offload" in normalized and "gpu" in normalized and (
                             "offloaded" in normalized or "offloading" in normalized
                         ):
@@ -459,8 +518,39 @@ class LocalModelRuntime:
     def _is_noisy_process_trace(text: str) -> bool:
         return re.search(r"\bCUDA Graph id \d+ reused\b", str(text), re.IGNORECASE) is not None
 
-    def _stop_owned_locked(self) -> None:
+    def _detach_owned_locked(self):
+        """Transfer just this owned handle to cleanup; never detach a later one."""
         process = self._process
+        if process is not None:
+            completed = threading.Event()
+            self._pending_process_work.add(completed)
+            self._retiring[id(process)] = (completed, self._status, self._operation)
+        self._process = None
+        self._gpu_offload_confirmed = False
+        return process
+
+    def _stop_process(self, process) -> None:
+        """Potentially blocking termination of an already captured owned handle."""
+        try:
+            self._terminate_process(process)
+        finally:
+            with self._lock:
+                retiring = self._retiring.pop(id(process), None)
+                if retiring is not None:
+                    completed, previous, operation = retiring
+                    if process.poll() is None and self._process is None:
+                        # Failed termination retains proven ownership for a
+                        # later retry. It cannot replace another live handle.
+                        self._process = process
+                        if self._owns_operation(operation):
+                            self._status.ownership = "managed"
+                            self._status.active_model = previous.active_model
+                    elif self._process is None:
+                        self._remove_ownership_metadata()
+                    self._pending_process_work.discard(completed)
+                    completed.set()
+
+    def _terminate_process(self, process) -> None:
         if process is None:
             return
         if process.poll() is None:
@@ -470,7 +560,7 @@ class LocalModelRuntime:
             # seams and any platform without a PID fall back to terminate().
             pid = getattr(process, "pid", None)
             try:
-                if pid:
+                if pid and self._process_group_signaler is not None:
                     self._process_group_signaler(int(pid), signal.SIGTERM)
                 else:
                     process.terminate()
@@ -480,30 +570,36 @@ class LocalModelRuntime:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 try:
-                    if pid:
-                        self._process_group_signaler(int(pid), signal.SIGKILL)
+                    if pid and self._process_group_signaler is not None:
+                        self._process_group_signaler(int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))
                     else:
                         process.kill()
                 except (OSError, ProcessLookupError):
                     process.kill()
                 process.wait(timeout=5)
-        self._process = None
-        self._gpu_offload_confirmed = False
-        self._remove_ownership_metadata()
 
-    def stop(self) -> dict[str, object]:
+    def stop(self, *, operation: threading.Event | None = None) -> dict[str, object]:
+        operation = operation if operation is not None else self.reserve_operation()
         with self._lock:
+            if not self._owns_operation(operation):
+                return self._superseded()
             self._observe_process_locked()
             if self._status.ownership == "external":
                 return self.snapshot()
-            self._stop_owned_locked()
-            self._status = LocalModelRuntimeStatus(state="off", compute=self._gpu_compute())
+            process = self._detach_owned_locked()
+            self._status = LocalModelRuntimeStatus()
+        self._stop_process(process)
+        with self._lock:
+            if not self._owns_operation(operation):
+                return self._superseded()
             self._log("Managed local model stopped.")
             return self.snapshot()
 
-    def begin_start(self, *, selected_model: str) -> dict[str, object]:
+    def begin_start(self, *, selected_model: str, operation: threading.Event | None = None) -> dict[str, object]:
         """Publish an immediate UI transition before blocking readiness work."""
         with self._lock:
+            if operation is not None and not self._owns_operation(operation):
+                return self._superseded()
             self._observe_process_locked()
             switching = self._process is not None and self._status.active_model != selected_model
             self._status.state = "switching" if switching else "starting"
@@ -524,73 +620,91 @@ class LocalModelRuntime:
             compute="external", endpoint_models=models,
         )
 
-    def refresh_external(self, endpoint: str, api_key: str = "", *, selected_model: str = "") -> dict[str, object]:
+    def refresh_external(
+        self, endpoint: str, api_key: str = "", *, selected_model: str = "",
+        operation: threading.Event | None = None,
+    ) -> dict[str, object]:
+        operation = operation if operation is not None else self.reserve_operation()
+        if not self._wait_for_process_work(operation):
+            return self._superseded()
         with self._lock:
+            if not self._owns_operation(operation):
+                return self._superseded()
             self._observe_process_locked()
-            if self._process is not None:
-                try:
-                    models = self._probe_models(endpoint, api_key)
-                except Exception:
-                    return self.snapshot(selected_model=selected_model)
-                if selected_model and selected_model not in models:
-                    self._status.state = "mismatch"
-                    self._status.error = "managed server did not advertise the selected model"
-                    self._status.active_model = models[0]
-                    self._status.endpoint_models = models
-                    return self.snapshot(selected_model=selected_model)
-                self._status.state = "ready"
+            process = self._process
+        try:
+            models = self._probe_models(endpoint, api_key)
+        except Exception:
+            models = ()
+        with self._lock:
+            if not self._owns_operation(operation) or self._process is not process:
+                return self._superseded()
+            if not models:
+                self._status.state = "error"
+                self._status.error = "local endpoint is unavailable"
+            elif process is not None:
+                self._status.state = "mismatch" if selected_model and selected_model not in models else "ready"
                 self._status.ownership = "managed"
                 self._status.active_model = selected_model if selected_model in models else models[0]
-                self._status.error = ""
+                self._status.error = "managed server did not advertise the selected model" if self._status.state == "mismatch" else ""
                 self._status.endpoint_models = models
-                return self.snapshot(selected_model=selected_model)
-            try:
-                models = self._probe_models(endpoint, api_key)
-            except Exception:
-                if self._status.ownership == "external":
-                    self._set_error("external local endpoint is unavailable")
-                return self.snapshot(selected_model=selected_model)
-            self._status = self._external_status(models, selected_model)
+            else:
+                self._status = self._external_status(models, selected_model)
             return self.snapshot(selected_model=selected_model)
 
-    def start(self, *, endpoint: str, selected_model: str, api_key: str = "") -> dict[str, object]:
-        """Start the selected managed GGUF or recognize a compatible external server."""
+    def start(
+        self, *, endpoint: str, selected_model: str, api_key: str = "",
+        operation: threading.Event | None = None,
+    ) -> dict[str, object]:
+        """Blocking work never owns the state lock; each completion must still own it."""
+        operation = operation if operation is not None else self.reserve_operation()
+        if not self._wait_for_process_work(operation):
+            return self._superseded()
         with self._lock:
+            if not self._owns_operation(operation):
+                return self._superseded()
             self._observe_process_locked()
-            recovery = (
-                self._recover_owned_runtime(
-                    endpoint=endpoint, selected_model=selected_model, api_key=api_key,
-                )
-                if self._process is None else "none"
+            recover = self._process is None
+        if recover:
+            recovery = self._recover_owned_runtime(
+                endpoint=endpoint, selected_model=selected_model, api_key=api_key,
+                operation=operation,
             )
-            if recovery == "ready":
-                return self.snapshot(selected_model=selected_model)
-            # A responding endpoint is already useful, but it never becomes
-            # owned just because Local mode is selected.
-            try:
-                models = self._probe_models(endpoint, api_key)
-            except Exception:
-                models = ()
+            if recovery in {"ready", "superseded"}:
+                with self._lock:
+                    return self.snapshot(selected_model=selected_model) if self._owns_operation(operation) else self._superseded()
+        try:
+            models = self._probe_models(endpoint, api_key)
+        except Exception:
+            models = ()
+        with self._lock:
+            if not self._owns_operation(operation):
+                return self._superseded()
+            # A responding endpoint does not confer process ownership.
             if models and self._process is None:
                 self._status = self._external_status(models, selected_model)
                 return self.snapshot(selected_model=selected_model)
-            if self._process is not None and self._status.active_model == selected_model:
-                return self.refresh_external(endpoint, api_key, selected_model=selected_model)
-            if self._process is not None:
-                self._status.state = "switching"
-                self._stop_owned_locked()
-            model_path = self.resolve_installed(selected_model)
-            if model_path is None:
-                self._set_error("selected local model is missing")
-                return self.snapshot(selected_model=selected_model)
-            address = self._local_server_address(endpoint)
-            if address is None:
-                self._set_error("managed local models require a loopback HTTP endpoint")
+            reuse = self._process is not None and self._status.active_model == selected_model
+            retired = None if reuse else self._detach_owned_locked()
+        if reuse:
+            return self.refresh_external(endpoint, api_key, selected_model=selected_model, operation=operation)
+        self._stop_process(retired)
+        model_path = self.resolve_installed(selected_model)
+        address = self._local_server_address(endpoint)
+        compute = self._gpu_compute() if model_path is not None and address is not None else "unknown"
+        with self._lock:
+            if not self._owns_operation(operation):
+                return self._superseded()
+            if model_path is None or address is None:
+                self._set_error("selected local model is missing" if model_path is None else "managed local models require a loopback HTTP endpoint")
                 return self.snapshot(selected_model=selected_model)
             host, port = address
             self._gpu_offload_confirmed = False
-            self._gpu_offload_event.clear()
-            self._status = LocalModelRuntimeStatus(state="starting", ownership="managed", compute=self._gpu_compute())
+            self._gpu_offload_event = threading.Event()
+            offload_event = self._gpu_offload_event
+            self._status = LocalModelRuntimeStatus(
+                state="starting", ownership="managed", active_model=selected_model, compute=compute,
+            )
             command = [
                 sys.executable, "-m", "llama_cpp.server", "--model", str(model_path),
                 "--model_alias", selected_model, "--host", host, "--port", str(port),
@@ -612,62 +726,93 @@ class LocalModelRuntime:
             ]
             if self._status.compute == "GPU offload requested":
                 command.extend(["--n_gpu_layers", "-1"])
-            try:
-                owner_token = str(uuid.uuid4())
-                launch_environment = dict(os.environ)
-                launch_environment[_OWNERSHIP_TOKEN_ENV] = owner_token
-                self._process = self._process_factory(
-                    command, cwd=str(self.application_dir), stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True,
-                    env=launch_environment,
+            launched = threading.Event()
+            self._pending_process_work.add(launched)
+        process = None
+        try:
+            owner_token = str(uuid.uuid4())
+            launch_environment = dict(os.environ)
+            launch_environment[_OWNERSHIP_TOKEN_ENV] = owner_token
+            process_options = {
+                "cwd": str(self.application_dir), "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT, "text": True, "bufsize": 1,
+                "env": launch_environment,
+            }
+            if self._process_platform == "nt":
+                process_options["creationflags"] = (
+                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    | getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 )
-                self._write_ownership_metadata(
-                    process=self._process, owner_token=owner_token, command=command,
-                    endpoint=endpoint, selected_model=selected_model, model_path=model_path,
-                )
-            except Exception as error:
-                self._stop_owned_locked()
-                self._set_error("could not start managed local model")
-                self._log(f"Managed local model start failed: {type(error).__name__}")
-                return self.snapshot(selected_model=selected_model)
-            threading.Thread(target=self._drain_output, args=(self._process,), daemon=True).start()
+            else:
+                process_options["start_new_session"] = True
+            process = self._process_factory(command, **process_options)
+            with self._lock:
+                accepted = self._owns_operation(operation)
+                if accepted:
+                    self._process = process
+                    self._write_ownership_metadata(
+                        process=process, owner_token=owner_token, command=command,
+                        endpoint=endpoint, selected_model=selected_model, model_path=model_path,
+                    )
+            if not accepted:
+                self._stop_process(process)
+                return self._superseded()
+        except Exception:
+            with self._lock:
+                accepted = self._owns_operation(operation)
+                if accepted:
+                    if process is not None and self._process is process:
+                        self._detach_owned_locked()
+                    self._set_error("could not start managed local model")
+                    self._log("Managed local model start failed.")
+            self._stop_process(process)
+            with self._lock:
+                return self.snapshot(selected_model=selected_model) if self._owns_operation(operation) else self._superseded()
+        finally:
+            with self._lock:
+                self._pending_process_work.discard(launched)
+                launched.set()
+        threading.Thread(target=self._drain_output, args=(process,), daemon=True).start()
 
         deadline = time.monotonic() + self.readiness_timeout_seconds
         while time.monotonic() < deadline:
             with self._lock:
+                if not self._owns_operation(operation):
+                    return self._superseded()
                 self._observe_process_locked()
-                if self._process is None:
+                if self._process is not process:
                     return self.snapshot(selected_model=selected_model)
             try:
                 models = self._probe_models(endpoint, api_key)
             except Exception:
-                time.sleep(0.2)
+                operation.wait(0.2)
                 continue
-            # Endpoint readiness may precede llama.cpp's final tensor-load
-            # lines. Allow a short bounded wait for an actual offload report,
-            # never a blind CUDA label.
-            if self._status.compute == "GPU offload requested":
-                self._gpu_offload_event.wait(timeout=2.0)
+            if compute == "GPU offload requested":
+                offload_event.wait(timeout=2.0)
             with self._lock:
+                if not self._owns_operation(operation) or self._process is not process:
+                    return self._superseded()
                 if selected_model not in models:
-                    self._stop_owned_locked()
+                    retired = self._detach_owned_locked()
                     self._set_error("managed server did not advertise the selected model")
-                    return self.snapshot(selected_model=selected_model)
+                    break
                 self._status.state = "ready"
                 self._status.ownership = "managed"
-                self._status.active_model = selected_model if selected_model in models else models[0]
+                self._status.active_model = selected_model
                 self._status.error = ""
                 self._status.endpoint_models = models
                 if self._status.compute == "GPU offload requested" and not self._gpu_offload_confirmed:
-                    # Do not label a merely requested path as CUDA.  A later
-                    # process log can still upgrade this to CUDA before the
-                    # next snapshot, while CPU remains an honest fallback.
                     self._status.compute = "CPU"
                     self._status.error = "GPU offload was requested but not confirmed"
                     self._log("Managed local model GPU offload was not confirmed; reporting CPU.")
                 self._log(f"Managed local model ready ({self._status.compute}).")
                 return self.snapshot(selected_model=selected_model)
+        else:
+            with self._lock:
+                if not self._owns_operation(operation) or self._process is not process:
+                    return self._superseded()
+                retired = self._detach_owned_locked()
+                self._set_error("managed local model did not become ready")
+        self._stop_process(retired)
         with self._lock:
-            self._stop_owned_locked()
-            self._set_error("managed local model did not become ready")
-            return self.snapshot(selected_model=selected_model)
+            return self.snapshot(selected_model=selected_model) if self._owns_operation(operation) else self._superseded()

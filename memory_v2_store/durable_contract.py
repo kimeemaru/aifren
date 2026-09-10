@@ -18,6 +18,17 @@ DURABLE_EVIDENCE_ROLES = frozenset({
     DURABLE_LEGACY_BRIDGE_EVIDENCE_ROLE,
 })
 
+# Administrative corrections are explicit user edits, but they are not
+# conversation records.  These stable audit values keep them distinct from
+# canonical dialogue, legacy bridges, and synthetic/system-derived evidence.
+MEMORY_VIEWER_CORRECTION_EVENT_TYPE = "memory_viewer_correction"
+MEMORY_VIEWER_CORRECTION_SOURCE_ORIGIN = "memory_viewer"
+DURABLE_SOURCE_CLASS_VIEWER_CORRECTION = "explicit_viewer_correction"
+DURABLE_SOURCE_CLASS_CONVERSATION = "canonical_conversation"
+DURABLE_SOURCE_CLASS_LEGACY_BRIDGE = "legacy_v1_bridge"
+DURABLE_SOURCE_CLASS_SYNTHETIC_SYSTEM = "synthetic_or_system_derived"
+DURABLE_SOURCE_CLASS_OTHER = "other_retained_source"
+
 SINGLETON_DURABLE_KEYS = frozenset({
     "identity.name",
     "address.preferred",
@@ -65,3 +76,25 @@ def is_singleton_durable_key(subject_key: str) -> bool:
         or subject_key.startswith("preference.")
         or _TOPIC_KEY.fullmatch(subject_key) is not None
     )
+
+
+def classify_durable_source(
+    *, event_type: object, actor_kind: object, source_origin: object,
+) -> str:
+    """Return the product-facing audit class for retained durable evidence."""
+    event_type = str(event_type or "")
+    actor_kind = str(actor_kind or "")
+    source_origin = str(source_origin or "")
+    if (
+        event_type == MEMORY_VIEWER_CORRECTION_EVENT_TYPE
+        and source_origin == MEMORY_VIEWER_CORRECTION_SOURCE_ORIGIN
+        and actor_kind == "user"
+    ):
+        return DURABLE_SOURCE_CLASS_VIEWER_CORRECTION
+    if source_origin == "canonical_conversation" and actor_kind == "user":
+        return DURABLE_SOURCE_CLASS_CONVERSATION
+    if source_origin == "legacy_v1_import":
+        return DURABLE_SOURCE_CLASS_LEGACY_BRIDGE
+    if actor_kind == "system" or source_origin.startswith("synthetic"):
+        return DURABLE_SOURCE_CLASS_SYNTHETIC_SYSTEM
+    return DURABLE_SOURCE_CLASS_OTHER

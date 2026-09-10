@@ -121,6 +121,7 @@ class ContextBuildingTests(unittest.TestCase):
             ]
             original.summary_data = {"summary": "Older derived continuity.", "summarized_messages": 3}
             original.save()
+            original.save_summary()
             restored = Conversation(FakeLLM(), conversation_file=conversation_file, summary_file=summary_file)
             self.assertEqual("Older derived continuity.", restored.summary_data["summary"])
             self.assertEqual(RECENT_CONTEXT_MAX_MESSAGES, len(restored.get_recent_messages()))

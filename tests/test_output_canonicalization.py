@@ -43,6 +43,16 @@ class ModelOutputCanonicalizationTests(unittest.TestCase):
         self.assertEqual(expected, actual)
         self.assertEqual("Fine — 日本語 family.", actual)
 
+    def test_generated_parenthetical_action_from_manual_smoke_is_normalized(self):
+        raw = (
+            "Though... (she pauses, sniffing the air dramatically)...it feels like my ears "
+            "are getting all fuzzy."
+        )
+        expected = (
+            "Though... *she pauses, sniffing the air dramatically*...it feels like my ears "
+            "are getting all fuzzy."
+        )
+        self.assertEqual(expected, canonicalize_model_output(raw))
 
     def test_parenthetical_action_normalization_is_stream_equivalent(self):
         cases = (
@@ -91,6 +101,61 @@ class ModelOutputCanonicalizationTests(unittest.TestCase):
         self.assertEqual("(Mrow!) Ordinary dialogue.", canonicalize_model_output(
             "(Mrow!) Ordinary dialogue."
         ))
+
+    def test_parenthesized_star_action_is_narrowly_unwrapped_before_consumers(self):
+        cases = {
+            "(*physical action*)": "*physical action*",
+            "(*shakes her head*)": "*shakes her head*",
+            "( *shakes her head* )": "*shakes her head*",
+            "*(She shakes her head.)*": "*She shakes her head.*",
+            "* (her ears twitch slightly) *": "*her ears twitch slightly*",
+            "*(her ears twitch slightly)* Then she speaks.": "*her ears twitch slightly* Then she speaks.",
+            "*(She lets out a soft, drawn-out purr.)*": "*She lets out a soft, drawn-out purr.*",
+            "(*shakes her head.*) Then speaks.": "*shakes her head.* Then speaks.",
+            "*(She shakes her head.)* Then speaks.": "*She shakes her head.* Then speaks.",
+            "Before (*shakes her head*) after.": "Before *shakes her head* after.",
+            "Before *(she shakes her head)* after.": "Before *she shakes her head* after.",
+            "(*nods*) Fine. (*waves.*) Ready.": "*nods* Fine. *waves.* Ready.",
+            "*(nods)* Fine. *(waves.)* Ready.": "*nods* Fine. *waves.* Ready.",
+            "I *really* mean it.": "I *really* mean it.",
+            "I **really** mean it.": "I **really** mean it.",
+            "I *(really)* mean it.": "I *(really)* mean it.",
+            "Hello (softly), it's good to see you.": "Hello (softly), it's good to see you.",
+            "(that was *really* strange)": "(that was *really* strange)",
+            "( *really* strange weather )": "( *really* strange weather )",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, canonicalize_model_output(raw))
+                for split in range(len(raw) + 1):
+                    canonicalizer = ModelOutputCanonicalizer()
+                    actual = (
+                        canonicalizer.feed(raw[:split])
+                        + canonicalizer.feed(raw[split:])
+                        + canonicalizer.finish()
+                    )
+                    self.assertEqual(expected, actual, (raw, split))
+
+    def test_action_wrapper_diagnostics_are_structural_counts_only(self):
+        diagnostics = {}
+        rendered = canonicalize_model_output(
+            "(*nods*) Fine. *(She waves.)* I *really* agree.",
+            diagnostics=diagnostics,
+        )
+        self.assertEqual("*nods* Fine. *She waves.* I *really* agree.", rendered)
+        self.assertEqual(1, diagnostics["normalized_parenthesized_star_action_count"])
+        self.assertEqual(1, diagnostics["normalized_starred_parenthetical_action_count"])
+        self.assertFalse(diagnostics["reasoning_content_present"])
+        self.assertTrue(diagnostics["visible_content_present"])
+        self.assertEqual(
+            {
+                "normalized_parenthesized_star_action_count",
+                "normalized_starred_parenthetical_action_count",
+                "reasoning_content_present",
+                "visible_content_present",
+            },
+            set(diagnostics),
+        )
 
 
 if __name__ == "__main__":

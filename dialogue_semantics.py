@@ -52,6 +52,11 @@ _ACTION_VERBS = {
 _PHYSICAL_PARENTHETICAL_ACTION_VERBS = _ACTION_VERBS - {
     "think", "thinks", "thought", "thinking",
     "ponder", "ponders", "pondered", "pondering",
+} | {
+    # Body/animal actions commonly appear after a subject noun (for example
+    # ``her ears twitch``), beyond the general classifier's opening words.
+    "twitch", "twitches", "twitched", "twitching",
+    "purr", "purrs", "purred", "purring",
 }
 
 
@@ -81,6 +86,127 @@ def is_high_confidence_parenthetical_action(text: str) -> bool:
     return any(word in _PHYSICAL_PARENTHETICAL_ACTION_VERBS for word in words)
 
 
+class AssistantOuterParentheticalActionNormalizer:
+    """Normalize generated ``*(action)*`` without guessing at emphasis.
+
+    A possible outer-star wrapper is retained until its parenthesis, closing
+    star, and following boundary are known. This makes provider chunking
+    irrelevant and lets the existing action classifiers own the decision.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._history = ""
+        self.normalized_starred_parenthetical_actions = 0
+
+    def feed(self, raw: object) -> str:
+        self._buffer += str(raw or "")
+        return self._drain(final=False)
+
+    def finish(self) -> str:
+        rendered = self._drain(final=True)
+        if self._buffer:
+            rendered += self._buffer
+            self._remember(self._buffer)
+            self._buffer = ""
+        return rendered
+
+    def _drain(self, *, final: bool) -> str:
+        output: list[str] = []
+        while self._buffer:
+            start = self._next_unescaped_star()
+            if start < 0:
+                self._emit(output, self._buffer)
+                self._buffer = ""
+                break
+            if start > 0:
+                self._emit(output, self._buffer[:start])
+                self._buffer = self._buffer[start:]
+            if len(self._buffer) == 1 and not final:
+                break
+            if self._buffer.startswith("**"):
+                self._emit(output, "**")
+                self._buffer = self._buffer[2:]
+                continue
+
+            opening = 1
+            while opening < len(self._buffer) and self._buffer[opening].isspace():
+                opening += 1
+            if opening >= len(self._buffer):
+                if not final:
+                    break
+                self._emit(output, self._buffer[0])
+                self._buffer = self._buffer[1:]
+                continue
+            if self._buffer[opening] != "(":
+                self._emit(output, self._buffer[0])
+                self._buffer = self._buffer[1:]
+                continue
+
+            closing, nested = _matching_parenthesis(self._buffer, opening)
+            if closing < 0:
+                if not final:
+                    break
+                self._emit(output, self._buffer[0])
+                self._buffer = self._buffer[1:]
+                continue
+            trailing = closing + 1
+            while trailing < len(self._buffer) and self._buffer[trailing].isspace():
+                trailing += 1
+            if trailing >= len(self._buffer):
+                if not final:
+                    break
+                self._emit(output, self._buffer[0])
+                self._buffer = self._buffer[1:]
+                continue
+            if self._buffer[trailing] != "*":
+                self._emit(output, self._buffer[0])
+                self._buffer = self._buffer[1:]
+                continue
+
+            wrapper_end = trailing + 1
+            suffix = self._buffer[wrapper_end:]
+            if not final and not suffix.strip():
+                # The existing standalone-span rule needs the next visible
+                # boundary before it can distinguish action from emphasis.
+                break
+            content = self._buffer[opening + 1:closing].strip()
+            if (not nested and content and "*" not in content
+                    and any(character.isalpha() for character in content)
+                    and self._is_action_owned(content, suffix)):
+                self._emit(output, "*" + content + "*")
+                self.normalized_starred_parenthetical_actions += 1
+            else:
+                self._emit(output, self._buffer[:wrapper_end])
+            self._buffer = suffix
+        return "".join(output)
+
+    def _is_action_owned(self, content: str, suffix: str) -> bool:
+        if is_high_confidence_parenthetical_action(content):
+            return True
+        candidate = self._history + "*" + content + "*" + suffix
+        start = len(self._history)
+        end = start + len(content) + 1
+        return _single_star_is_emote(candidate, start, end, content)
+
+    def _next_unescaped_star(self) -> int:
+        for index, character in enumerate(self._buffer):
+            if character != "*":
+                continue
+            prefix = self._history + self._buffer[:index]
+            backslashes = len(prefix) - len(prefix.rstrip("\\"))
+            if backslashes % 2 == 0:
+                return index
+        return -1
+
+    def _emit(self, output: list[str], value: str) -> None:
+        output.append(value)
+        self._remember(value)
+
+    def _remember(self, value: str) -> None:
+        self._history = (self._history + value)[-4096:]
+
+
 class AssistantParentheticalActionNormalizer:
     """Normalize only high-confidence generated ``(action)`` spans.
 
@@ -96,6 +222,7 @@ class AssistantParentheticalActionNormalizer:
         self._nested = False
         self._started_inside_action = False
         self._started_at_action_boundary = False
+        self.normalized_parenthesized_star_actions = 0
 
     def feed(self, raw: object) -> str:
         output: list[str] = []
@@ -140,6 +267,14 @@ class AssistantParentheticalActionNormalizer:
 
     def _render_parenthetical(self) -> str:
         content = self._parenthetical[1:-1]
+        if not self._nested and not self._started_inside_action:
+            explicit_action = _canonical_parenthesized_star_action(
+                content,
+                at_action_boundary=self._started_at_action_boundary,
+            )
+            if explicit_action is not None:
+                self.normalized_parenthesized_star_actions += 1
+                return explicit_action
         if (not self._nested and not self._started_inside_action
                 and self._started_at_action_boundary
                 and is_high_confidence_parenthetical_action(content)):
@@ -155,6 +290,47 @@ class AssistantParentheticalActionNormalizer:
 def normalize_generated_parenthetical_actions(raw: object) -> str:
     normalizer = AssistantParentheticalActionNormalizer()
     return normalizer.feed(raw) + normalizer.finish()
+
+
+def _canonical_parenthesized_star_action(
+    content: object,
+    *,
+    at_action_boundary: bool,
+) -> str | None:
+    """Unwrap exactly one explicitly starred physical action.
+
+    Parentheses remain ordinary prose.  This accepts only the malformed model
+    shape ``( *physical action* )``: the entire parenthetical must be one
+    single-star span, with no nested markers or surrounding prose.
+    """
+    value = str(content or "").strip()
+    if (len(value) < 3 or not value.startswith("*") or not value.endswith("*")
+            or value.startswith("**") or value.endswith("**")):
+        return None
+    action = value[1:-1].strip()
+    if (not action or "*" in action or not any(character.isalpha() for character in action)
+            or not (
+                is_high_confidence_parenthetical_action(action)
+                # The canonical single-star form is itself an RP action when
+                # it owns a standalone segment under the existing contract.
+                or at_action_boundary
+            )):
+        return None
+    return "*" + action + "*"
+
+
+def _matching_parenthesis(value: str, opening: int) -> tuple[int, bool]:
+    depth = 0
+    nested = False
+    for index in range(opening, len(value)):
+        if value[index] == "(":
+            depth += 1
+            nested = nested or depth > 1
+        elif value[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index, nested
+    return -1, nested
 
 
 def _has_unclosed_single_star(value: str) -> bool:

@@ -5,8 +5,8 @@ namespace AIFren.UnityPoc.Tests.EditMode
 {
     public sealed class TruthScopeIndicatorStateTests
     {
-        [TestCase("real_world", "Gensokyo")]
-        [TestCase(null, "Gensokyo")]
+        [TestCase("real_world", "Silvervale")]
+        [TestCase(null, "Silvervale")]
         [TestCase("", "")]
         public void RealWorldOrMissingAuthorityHasNoIndicator(string kind, string label)
         {
@@ -16,7 +16,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
         [Test]
         public void ScenarioUsesSafeCompactBackendLabel()
         {
-            Assert.That(TruthScopeIndicatorState.DisplayText("scenario", "  Gensokyo  "), Is.EqualTo("RP · Gensokyo"));
+            Assert.That(TruthScopeIndicatorState.DisplayText("scenario", "  Silvervale  "), Is.EqualTo("RP · Silvervale"));
             Assert.That(TruthScopeIndicatorState.DisplayText("scenario", ""), Is.EqualTo("RP"));
             Assert.That(TruthScopeIndicatorState.DisplayText("scenario", "bad\nlabel"), Is.EqualTo("RP"));
         }

@@ -117,6 +117,7 @@ class CurrentContinuityV2Tests(unittest.TestCase):
             character_prompt="prompt", tts=_SilentTts(),
             response_generator=lambda *_args: "Synthetic reply.",
             memory_v2_shadow_writer=self.writer, character_id=self.character_id,
+            memory_authority="v1",
         )
         return service, service_memory
 
@@ -288,14 +289,14 @@ class CurrentContinuityV2Tests(unittest.TestCase):
 
     def test_scenario_entry_exit_reentry_and_scope_restoration(self):
         self._turn("I'm playing Noita.")
-        self._turn("Let's roleplay that we're in Gensokyo.")
+        self._turn("Let's roleplay that we're in Silvervale.")
         scenario = self.repository.active_truth_scope(self.character_id)
-        self.assertEqual(("scenario", "Gensokyo"), (scenario.kind, scenario.label))
+        self.assertEqual(("scenario", "Silvervale"), (scenario.kind, scenario.label))
         self._turn("I'm going out.")
         self.assertEqual("away", self._activity().value)
         self._turn("Back to real life.")
         self.assertEqual("playing Noita", self._activity().value)
-        self._turn("Let's roleplay that we're in Gensokyo.")
+        self._turn("Let's roleplay that we're in Silvervale.")
         resumed = self.repository.active_truth_scope(self.character_id)
         self.assertEqual(scenario.truth_scope_id, resumed.truth_scope_id)
         self.assertEqual("away", self._activity().value)
@@ -305,14 +306,14 @@ class CurrentContinuityV2Tests(unittest.TestCase):
         scope = self.repository.active_truth_scope(self.character_id)
         self.assertEqual(("scenario", "Get Sokyo"), (scope.kind, scope.label))
         self._turn("Back to real life.")
-        self._turn("lets roleplay we're in gensokyo")
+        self._turn("lets roleplay we're in silvervale")
         scope = self.repository.active_truth_scope(self.character_id)
-        self.assertEqual(("scenario", "gensokyo"), (scope.kind, scope.label))
+        self.assertEqual(("scenario", "silvervale"), (scope.kind, scope.label))
 
     def test_scenario_a_b_isolation_and_real_world_threads(self):
         self._turn("I'm waiting for my GPU.")
         real_thread = self._threads()[0].thread_id
-        self._turn("Let's roleplay that we're in Gensokyo.")
+        self._turn("Let's roleplay that we're in Silvervale.")
         self._turn("I'm waiting for the moon rabbit.")
         scenario_a = self.repository.active_truth_scope(self.character_id).truth_scope_id
         scenario_a_thread = self._threads()[0].thread_id
@@ -323,7 +324,7 @@ class CurrentContinuityV2Tests(unittest.TestCase):
         self.assertNotEqual(scenario_a, scenario_b)
         self.assertEqual((), self._threads())
         self._turn("Back to real life.")
-        self._turn("Let's roleplay that we're in Gensokyo.")
+        self._turn("Let's roleplay that we're in Silvervale.")
         self.assertEqual(scenario_a_thread, self._threads()[0].thread_id)
 
     def test_non_scenario_matrix_never_activates_rp(self):
@@ -331,8 +332,8 @@ class CurrentContinuityV2Tests(unittest.TestCase):
             "I'm playing Noita.",
             "I'm watching Alien.",
             "I changed my avatar.",
-            "Gensokyo is a fictional place.",
-            'She said, "Let\'s roleplay that we\'re in Gensokyo."',
+            "Silvervale is a fictional place.",
+            'She said, "Let\'s roleplay that we\'re in Silvervale."',
             "What if we lived on Mars?",
         )
         for text in cases:
@@ -348,7 +349,7 @@ class CurrentContinuityV2Tests(unittest.TestCase):
         self.assertNotIn("sha", admission.truth_scope_context.casefold())
 
     def test_process_restart_reconstructs_scoped_state_and_threads(self):
-        self._turn("Let's roleplay that we're in Gensokyo.")
+        self._turn("Let's roleplay that we're in Silvervale.")
         self._turn("I'm waiting for the moon rabbit.")
         scope_id = self.repository.active_truth_scope(self.character_id).truth_scope_id
         thread_id = self._threads()[0].thread_id
@@ -423,6 +424,7 @@ class CurrentContinuityV2Tests(unittest.TestCase):
             character_prompt="prompt", tts=_SilentTts(),
             response_generator=lambda *_args: "Synthetic reply.",
             memory_v2_shadow_writer=self.writer, character_id=self.character_id,
+            memory_authority="v1",
         )
         events = []
         service.subscribe(events.append)
@@ -434,9 +436,9 @@ class CurrentContinuityV2Tests(unittest.TestCase):
         self.assertEqual([], memory.processed)
         self.assertTrue(service.process_text_turn("Tell me a joke.", speak=False).succeeded)
         self.assertEqual(1, len(memory.processed))
-        self.assertTrue(service.process_text_turn("Let's roleplay that we're in Gensokyo.", speak=False).succeeded)
+        self.assertTrue(service.process_text_turn("Let's roleplay that we're in Silvervale.", speak=False).succeeded)
         scope_event = [event for event in events if event.type == "truth_scope_changed"][-1]
-        self.assertEqual(("scenario", "Gensokyo"), (
+        self.assertEqual(("scenario", "Silvervale"), (
             scope_event.data["scope_kind"], scope_event.data["scope_label"],
         ))
         self.assertEqual("scenario", service.truth_scope_status()["kind"])
@@ -448,7 +450,7 @@ class CurrentContinuityV2Tests(unittest.TestCase):
 
         self.assertTrue(service.process_text_turn("Hello in real life.", speak=False).succeeded)
         self.assertTrue(service.process_text_turn(
-            "Let's roleplay that we're in Gensokyo.", speak=False,
+            "Let's roleplay that we're in Silvervale.", speak=False,
         ).succeeded)
         scenario_scope_id = self.repository.active_truth_scope(self.character_id).truth_scope_id
         self.assertNotEqual(real_scope_id, scenario_scope_id)
@@ -517,7 +519,7 @@ class CurrentContinuityV2Tests(unittest.TestCase):
         memory.memories = [{"id": "old", "category": "identity", "content": "Existing fact"}]
         service, _ = self._service(memory=memory)
         self.assertTrue(service.process_text_turn(
-            "Let's roleplay that we're in Gensokyo.", speak=False,
+            "Let's roleplay that we're in Silvervale.", speak=False,
         ).succeeded)
         attempts = (
             "My real name is Marisa.",
@@ -594,7 +596,7 @@ class CurrentContinuityV2Tests(unittest.TestCase):
         ).status)
 
         self.assertTrue(service.process_text_turn(
-            "Let's roleplay that we're in Gensokyo.", speak=False,
+            "Let's roleplay that we're in Silvervale.", speak=False,
         ).succeeded)
         scenario_id = self.repository.active_truth_scope(self.character_id).truth_scope_id
         leave_snapshot = service.continuity_snapshot()
@@ -611,7 +613,7 @@ class CurrentContinuityV2Tests(unittest.TestCase):
             if item.truth_scope_id == scenario_id
         ))
 
-    def test_development_snapshot_exposes_bounded_actor_and_scene_details(self):
+    def test_development_snapshot_exposes_bounded_actor_and_scene_qa_details(self):
         service, _memory = self._service()
         for text in (
             "I'm going to bed.", "Go make dinner.", "*I put on my white hoodie*",

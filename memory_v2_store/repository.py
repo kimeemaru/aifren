@@ -16,6 +16,8 @@ import uuid
 from .durable_contract import (
     DURABLE_ASSERTION_SCOPE, DURABLE_CORE_FACT, DURABLE_EVIDENCE_ROLES,
     DURABLE_LEGACY_BRIDGE_EVIDENCE_ROLE, DURABLE_USER_EVIDENCE_ROLES,
+    MEMORY_VIEWER_CORRECTION_EVENT_TYPE,
+    MEMORY_VIEWER_CORRECTION_SOURCE_ORIGIN, classify_durable_source,
     validate_durable_subject_key,
 )
 from .active_state_contract import (ACTIVE_STATE, ACTIVE_STATE_ASSERTION_SCOPE,
@@ -154,6 +156,7 @@ class ActiveSceneRelationRecord:
     semantic_family: str | None = None
     quantity: int | None = None
     effect_state: str | None = None
+    locus: str | None = None
 
     @property
     def target_ref(self) -> str:
@@ -252,7 +255,7 @@ class MemoryV2Repository:
         return """(SELECT source_reference FROM events e JOIN claim_evidence ce
                     ON ce.character_id=e.character_id AND ce.event_id=e.event_id
                    WHERE ce.character_id=c.character_id AND ce.claim_id=c.claim_id
-                   ORDER BY ce.created_at_us LIMIT 1)"""
+                   ORDER BY e.recorded_at_us, e.sequence, ce.event_id LIMIT 1)"""
 
     def ensure_character(self, character_id: str, display_name: str, *, legacy_config_key: str | None = None) -> str:
         character_id = _require_uuid(character_id)
@@ -300,6 +303,502 @@ class MemoryV2Repository:
             (character_id, str(memory_id)),
         ).fetchone()
         return self._record(row) if row else None
+
+    def inspect_claims(
+        self,
+        character_id: str,
+        *,
+        query: str = "",
+        status_filter: str = "current",
+        scope_filter: str = "applicable",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        """Return one bounded viewer page of fact/claim rows.
+
+        This is an inspection projection, not retrieval or prompt admission.
+        Active State and Open Threads have their own governed surfaces and are
+        excluded here so a generic V2 claim cannot masquerade as V1 truth.
+        """
+        character_id = _require_uuid(character_id)
+        limit = min(self._bounded_limit(limit), 50)
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise StoreError("offset must not be negative")
+        if status_filter not in {"current", "historical", "all"}:
+            raise StoreError("invalid memory status filter")
+        if scope_filter not in {"applicable", "all"}:
+            raise StoreError("invalid memory truth-scope filter")
+        normalized_query = " ".join(str(query or "").split())
+        if len(normalized_query) > 160:
+            raise StoreError("memory search exceeds 160 characters")
+
+        effective_status = self._status_sql()
+        source_reference = self._source_reference_sql()
+        statement = f"""
+            SELECT c.*, {effective_status} AS effective_status,
+                   {source_reference} AS source_reference,
+                   ts.scope_kind, ts.label AS scope_label,
+                   (SELECT COUNT(*) FROM claim_evidence ce
+                      WHERE ce.character_id=c.character_id AND ce.claim_id=c.claim_id) AS evidence_count,
+                   (SELECT group_concat(recent.event_id, ',') FROM (
+                        SELECT ce.event_id FROM claim_evidence ce
+                         WHERE ce.character_id=c.character_id AND ce.claim_id=c.claim_id
+                         ORDER BY ce.created_at_us DESC, ce.event_id DESC LIMIT 6
+                    ) AS recent) AS evidence_event_ids,
+                   (SELECT cr.from_claim_id FROM claim_relations cr
+                      WHERE cr.character_id=c.character_id AND cr.to_claim_id=c.claim_id
+                        AND cr.relation_type='supersedes'
+                      ORDER BY cr.relation_id DESC LIMIT 1) AS corrected_by,
+                   (SELECT cr.to_claim_id FROM claim_relations cr
+                      WHERE cr.character_id=c.character_id AND cr.from_claim_id=c.claim_id
+                        AND cr.relation_type='supersedes'
+                      ORDER BY cr.relation_id DESC LIMIT 1) AS supersedes
+              FROM claims c LEFT JOIN truth_scopes ts
+                ON ts.character_id=c.character_id AND ts.truth_scope_id=c.truth_scope_id
+             WHERE c.character_id=?
+               AND c.claim_type IN (?, ?, ?)
+        """
+        arguments: list[object] = [
+            character_id, STABLE_USER_FACT, SHARED_EPISODE, DURABLE_CORE_FACT,
+        ]
+        if status_filter == "current":
+            statement += f" AND {effective_status} NOT IN ({','.join('?' for _ in CURRENT_EXCLUDED_STATUSES)})"
+            arguments.extend(sorted(CURRENT_EXCLUDED_STATUSES))
+        elif status_filter == "historical":
+            statement += f" AND {effective_status} IN ({','.join('?' for _ in CURRENT_EXCLUDED_STATUSES)})"
+            arguments.extend(sorted(CURRENT_EXCLUDED_STATUSES))
+        if scope_filter == "applicable":
+            scope_sql, scope_arguments = self.store._retrieval_scope_sql(character_id)
+            statement += f" AND {scope_sql}"
+            arguments.extend(scope_arguments)
+        if normalized_query:
+            statement += " AND (instr(lower(c.content), lower(?)) > 0 OR instr(lower(COALESCE(c.subject_key,'')), lower(?)) > 0 OR instr(lower(c.claim_type), lower(?)) > 0)"
+            arguments.extend((normalized_query, normalized_query, normalized_query))
+        statement += " ORDER BY c.created_at_us DESC, c.claim_id LIMIT ? OFFSET ?"
+        arguments.extend((limit + 1, offset))
+        rows = self.store.connection.execute(statement, arguments).fetchall()
+        items = []
+        for row in rows[:limit]:
+            evidence_ids = tuple(filter(None, str(row["evidence_event_ids"] or "").split(",")))
+            items.append({
+                "record_id": str(row["claim_id"]),
+                "claim_type": str(row["claim_type"]),
+                "subject_key": str(row["subject_key"] or ""),
+                "content": str(row["content"]),
+                "importance": int(row["importance"]),
+                "status": str(row["effective_status"]),
+                "created_at_us": int(row["created_at_us"]),
+                "updated_at_us": int(row["updated_at_us"] or row["created_at_us"]),
+                "valid_from_us": int(row["valid_from_us"]) if row["valid_from_us"] is not None else None,
+                "valid_to_us": int(row["valid_to_us"]) if row["valid_to_us"] is not None else None,
+                "truth_scope_id": str(row["truth_scope_id"] or ""),
+                "truth_scope_kind": str(row["scope_kind"] or "unknown"),
+                "truth_scope_label": str(row["scope_label"] or ""),
+                "provenance_state": str(row["provenance_state"]),
+                "source_reference": str(row["source_reference"] or ""),
+                "evidence_count": int(row["evidence_count"]),
+                "evidence_event_ids": evidence_ids,
+                "corrected_by": str(row["corrected_by"] or ""),
+                "supersedes": str(row["supersedes"] or ""),
+            })
+        return {"items": items, "has_more": len(rows) > limit}
+
+    def inspect_claim_provenance(
+        self,
+        character_id: str,
+        claim_id: str,
+        *,
+        limit: int = 8,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        """Return a bounded audit projection for one character-owned claim.
+
+        References are reported, never followed into conversation archives or
+        external sources. Missing referenced events remain visible as broken
+        audit links instead of making the viewer unavailable.
+        """
+        character_id = _require_uuid(character_id)
+        limit = min(self._bounded_limit(limit), 12)
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise StoreError("offset must not be negative")
+        claim = self.store.connection.execute(
+            f"""SELECT c.*, {self._status_sql()} AS effective_status,
+                       ts.scope_kind, ts.label AS scope_label
+                  FROM claims c LEFT JOIN truth_scopes ts
+                    ON ts.character_id=c.character_id
+                   AND ts.truth_scope_id=c.truth_scope_id
+                 WHERE c.character_id=? AND c.claim_id=?
+                   AND c.claim_type IN (?, ?, ?)""",
+            (character_id, str(claim_id), STABLE_USER_FACT, SHARED_EPISODE, DURABLE_CORE_FACT),
+        ).fetchone()
+        if claim is None:
+            raise StoreError("claim is unavailable for this character")
+
+        evidence_rows = self.store.connection.execute(
+            """SELECT ce.*, e.event_id AS resolved_event_id, e.sequence,
+                      e.event_type, e.actor_kind, e.recorded_at_us,
+                      e.occurred_from_us, e.occurred_to_us,
+                      e.temporal_precision, e.content_text, e.source_origin,
+                      e.source_reference, e.redaction_state
+                 FROM claim_evidence ce LEFT JOIN events e
+                   ON e.character_id=ce.character_id AND e.event_id=ce.event_id
+                WHERE ce.character_id=? AND ce.claim_id=?
+                ORDER BY COALESCE(e.sequence, 2147483647), ce.created_at_us,
+                         ce.event_id, ce.evidence_role LIMIT ? OFFSET ?""",
+            (character_id, str(claim_id), limit + 1, offset),
+        ).fetchall()
+        status_rows = self.store.connection.execute(
+            """SELECT s.*, e.event_type AS source_event_type,
+                      e.source_origin AS source_event_origin,
+                      e.source_reference AS source_event_reference
+                 FROM claim_status_events s LEFT JOIN events e
+                   ON e.character_id=s.character_id AND e.event_id=s.source_event_id
+                WHERE s.character_id=? AND s.claim_id=?
+                ORDER BY s.status_event_id DESC LIMIT ? OFFSET ?""",
+            (character_id, str(claim_id), limit + 1, offset),
+        ).fetchall()
+        relation_rows = self.store.connection.execute(
+            """SELECT * FROM claim_relations
+                WHERE character_id=? AND (from_claim_id=? OR to_claim_id=?)
+                ORDER BY relation_id DESC LIMIT ? OFFSET ?""",
+            (character_id, str(claim_id), str(claim_id), limit + 1, offset),
+        ).fetchall()
+
+        evidence: list[dict[str, object]] = []
+        for row in evidence_rows[:limit]:
+            resolved = row["resolved_event_id"] is not None
+            redaction = str(row["redaction_state"] or "missing") if resolved else "missing"
+            retained_reference = str(row["source_reference"] or "") if resolved else ""
+            source_reference = retained_reference[:240]
+            if not resolved:
+                source_status = "event_missing"
+            elif redaction != "active":
+                source_status = "redacted"
+            elif retained_reference:
+                source_status = (
+                    "reference_retained_truncated" if len(retained_reference) > 240
+                    else "reference_retained_not_expanded"
+                )
+            else:
+                source_status = "reference_absent"
+            excerpt = ""
+            content = str(row["content_text"] or "") if resolved else ""
+            start = row["excerpt_start_cp"]
+            end = row["excerpt_end_cp"]
+            if (
+                redaction == "active" and isinstance(start, int)
+                and not isinstance(start, bool) and isinstance(end, int)
+                and not isinstance(end, bool) and 0 <= start <= end <= len(content)
+            ):
+                excerpt = content[start:end][:240]
+            source_class = classify_durable_source(
+                event_type=row["event_type"] if resolved else "",
+                actor_kind=row["actor_kind"] if resolved else "",
+                source_origin=row["source_origin"] if resolved else "",
+            )
+            evidence.append({
+                "event_id": str(row["event_id"]),
+                "evidence_role": str(row["evidence_role"]),
+                "source_class": source_class,
+                "source_type": str(row["event_type"] or "")[:80] if resolved else "missing_event",
+                "source_origin": str(row["source_origin"] or "")[:80] if resolved else "",
+                "source_reference": source_reference,
+                "source_status": source_status,
+                "sequence": int(row["sequence"]) if resolved else None,
+                "recorded_at_us": int(row["recorded_at_us"]) if resolved else None,
+                "occurred_from_us": int(row["occurred_from_us"]) if resolved and row["occurred_from_us"] is not None else None,
+                "occurred_to_us": int(row["occurred_to_us"]) if resolved and row["occurred_to_us"] is not None else None,
+                "temporal_precision": str(row["temporal_precision"] or "unknown") if resolved else "unknown",
+                "redaction_state": redaction,
+                "excerpt": excerpt,
+                "evidence_strength": row["evidence_strength"],
+                "curator_confidence": row["curator_confidence"],
+                "linked_at_us": int(row["created_at_us"]),
+            })
+        statuses = [{
+            "status_event_id": int(row["status_event_id"]),
+            "status": str(row["status"]),
+            "reason": str(row["reason"] or "")[:240],
+            "actor_kind": str(row["actor_kind"]),
+            "source_event_id": str(row["source_event_id"] or ""),
+            "source_reference": str(row["source_event_reference"] or "")[:240],
+            "created_at_us": int(row["created_at_us"]),
+        } for row in status_rows[:limit]]
+        relations = [{
+            "relation_id": int(row["relation_id"]),
+            "relation_type": str(row["relation_type"]),
+            "direction": "supersedes" if str(row["from_claim_id"]) == str(claim_id) else "superseded_by",
+            "related_claim_id": (
+                str(row["to_claim_id"]) if str(row["from_claim_id"]) == str(claim_id)
+                else str(row["from_claim_id"])
+            ),
+            "created_at_us": int(row["created_at_us"]),
+        } for row in relation_rows[:limit]]
+        return {
+            "record_id": str(claim["claim_id"]),
+            "claim_type": str(claim["claim_type"]),
+            "subject_key": str(claim["subject_key"] or ""),
+            "status": str(claim["effective_status"]),
+            "truth_scope_id": str(claim["truth_scope_id"] or ""),
+            "truth_scope_kind": str(claim["scope_kind"] or "unknown"),
+            "truth_scope_label": str(claim["scope_label"] or ""),
+            "provenance_state": str(claim["provenance_state"]),
+            "created_at_us": int(claim["created_at_us"]),
+            "valid_from_us": int(claim["valid_from_us"]) if claim["valid_from_us"] is not None else None,
+            "valid_to_us": int(claim["valid_to_us"]) if claim["valid_to_us"] is not None else None,
+            "evidence": evidence,
+            "status_history": statuses,
+            "relations": relations,
+            "offset": offset,
+            "limit": limit,
+            "has_more": any(len(rows) > limit for rows in (evidence_rows, status_rows, relation_rows)),
+        }
+
+    def inspect_episodes(
+        self,
+        character_id: str,
+        *,
+        query: str = "",
+        scope_filter: str = "applicable",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        """Return bounded, valid derived episode metadata for inspection.
+
+        Malformed rows are skipped rather than allowed to affect conversation
+        or viewer availability.  The returned text is always labelled derived
+        by the higher-level viewer projection.
+        """
+        character_id = _require_uuid(character_id)
+        limit = min(self._bounded_limit(limit), 50)
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise StoreError("offset must not be negative")
+        if scope_filter not in {"applicable", "all"}:
+            raise StoreError("invalid episode truth-scope filter")
+        normalized_query = " ".join(str(query or "").split())
+        if len(normalized_query) > 160:
+            raise StoreError("memory search exceeds 160 characters")
+        active_scope = self.active_truth_scope(character_id)
+        statement = """
+            SELECT s.*, r.start_sequence, r.end_sequence
+              FROM summaries s JOIN summary_source_ranges r
+                ON r.character_id=s.character_id AND r.summary_id=s.summary_id
+             WHERE s.character_id=? AND s.summary_level IN ('episode_compaction','episode_era_compaction')
+        """
+        arguments: list[object] = [character_id]
+        if normalized_query:
+            statement += " AND instr(lower(s.content), lower(?)) > 0"
+            arguments.append(normalized_query)
+        statement += " ORDER BY r.end_sequence DESC, r.start_sequence DESC, s.summary_id LIMIT ? OFFSET ?"
+        # Over-fetch by a bounded amount so a few corrupt/inapplicable rows do
+        # not make a healthy page appear empty. No archive is loaded at once.
+        arguments.extend((min(101, (limit + 1) * 4), offset))
+        rows = self.store.connection.execute(statement, arguments).fetchall()
+        items: list[dict[str, object]] = []
+        malformed = 0
+        for row in rows:
+            try:
+                metadata = json.loads(row["legacy_metadata_json"] or "{}")
+                scope_kind = str(metadata["truth_scope_kind"])
+                scope_id = str(metadata.get("truth_scope_id") or "")
+                source_start = int(metadata["source_start_index"])
+                source_end = int(metadata["source_end_index_exclusive"])
+                if scope_kind not in {"legacy_untagged", "real_world", "scenario"}:
+                    raise ValueError("invalid scope")
+                if source_start < 0 or source_end <= source_start:
+                    raise ValueError("invalid source range")
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                malformed += 1
+                continue
+            applicable = scope_kind == "legacy_untagged" or (
+                scope_kind == active_scope.kind and scope_id == active_scope.truth_scope_id
+            )
+            if scope_filter == "applicable" and not applicable:
+                continue
+            items.append({
+                "record_id": str(row["summary_id"]),
+                "summary_level": str(row["summary_level"]),
+                "content": str(row["content"]),
+                "status": "derived",
+                "created_at_us": int(row["created_at_us"]),
+                "truth_scope_id": scope_id,
+                "truth_scope_kind": scope_kind,
+                "truth_scope_label": (
+                    active_scope.label if scope_id == active_scope.truth_scope_id else ""
+                ),
+                "provenance_state": str(row["provenance_state"]),
+                "source_start_sequence": int(row["start_sequence"]),
+                "source_end_sequence": int(row["end_sequence"]),
+                "source_count": int(row["source_count"] or 0),
+                "applicable": applicable,
+            })
+            if len(items) > limit:
+                break
+        return {
+            "items": items[:limit],
+            "has_more": len(items) > limit or len(rows) == min(101, (limit + 1) * 4),
+            "malformed_skipped": malformed,
+        }
+
+    def inspect_open_threads(
+        self,
+        character_id: str,
+        *,
+        query: str = "",
+        status_filter: str = "current",
+        scope_filter: str = "applicable",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        """Return one bounded page of current or closed Open Threads."""
+        character_id = _require_uuid(character_id)
+        limit = min(self._bounded_limit(limit), 50)
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise StoreError("offset must not be negative")
+        if status_filter not in {"current", "historical", "all"}:
+            raise StoreError("invalid Open Thread status filter")
+        if scope_filter not in {"applicable", "all"}:
+            raise StoreError("invalid Open Thread truth-scope filter")
+        normalized_query = " ".join(str(query or "").split())
+        if len(normalized_query) > 160:
+            raise StoreError("memory search exceeds 160 characters")
+        statement = """
+            SELECT t.*, ts.scope_kind, ts.label AS scope_label,
+                   (SELECT COUNT(*) FROM claim_evidence ce
+                      WHERE ce.character_id=t.character_id AND ce.claim_id=t.thread_id) AS evidence_count,
+                   e.source_reference
+              FROM open_threads t LEFT JOIN truth_scopes ts
+                ON ts.character_id=t.character_id AND ts.truth_scope_id=t.truth_scope_id
+              LEFT JOIN events e
+                ON e.character_id=t.character_id AND e.event_id=t.opened_event_id
+             WHERE t.character_id=?
+        """
+        arguments: list[object] = [character_id]
+        if status_filter == "current":
+            statement += " AND t.status='open'"
+        elif status_filter == "historical":
+            statement += " AND t.status IN ('resolved','cancelled')"
+        if scope_filter == "applicable":
+            statement += " AND t.truth_scope_id=?"
+            arguments.append(self.active_truth_scope(character_id).truth_scope_id)
+        if normalized_query:
+            statement += " AND (instr(lower(t.description), lower(?)) > 0 OR instr(lower(COALESCE(t.temporal_anchor,'')), lower(?)) > 0 OR instr(lower(t.thread_kind), lower(?)) > 0)"
+            arguments.extend((normalized_query, normalized_query, normalized_query))
+        statement += " ORDER BY t.last_mentioned_at_us DESC, t.thread_id LIMIT ? OFFSET ?"
+        arguments.extend((limit + 1, offset))
+        rows = self.store.connection.execute(statement, arguments).fetchall()
+        items = [{
+            "record_id": str(row["thread_id"]),
+            "kind": str(row["thread_kind"]),
+            "participant_scope": str(row["participant_scope"]),
+            "content": str(row["description"]),
+            "temporal_anchor": str(row["temporal_anchor"] or ""),
+            "status": str(row["status"]),
+            "opened_at_us": int(row["opened_at_us"]),
+            "updated_at_us": int(row["last_mentioned_at_us"]),
+            "closed_at_us": int(row["closed_at_us"]) if row["closed_at_us"] is not None else None,
+            "truth_scope_id": str(row["truth_scope_id"] or ""),
+            "truth_scope_kind": str(row["scope_kind"] or "unknown"),
+            "truth_scope_label": str(row["scope_label"] or ""),
+            "source_reference": str(row["source_reference"] or ""),
+            "evidence_count": int(row["evidence_count"]),
+        } for row in rows[:limit]]
+        return {"items": items, "has_more": len(rows) > limit}
+
+    def correct_durable_from_viewer(
+        self,
+        character_id: str,
+        claim_id: str,
+        content: str,
+        *,
+        command_id: str,
+    ) -> str:
+        """Append one explicit user correction from the Memory Viewer.
+
+        The viewer action is retained as its own same-character V2 evidence
+        event. It is not inserted into canonical conversation and does not
+        rewrite the predecessor; ``add_durable_claim`` closes and supersedes
+        that predecessor through the existing governed lifecycle.
+        """
+        character_id = _require_uuid(character_id)
+        try:
+            command_uuid = str(uuid.UUID(str(command_id)))
+        except (TypeError, ValueError, AttributeError) as error:
+            raise StoreError("memory viewer command ID must be a UUID") from error
+        content = " ".join(str(content or "").split())
+        if not content or len(content) > 512:
+            raise StoreError("durable correction must contain 1 to 512 characters")
+        row = self.store.connection.execute(
+            f"""SELECT c.*, {self._status_sql()} AS effective_status
+                  FROM claims c WHERE c.character_id=? AND c.claim_id=?
+                    AND c.claim_type=? AND c.assertion_scope=?""",
+            (character_id, str(claim_id), DURABLE_CORE_FACT, DURABLE_ASSERTION_SCOPE),
+        ).fetchone()
+        if row is None or row["effective_status"] in CURRENT_EXCLUDED_STATUSES or row["valid_to_us"] is not None:
+            raise StoreError("durable correction requires one current governed fact")
+        subject_key = validate_durable_subject_key(row["subject_key"])
+        at_us = utc_now_us()
+        event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"aifren:memory-viewer:{character_id}:{command_uuid}"))
+        new_claim_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"aifren:memory-viewer-claim:{character_id}:{command_uuid}"))
+        with self.store.transaction():
+            if self.store.connection.execute(
+                "SELECT 1 FROM events WHERE character_id=? AND event_id=?", (character_id, event_id),
+            ).fetchone() is not None:
+                existing = self.store.connection.execute(
+                    "SELECT claim_id FROM claims WHERE character_id=? AND claim_id=?",
+                    (character_id, new_claim_id),
+                ).fetchone()
+                if existing is None:
+                    raise StoreError("memory viewer command identity conflicts with an incomplete correction")
+                return new_claim_id
+            sequence = int(self.store.connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE character_id=?",
+                (character_id,),
+            ).fetchone()[0])
+            self.store.add_event(
+                character_id, event_id, sequence,
+                event_type=MEMORY_VIEWER_CORRECTION_EVENT_TYPE, actor_kind="user",
+                recorded_at_us=at_us, temporal_precision="instant",
+                content_text=content, source_origin=MEMORY_VIEWER_CORRECTION_SOURCE_ORIGIN,
+                source_reference=f"memory-viewer:{command_uuid}",
+                payload={"operation": "correct_durable_fact"},
+            )
+            self.store.add_durable_claim(
+                character_id, new_claim_id, subject_key=subject_key, content=content,
+                evidence_event_id=event_id, evidence_role="direct_user_statement",
+                evidence_excerpt_start_cp=0, evidence_excerpt_end_cp=len(content),
+                importance=int(row["importance"]), valid_from_us=at_us,
+                created_at_us=at_us, updated_at_us=at_us,
+                curator_name="memory_viewer", curator_version="1",
+                curator_policy_version="explicit_user_correction_v1",
+                supersedes_claim_id=str(claim_id),
+            )
+        return new_claim_id
+
+    def retire_durable_from_viewer(
+        self,
+        character_id: str,
+        claim_id: str,
+        *,
+        command_id: str,
+    ) -> None:
+        """Archive one current governed durable fact without deleting history."""
+        character_id = _require_uuid(character_id)
+        try:
+            command_uuid = str(uuid.UUID(str(command_id)))
+        except (TypeError, ValueError, AttributeError) as error:
+            raise StoreError("memory viewer command ID must be a UUID") from error
+        row = self.store.connection.execute(
+            f"""SELECT c.claim_id, c.valid_to_us, {self._status_sql()} AS effective_status
+                  FROM claims c WHERE c.character_id=? AND c.claim_id=? AND c.claim_type=?""",
+            (character_id, str(claim_id), DURABLE_CORE_FACT),
+        ).fetchone()
+        if row is None or row["effective_status"] in CURRENT_EXCLUDED_STATUSES or row["valid_to_us"] is not None:
+            raise StoreError("durable retirement requires one current governed fact")
+        self.store.add_status(
+            character_id, str(claim_id), "archived",
+            reason=f"memory_viewer:{command_uuid}", actor_kind="user",
+        )
 
     def page(
         self,
@@ -732,6 +1231,7 @@ class MemoryV2Repository:
             ),
             quantity=int(row["quantity"]) if row["quantity"] is not None else None,
             effect_state=str(row["effect_state"]) if row["effect_state"] is not None else None,
+            locus=str(row["locus"]) if row["locus"] is not None else None,
         )
 
     def list_actor_relations(

@@ -1,4 +1,5 @@
 import unittest
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -6,6 +7,19 @@ from stt.stt import SpeechToText
 
 
 class SpeechToTextFallbackTests(unittest.TestCase):
+    def setUp(self):
+        # The decoder is mocked below; model presence is synthetic and local.
+        directory = tempfile.TemporaryDirectory(prefix="synthetic-stt-model-")
+        self.addCleanup(directory.cleanup)
+        model_path = patch("stt.stt.MODEL_DIR", directory.name)
+        model_path.start()
+        self.addCleanup(model_path.stop)
+
+    def test_missing_model_stays_an_explicit_error_without_download(self):
+        with patch("stt.stt.MODEL_DIR", "/synthetic-missing-stt-model"), patch("stt.stt.WhisperModel") as model:
+            with self.assertRaises(FileNotFoundError): SpeechToText()
+            model.assert_not_called()
+
     @staticmethod
     def _segments(text):
         return ([SimpleNamespace(text=text)], object())

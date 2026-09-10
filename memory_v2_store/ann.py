@@ -23,10 +23,20 @@ class HnswClaimIndex:
     _CACHE_COUNTS: dict[str, int] = {}
     _REVERSE_CACHE: dict[str, dict[int, str]] = {}
 
-    def __init__(self, store, character_id: str, provider: Any) -> None:
+    def __init__(
+        self,
+        store,
+        character_id: str,
+        provider: Any,
+        *,
+        include_historical_evidence: bool = False,
+    ) -> None:
         self.store, self.character_id, self.provider = store, str(character_id), provider
+        self.include_historical_evidence = bool(include_historical_evidence)
         digest = hashlib.sha256(
-            f"{character_id}|{provider.provider}|{provider.model}|{provider.preprocessing_fingerprint}".encode()
+            f"{character_id}|{provider.provider}|{provider.model}|"
+            f"{provider.preprocessing_fingerprint}|historical="
+            f"{int(self.include_historical_evidence)}".encode()
         ).hexdigest()[:20]
         self.directory = None if store.path == ":memory:" else Path(store.path).resolve().parent / "ann_index"
         self.index_path = self.directory / f"{digest}.hnsw" if self.directory else None
@@ -42,16 +52,16 @@ class HnswClaimIndex:
             raise AnnUnavailable(type(error).__name__) from error
 
     def _rows(self):
-        return self.store.iter_ann_embedding_rows(self.character_id, self.provider)
+        return self.store.iter_ann_embedding_rows(
+            self.character_id, self.provider,
+            include_historical_evidence=self.include_historical_evidence,
+        )
 
     def _count(self):
-        return self.store.connection.execute(
-            """SELECT COUNT(*) FROM claim_embeddings WHERE character_id=? AND provider=? AND model=?
-               AND preprocessing_fingerprint=? AND state='current' AND dimensions=? AND dtype=? AND normalized=?""",
-            (self.character_id, self.provider.provider, self.provider.model,
-             self.provider.preprocessing_fingerprint, self.provider.dimensions,
-             self.provider.dtype, int(bool(self.provider.normalized))),
-        ).fetchone()[0]
+        return self.store.ann_embedding_count(
+            self.character_id, self.provider,
+            include_historical_evidence=self.include_historical_evidence,
+        )
 
     def _vector(self, blob):
         values = struct.unpack(f"<{self.provider.dimensions}f", blob)
@@ -154,6 +164,7 @@ class HnswClaimIndex:
         ef: int = 4096,
         candidate_multiplier: int = 16,
         truth_scope_id: str | None = None,
+        include_historical_evidence: bool = False,
     ) -> list[tuple[str, float]]:
         if limit < 1:
             return []
@@ -176,6 +187,7 @@ class HnswClaimIndex:
             self.character_id,
             (claim_id for claim_id, _score in candidates),
             truth_scope_id=truth_scope_id,
+            include_historical_evidence=include_historical_evidence,
         )
         return [item for item in candidates if item[0] in allowed]
 

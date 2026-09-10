@@ -115,6 +115,16 @@ class DialogueSemanticsTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual(expected, spoken_text(raw))
 
+    def test_genuine_emphasis_and_parenthetical_prose_remain_spoken(self):
+        cases = {
+            "I *really* mean it.": "I really mean it.",
+            "Hello (softly), it's good to see you.": "Hello (softly), it's good to see you.",
+            "(that was *really* strange)": "(that was really strange)",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, spoken_text(raw))
+
     def test_sentence_projection_preserves_provider_fragment_whitespace(self):
         cases = (
             (("Did", " the", " testing", " work? "), "Did the testing work?"),

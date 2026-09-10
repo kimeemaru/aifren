@@ -47,6 +47,14 @@ _INFORMATIVE_SPEECH = re.compile(
     r"the time is|today is|you need to)\b",
     re.IGNORECASE,
 )
+_RETROSPECTIVE_MEMORY_SPEECH = re.compile(
+    r"\b(?:i\s+(?:still\s+|do\s+)?(?:remember|recall)|"
+    r"you\s+(?:previously\s+|earlier\s+|once\s+)?"
+    r"(?:told\s+me|said|mentioned|described)|"
+    r"we\s+(?:previously\s+|earlier\s+|once\s+)?(?:talked|discussed)|"
+    r"i\s+(?:previously\s+|earlier\s+|once\s+)?(?:told\s+you|mentioned))\b",
+    re.IGNORECASE,
+)
 _ORDINARY_QUESTION = re.compile(
     r"\b(?:who|what|when|where|why|how|can|could|would|will|do|did|does|"
     r"are|is|should|you|we|it|that)\b[^?]{0,100}\?",
@@ -400,6 +408,7 @@ def _validate_sleep_content(action: str, speech: str, mode: str, beat_count: int
         if len(speech.split()) > 20 or len(speech) > 160 or "*" in speech:
             return "speech_bound"
         if _SAFE_TEXT.fullmatch(speech) is None or _INFORMATIVE_SPEECH.search(speech) is not None \
+                or _RETROSPECTIVE_MEMORY_SPEECH.search(speech) is not None \
                 or _ORDINARY_QUESTION.search(speech) is not None:
             return "informative_speech"
         if mode != "waking" and re.search(r"\b(?:i(?:'m| am) awake|wide awake|good morning)\b", speech, re.I):
@@ -417,6 +426,7 @@ def _validate_sleep_spoken(speech: str, mode: str) -> str:
     if len(speech.split()) > 20 or len(speech) > 160 or "*" in speech:
         return "speech_bound"
     if _SAFE_TEXT.fullmatch(speech) is None or _INFORMATIVE_SPEECH.search(speech) is not None \
+            or _RETROSPECTIVE_MEMORY_SPEECH.search(speech) is not None \
             or _ORDINARY_QUESTION.search(speech) is not None:
         return "informative_speech"
     if mode != "waking" and re.search(

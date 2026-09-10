@@ -18,7 +18,7 @@ MAX_REASON_CONTEXT_CHARS = 520
 MIN_FAILED_ATTEMPT_BACKOFF_US = 5 * 60_000_000
 MAX_FAILED_ATTEMPT_BACKOFF_US = HOUR_US
 _ATTEMPT_OUTCOMES = frozenset({
-    "published", "empty_output", "overlength_output", "provider_error",
+    "published", "empty_output", "overlength_output", "provider_error", "persistence_error",
     "provider_timeout", "unsafe_reason", "configuration_error", "interrupted",
 })
 _BUSY_ACTIVITY_PREFIXES = (

@@ -46,9 +46,10 @@ namespace AIFren.UnityPoc.Tests.EditMode
         [Test]
         public void PickerFailureReturnsOneConciseWorkerError()
         {
-            var result = Interpret(2, string.Empty, "zenity detail");
+            var result = Interpret(2, string.Empty, "PRIVATE_PATH_CREDENTIAL_SENTINEL");
             Assert.IsEmpty(SelectedPath(result));
-            StringAssert.Contains("zenity failed (exit 2): zenity detail", Error(result));
+            StringAssert.Contains("failed (exit 2)", Error(result));
+            StringAssert.DoesNotContain("PRIVATE_PATH_CREDENTIAL_SENTINEL", Error(result));
         }
 
         [Test]

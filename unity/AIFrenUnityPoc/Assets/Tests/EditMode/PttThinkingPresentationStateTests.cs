@@ -68,6 +68,28 @@ namespace AIFren.UnityPoc.Tests.EditMode
             Assert.IsFalse(state.TryRestoreOnVoiceReady(out _));
         }
 
+        [Test]
+        public void PreTurnModelFailureRestoresDialogueAfterAutoSubmit()
+        {
+            PttThinkingPresentationState state = ReleasedAttempt("Previous answer");
+            state.MarkTranscription("new request", true);
+
+            Assert.IsFalse(state.TryRestoreOnVoiceReady(out _));
+            Assert.IsTrue(state.TryRestoreOnTurnFailure(out string restored));
+            Assert.AreEqual("Previous answer", restored);
+            Assert.IsFalse(state.TryRestoreOnTurnFailure(out _));
+        }
+
+        [Test]
+        public void FailureAfterTurnStartedCannotRollbackGeneratedDialogue()
+        {
+            PttThinkingPresentationState state = ReleasedAttempt("Previous answer");
+            state.MarkTranscription("new request", true);
+            state.MarkTurnStarted();
+
+            Assert.IsFalse(state.TryRestoreOnTurnFailure(out _));
+        }
+
         private static PttThinkingPresentationState ReleasedAttempt(string dialogue)
         {
             PttThinkingPresentationState state = new PttThinkingPresentationState();

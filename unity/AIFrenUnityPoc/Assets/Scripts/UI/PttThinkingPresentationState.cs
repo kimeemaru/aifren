@@ -72,6 +72,22 @@ namespace AIFren.UnityPoc.UI
             Reset();
         }
 
+        public bool TryRestoreOnTurnFailure(out string dialogue)
+        {
+            dialogue = string.Empty;
+            if (!attemptActive || !releaseSeen || !placeholderActive)
+                return false;
+
+            // A provider/configuration failure may happen before the backend
+            // can emit turn_started. In that case voice-ready alone cannot
+            // distinguish cleanup from a turn that is about to begin, but the
+            // terminal error can. Retire this exact PTT placeholder so the
+            // next capture starts from the prior real dialogue, not Thinking.
+            dialogue = previousDialogue;
+            Reset();
+            return true;
+        }
+
         private void Reset()
         {
             attemptActive = false;

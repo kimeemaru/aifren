@@ -45,6 +45,39 @@ class LinuxBackendLauncherTests(unittest.TestCase):
         self.assertFalse(CHECKER.is_compatible_transport_version(1))
         self.assertFalse(CHECKER.is_compatible_transport_version(True))
 
+    def test_v2_acceptance_requires_authority_and_live_selected_provider(self) -> None:
+        ready = {
+            "memory_authority": {"mode": "v2"},
+            "models": {
+                "current": {
+                    "mode": "local", "configured": True,
+                    "availability": "configured",
+                },
+                "local_runtime": {
+                    "state": "ready", "active_model": "model.gguf",
+                    "selected_model": "model.gguf",
+                },
+            },
+        }
+        self.assertTrue(CHECKER.is_v2_acceptance_ready(ready))
+        ready["models"]["local_runtime"]["active_model"] = "other.gguf"
+        self.assertFalse(CHECKER.is_v2_acceptance_ready(ready))
+        ready["models"]["local_runtime"]["active_model"] = "model.gguf"
+        ready["memory_authority"]["mode"] = "v1"
+        self.assertFalse(CHECKER.is_v2_acceptance_ready(ready))
+
+    def test_readiness_requires_the_selected_authority(self):
+        self.assertTrue(CHECKER.is_expected_memory_authority({'memory_authority':{'mode':'v2'}}, 'v2'))
+        self.assertFalse(CHECKER.is_expected_memory_authority({'memory_authority':{'mode':'v1'}}, 'v2'))
+        self.assertFalse(CHECKER.is_expected_memory_authority({}, 'v2'))
+        self.assertTrue(CHECKER.is_expected_memory_authority({'memory_authority':{'mode':'v1'}}, 'v1'))
+
+    def test_ensure_does_not_reuse_or_stop_wrong_authority(self):
+        with mock.patch.object(LAUNCHER,'listener_pid',return_value=123),mock.patch.object(LAUNCHER,'is_expected_backend',return_value=True),mock.patch.object(LAUNCHER,'run_protocol_check',return_value=3),mock.patch.object(LAUNCHER,'start_backend') as start,mock.patch.object(LAUNCHER,'stop_expected_backend') as stop:
+            with self.assertRaises(RuntimeError):
+                LAUNCHER.ensure_backend(Path('/python'),Path('/repo'),Path('/owned'))
+            start.assert_not_called();stop.assert_not_called()
+
     def test_zombie_backend_is_treated_as_stopped(self) -> None:
         with mock.patch.object(LAUNCHER, "process_state", return_value="Z"):
             self.assertTrue(LAUNCHER.wait_for_exit(12345, 0.1))

@@ -52,27 +52,30 @@ def retrieval_report(store: MemoryV2Store) -> dict:
     ).fetchall()
     total = len(rows)
     if not rows:
-        return {"total_compared": 0, "retention_limit": MAX_TELEMETRY_ROWS, "characters": {}}
-    overlap = sum(1 for row in rows if row["overlap_count"] > 0)
-    v1_only = sum(1 for row in rows if not row["v1_abstained"] and row["v2_abstained"])
-    v2_only = sum(1 for row in rows if row["v1_abstained"] and not row["v2_abstained"])
-    abstention = sum(1 for row in rows if bool(row["v1_abstained"]) != bool(row["v2_abstained"]))
+        return {"total_compared": 0, "successful_compared": 0, "failed_executions": 0, "retention_limit": MAX_TELEMETRY_ROWS, "characters": {}}
+    healthy = [row for row in rows if not row["error_kind"]]
+    overlap = sum(1 for row in healthy if row["overlap_count"] > 0)
+    v1_only = sum(1 for row in healthy if not row["v1_abstained"] and row["v2_abstained"])
+    v2_only = sum(1 for row in healthy if row["v1_abstained"] and not row["v2_abstained"])
+    abstention = sum(1 for row in healthy if bool(row["v1_abstained"]) != bool(row["v2_abstained"]))
     errors = sum(1 for row in rows if row["error_kind"])
     by_character = {}
     for row in rows:
         bucket = by_character.setdefault(row["character_id"], {"count": 0, "overlap": 0, "errors": 0, "strategies": {}})
         bucket["count"] += 1
-        bucket["overlap"] += int(row["overlap_count"] > 0)
+        bucket["overlap"] += int(not row["error_kind"] and row["overlap_count"] > 0)
         bucket["errors"] += int(bool(row["error_kind"]))
         strategy = row["retrieval_strategy"]
         bucket["strategies"][strategy] = bucket["strategies"].get(strategy, 0) + 1
     return {
         "total_compared": total,
+        "successful_compared": len(healthy),
+        "failed_executions": errors,
         "retention_limit": MAX_TELEMETRY_ROWS,
-        "overlap_rate": overlap / total,
-        "v1_only_abstention_rate": v1_only / total,
-        "v2_only_abstention_rate": v2_only / total,
-        "abstention_disagreement_rate": abstention / total,
+        "overlap_rate": overlap / len(healthy) if healthy else None,
+        "v1_only_abstention_rate": v1_only / len(healthy) if healthy else None,
+        "v2_only_abstention_rate": v2_only / len(healthy) if healthy else None,
+        "abstention_disagreement_rate": abstention / len(healthy) if healthy else None,
         "v2_error_rate": errors / total,
         "v1_latency_ms": _latency_summary(rows, "v1_latency_ms"),
         "v2_latency_ms": _latency_summary(rows, "v2_latency_ms"),

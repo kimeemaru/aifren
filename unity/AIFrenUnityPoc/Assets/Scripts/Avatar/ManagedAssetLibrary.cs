@@ -22,7 +22,7 @@ namespace AIFren.UnityPoc.Avatar
         private ManagedAssetIndex index;
         internal int DuplicateRecordsRepaired { get; private set; }
         internal static ManagedAssetLibrary Load() => new ManagedAssetLibrary();
-        private ManagedAssetLibrary() : this(Path.Combine(Application.persistentDataPath, "AIFren", "AssetLibrary")) { }
+        private ManagedAssetLibrary() : this(Path.Combine(AIFren.UnityPoc.UI.NativeQaSession.AssetDataRoot, "AIFren", "AssetLibrary")) { }
         internal static ManagedAssetLibrary CreateForTesting(string storageRoot) => new ManagedAssetLibrary(storageRoot);
         private ManagedAssetLibrary(string storageRoot)
         {

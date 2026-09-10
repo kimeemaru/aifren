@@ -65,6 +65,7 @@ class ActiveStatePromptIntegrationTests(unittest.TestCase):
             character={"name": "Test", "_character_id": self.character_id},
             character_prompt="Character baseline.", tts=_TTS(),
             memory_v2_shadow_writer=self.writer, character_id=self.character_id,
+            memory_authority="v1",
         )
         self.service._run_memory_v2_shadow = lambda query: None
 

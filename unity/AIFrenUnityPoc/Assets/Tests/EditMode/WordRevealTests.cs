@@ -1,3 +1,4 @@
+using PlayerPrefs = AIFren.UnityPoc.PresentationPreferences;
 using System.Reflection;
 using AIFren.UnityPoc.UI;
 using NUnit.Framework;
@@ -103,6 +104,8 @@ namespace AIFren.UnityPoc.Tests.EditMode
         public void InstantSettingDrivesTheControllerStreamPathOnAndOff()
         {
             const string preference = "AIFren.InstantDialogueText";
+            bool hadPreference = PlayerPrefs.HasKey(preference);
+            int oldPreference = PlayerPrefs.GetInt(preference);
             GameObject root = new GameObject("controller", typeof(AIFrenPocController));
             AIFrenPocController controller = root.GetComponent<AIFrenPocController>();
             TextMeshProUGUI label = new GameObject("dialogue", typeof(RectTransform),
@@ -137,7 +140,9 @@ namespace AIFren.UnityPoc.Tests.EditMode
             }
             finally
             {
-                PlayerPrefs.DeleteKey(preference);
+                if (hadPreference) PlayerPrefs.SetInt(preference, oldPreference);
+                else PlayerPrefs.DeleteKey(preference);
+                PlayerPrefs.Save();
                 Object.DestroyImmediate(root);
             }
         }

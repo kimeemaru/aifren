@@ -4,7 +4,7 @@ set -euo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 project="$repository_root/unity/AIFrenUnityPoc"
 player="$project/Builds/Linux/AIFrenPoc.x86_64"
-log_file="${AIFREN_UNITY_BUILD_LOG:-/tmp/aifren-unity-linux-build.log}"
+log_file="${AIFREN_UNITY_BUILD_LOG:-${TMPDIR:-/tmp}/unity-linux-build.log}"
 unity_version="2022.3.62f3"
 build_method="AIFren.UnityPoc.Editor.BuildAIFrenPoc.BuildLinux"
 

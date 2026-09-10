@@ -69,6 +69,7 @@ class SceneRelationProposal:
     semantic_family: str | None = None
     quantity: int | None = None
     effect_state: str | None = None
+    locus: str | None = None
 
 
 def validate_scene_relation_proposal(value: object) -> SceneRelationProposal:
@@ -83,6 +84,11 @@ def validate_scene_relation_proposal(value: object) -> SceneRelationProposal:
         raise ValueError("unsupported relation scene target")
     if value.facet is not None and value.facet not in RELATION_FACETS:
         raise ValueError("unsupported relation body region")
+    if value.locus is not None and (
+        not isinstance(value.locus, str) or _SAFE_CAUSE.fullmatch(value.locus) is None
+        or value.locus != value.locus.strip()
+    ):
+        raise ValueError("invalid literal relation locus")
     if value.side is not None and value.side not in RELATION_SIDES:
         raise ValueError("unsupported relation side")
     if value.excerpt_start_cp is not None or value.excerpt_end_cp is not None:

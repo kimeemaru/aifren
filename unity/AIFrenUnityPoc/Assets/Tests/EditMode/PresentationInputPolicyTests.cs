@@ -23,13 +23,13 @@ namespace AIFren.UnityPoc.Tests.EditMode
         public void SnapshotAndConsoleDiagnosticPayloadsParseWithTheirLiveFields()
         {
             ServerMessage snapshot = AIFrenProtocol.ParseServerMessage(
-                "{\"type\":\"snapshot\",\"data\":{\"voice\":{\"state\":\"ready\"},\"tts\":{\"provider\":\"kokoro\",\"voice\":\"default\",\"device\":\"local\"},\"models\":{\"current\":{\"mode\":\"local\",\"provider\":\"openai_compatible\",\"configured\":true,\"model\":\"local-test\"}}}}"
+                "{\"type\":\"snapshot\",\"data\":{\"voice\":{\"state\":\"ready\"},\"tts\":{\"provider\":\"audio8\",\"voice\":\"reference\",\"device\":\"local\"},\"models\":{\"current\":{\"mode\":\"local\",\"provider\":\"openai_compatible\",\"configured\":true,\"model\":\"local-test\"}}}}"
             );
             ServerMessage console = AIFrenProtocol.ParseServerMessage(
                 "{\"type\":\"event\",\"event\":{\"type\":\"console_log\",\"data\":{\"lines\":[\"Backend listening\"]}}}"
             );
 
-            Assert.AreEqual("kokoro", snapshot.data.tts.provider);
+            Assert.AreEqual("audio8", snapshot.data.tts.provider);
             Assert.AreEqual("local-test", snapshot.data.models.current.model);
             Assert.AreEqual("ready", snapshot.data.voice.state);
             Assert.AreEqual("Backend listening", console.@event.data.lines[0]);

@@ -1,4 +1,7 @@
 import io
+import json
+from pathlib import Path
+import tempfile
 import time
 import unittest
 import wave
@@ -7,22 +10,89 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from assistant_service import AssistantService
+from config import AUDIO8_WARMUP_TEXT, TTS_CHUNK_MIN_CHARS
 from tts import tts
 from tts.chunker import SpeechChunker
 from tts.streaming import StreamingSpeechQueue, TtsSynthesisResourceManager
+from tts.audio8_runtime import Audio8Runtime
+
+
+class _HttpResponse:
+    def __init__(self, payload):
+        self.payload = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
+    def __enter__(self): return self
+    def __exit__(self, *args): return False
+    def read(self): return self.payload
 
 
 class ProviderSelectionTests(unittest.TestCase):
-    def test_kokoro_is_supported(self):
-        provider = MagicMock()
-        with patch.object(tts, "KokoroTextToSpeech", return_value=provider):
-            self.assertIs(provider, tts.create_tts_provider("kokoro"))
+    def test_audio8_disposable_warmup_exercises_a_production_sized_chunk(self):
+        self.assertGreaterEqual(len(AUDIO8_WARMUP_TEXT), TTS_CHUNK_MIN_CHARS)
 
-    def test_unknown_provider_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "kokoro"):
-            tts.create_tts_provider("unknown")
+    def test_default_audio8_uses_kokoro_as_runtime_fallback(self):
+        primary, fallback = MagicMock(), MagicMock()
+        with patch.object(tts, "Audio8TextToSpeech", return_value=primary), patch.object(tts, "KokoroTextToSpeech", return_value=fallback):
+            provider = tts.create_tts_provider("audio8")
+            self.assertFalse(provider.fallback_loaded)
+            tts.KokoroTextToSpeech.assert_not_called()
+            self.assertIs(provider.fallback, fallback)
+        self.assertIs(provider.primary, primary)
 
+    def test_audio8_failed_chunk_falls_back_once(self):
+        primary, fallback = MagicMock(), MagicMock()
+        primary.speak.return_value = False
+        fallback.speak.return_value = True
+        provider = tts.FallbackTextToSpeech(primary, fallback)
+        self.assertTrue(provider.speak("One complete sentence."))
+        fallback.speak.assert_called_once()
 
+    def test_prepared_audio8_chunk_falls_back_without_reordering(self):
+        primary, fallback = MagicMock(), MagicMock()
+        primary.prepare_stream_chunk.side_effect = RuntimeError("offline")
+        fallback.prepare_stream_chunk.return_value = "prepared fallback"
+        fallback.start_prepared_chunk.return_value = True
+        provider = tts.FallbackTextToSpeech(primary, fallback)
+        prepared = provider.prepare_stream_chunk("One complete sentence.")
+        self.assertTrue(provider.start_prepared_chunk(prepared))
+        fallback.prepare_stream_chunk.assert_called_once_with("One complete sentence.")
+        fallback.start_prepared_chunk.assert_called_once_with("prepared fallback")
+
+    def test_audio8_wrapper_exposes_kokoro_cpu_resource_fallback(self):
+        primary, fallback = MagicMock(), MagicMock()
+        fallback.fallback_to_cpu_after_resource_failure.return_value = True
+        fallback.device = "cpu"
+        provider = tts.FallbackTextToSpeech(primary, fallback)
+
+        self.assertTrue(provider.fallback_to_cpu_after_resource_failure())
+        fallback.fallback_to_cpu_after_resource_failure.assert_called_once_with()
+        self.assertEqual("cpu", provider.device)
+
+    def test_audio8_startup_failure_uses_kokoro_when_available(self):
+        fallback = MagicMock()
+        with patch.object(tts, "Audio8TextToSpeech", side_effect=RuntimeError("offline")), patch.object(
+            tts, "KokoroTextToSpeech", return_value=fallback
+        ):
+            self.assertIs(fallback, tts.create_tts_provider("audio8"))
+
+    def test_audio8_fallback_exposes_a_safe_reason_without_reference_data(self):
+        fallback = MagicMock()
+        with patch.object(tts, "Audio8TextToSpeech", side_effect=RuntimeError("private path must not leak")), patch.object(
+            tts, "KokoroTextToSpeech", return_value=fallback
+        ):
+            provider = tts.create_tts_provider("audio8")
+        self.assertEqual("audio8", provider.configured_provider)
+        self.assertEqual("Audio8 unavailable (RuntimeError)", provider.fallback_reason)
+        self.assertNotIn("private", provider.fallback_reason)
+
+    def test_both_chunk_providers_can_fail_without_raising(self):
+        primary, fallback = MagicMock(), MagicMock()
+        primary.speak.return_value = False
+        fallback.speak.return_value = False
+        self.assertFalse(tts.FallbackTextToSpeech(primary, fallback).speak("Text still persists."))
+
+    def test_piper_is_not_a_supported_provider(self):
+        with self.assertRaisesRegex(ValueError, "audio8.*kokoro"):
+            tts.create_tts_provider("piper")
 
 
 class ChunkerTests(unittest.TestCase):
@@ -62,7 +132,20 @@ class PlaybackTests(unittest.TestCase):
         provider.stop()
         self.assertTrue(provider.playback_finished.is_set())
 
+    def test_audio8_wav_decoder_uses_pcm_data(self):
+        payload = io.BytesIO()
+        with wave.open(payload, "wb") as wav_file:
+            wav_file.setnchannels(1); wav_file.setsampwidth(2); wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x00\x10\x00")
+        audio, rate = tts.LocalPlaybackTTS.decode_wav_bytes(payload.getvalue())
+        self.assertEqual(24000, rate)
+        self.assertEqual((2, 1), audio.shape)
+        self.assertEqual(np.float32, audio.dtype)
 
+    def test_audio8_readiness_probe_fails_closed_without_network(self):
+        provider = object.__new__(tts.Audio8TextToSpeech)
+        provider.runtime = MagicMock(); provider.runtime.ensure_ready.return_value = False
+        self.assertFalse(provider.is_available())
 
     def test_kokoro_stream_chunk_can_be_prepared_before_ordered_playback(self):
         provider = object.__new__(tts.KokoroTextToSpeech)
@@ -196,11 +279,114 @@ class PlaybackTests(unittest.TestCase):
         self.assertEqual(0, fake.begin_count)
         self.assertEqual(1, fake.stop_count)
 
+    def test_audio8_runtime_warms_once_and_reuses_resident_voice(self):
+        calls = []
+        def fake_open(req, timeout):
+            calls.append((req.full_url, req.get_method()))
+            if req.full_url.endswith("/api/health"):
+                return _HttpResponse({"ok": True})
+            if req.full_url.endswith("/api/voices"):
+                return _HttpResponse({"voices": [{"name": "approved_dev_voice"}]})
+            if req.full_url.endswith("/audio/speech"):
+                return _HttpResponse(b"RIFFfake")
+            raise AssertionError(req.full_url)
+        runtime = Audio8Runtime(
+            base_url="http://audio8.test/v1", model="arktts", voice_profile="approved_dev_voice",
+            urlopen=fake_open,
+        )
+        self.assertTrue(runtime.ensure_ready())
+        runtime.request_audio("First."); runtime.request_audio("Second.")
+        status = runtime.status
+        self.assertEqual(1, status["model_load_count"])
+        self.assertEqual(0, status["voice_condition_count"])
+        self.assertEqual(1, status["warmup_count"])
+        self.assertEqual(2, status["synthesis_count"])
+        self.assertEqual(1, sum(url.endswith("/api/voices") for url, _ in calls))
 
+    def test_audio8_runtime_registers_reference_only_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "reference.wav"; reference.write_bytes(b"wav")
+            calls = []
+            def fake_open(req, timeout):
+                calls.append(req.full_url)
+                if req.full_url.endswith("/api/health"): return _HttpResponse({"ok": True})
+                if req.full_url.endswith("/api/voices"): return _HttpResponse({"voices": []})
+                if req.full_url.endswith("/api/voices/register"):
+                    return _HttpResponse({"ok": True, "voice": {"name": "aifren_local_voice"}})
+                if req.full_url.endswith("/audio/speech"): return _HttpResponse(b"RIFFfake")
+                raise AssertionError(req.full_url)
+            runtime = Audio8Runtime(
+                base_url="http://audio8.test/v1", model="arktts", reference_audio=str(reference),
+                reference_text="approved transcript", urlopen=fake_open,
+            )
+            self.assertTrue(runtime.ensure_ready())
+            self.assertTrue(runtime.ensure_ready())
+            self.assertEqual(1, calls.count("http://audio8.test/api/voices/register"))
+            self.assertEqual(1, runtime.status["voice_condition_count"])
 
+    def test_audio8_runtime_start_failure_stays_failed(self):
+        runtime = Audio8Runtime(
+            base_url="http://audio8.test/v1", model="arktts", runtime_root="/missing",
+            urlopen=lambda req, timeout: (_ for _ in ()).throw(OSError("offline")),
+        )
+        self.assertFalse(runtime.ensure_ready())
+        self.assertEqual("failed", runtime.status["state"])
 
+    def test_audio8_runtime_launches_one_resident_service_then_reuses_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / "start_server.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            launches, health = [], {"count": 0}
+            class Process:
+                def poll(self): return None
+            def fake_open(req, timeout):
+                if req.full_url.endswith("/api/health"):
+                    health["count"] += 1
+                    if health["count"] == 1: raise OSError("not yet")
+                    return _HttpResponse({"ok": True})
+                if req.full_url.endswith("/api/voices"): return _HttpResponse({"voices": [{"name": "safe"}]})
+                if req.full_url.endswith("/audio/speech"): return _HttpResponse(b"RIFFfake")
+                raise AssertionError(req.full_url)
+            runtime = Audio8Runtime(base_url="http://audio8.test/v1", model="arktts", runtime_root=str(root),
+                voice_profile="safe", urlopen=fake_open, start_process=lambda *args, **kwargs: launches.append((args, kwargs)) or Process())
+            self.assertTrue(runtime.ensure_ready())
+            self.assertTrue(runtime.ensure_ready())
+            self.assertEqual(1, len(launches))
+            self.assertEqual(1, runtime.status["model_load_count"])
 
+    def test_audio8_runtime_stops_only_the_service_it_started(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stop_script = root / "stop_server.sh"
+            stop_script.write_text("#!/bin/sh\n", encoding="utf-8")
+            stopped = []
+            runtime = Audio8Runtime(
+                base_url="http://audio8.test/v1", model="arktts", runtime_root=str(root),
+                stop_process=lambda *args, **kwargs: stopped.append((args, kwargs)),
+            )
+            runtime._owns_service = True
+            runtime._ready = True
 
+            self.assertTrue(runtime.shutdown_owned())
+            self.assertEqual(1, len(stopped))
+            self.assertFalse(runtime.owns_service)
+            self.assertEqual("stopped", runtime.status["state"])
+
+            external = Audio8Runtime(base_url="http://audio8.test/v1", model="arktts")
+            self.assertFalse(external.shutdown_owned())
+
+    def test_owned_audio8_service_is_stopped_before_fallback_loads(self):
+        order = []
+        primary = MagicMock()
+        primary.prepare_stream_chunk.side_effect = RuntimeError("unhealthy")
+        primary.deactivate.side_effect = lambda: order.append("audio8_stopped")
+        fallback = MagicMock()
+        fallback.prepare_stream_chunk.side_effect = lambda text: order.append("kokoro_loaded") or text
+        provider = tts.FallbackTextToSpeech(primary, fallback_factory=lambda: fallback)
+
+        provider.prepare_stream_chunk("Fallback sentence.")
+
+        self.assertEqual(["audio8_stopped", "kokoro_loaded"], order)
+        self.assertTrue(provider.fallback_loaded)
 
     def test_queue_keeps_speech_in_order(self):
         class FakeTts:
@@ -250,6 +436,32 @@ class PlaybackTests(unittest.TestCase):
         queue.close(); queue.join(1)
         self.assertEqual(["queued", "synthesis", "playback"], order)
 
+    def test_audio8_capability_prepares_following_chunk_during_playback(self):
+        import threading
+        class PreparedFake:
+            def __init__(self):
+                self.playback_finished = threading.Event()
+                self.prepared, self.played = [], []
+                self.first_played = threading.Event()
+                self.second_prepared = threading.Event()
+            def prepare_stream_chunk(self, text):
+                self.prepared.append(text)
+                if text == "Second.": self.second_prepared.set()
+                return text
+            def start_prepared_chunk(self, text):
+                self.played.append(text)
+                if text == "First.": self.first_played.set()
+                return True
+            def stop(self): self.playback_finished.set()
+        fake = PreparedFake()
+        queue = StreamingSpeechQueue(fake, max_chunks=2)
+        self.assertTrue(queue.submit("First.")); self.assertTrue(queue.submit("Second.")); queue.close()
+        self.assertTrue(fake.first_played.wait(1))
+        self.assertTrue(fake.second_prepared.wait(1), "next Audio8 chunk should synthesize while first waits to play")
+        self.assertEqual(["First."], fake.played)
+        fake.playback_finished.set()
+        queue.join(1)
+        self.assertEqual(["First.", "Second."], fake.played)
 
     def test_kokoro_continuous_capability_opens_one_session_for_all_sentences(self):
         import threading
@@ -467,6 +679,7 @@ class PlaybackTests(unittest.TestCase):
             self.assertEqual("complete_sentences", provider.synthesis_strategy)
         with patch("model_settings.kokoro_early_speech_status", return_value={"effective": False}):
             self.assertEqual("whole_response", provider.synthesis_strategy)
+        self.assertEqual("manual_chunks", tts.Audio8TextToSpeech.synthesis_strategy)
 
     def test_kokoro_runtime_cpu_fallback_moves_existing_model_without_changing_settings(self):
         import threading

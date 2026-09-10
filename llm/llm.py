@@ -43,6 +43,7 @@ def create_llm():
                 api_key=settings["local_api_key"], base_url=settings["local_endpoint"], model=settings["local_model"],
                 context_budget_chars=LOCAL_LLM_CONTEXT_CHAR_BUDGET,
                 fresh_request_seeds=True,
+                companion_memory_realization=True,
                 sampling_preset=sampling_preset, sampling_options=sampling_options,
             )
         except (RuntimeError, ValueError):

@@ -197,10 +197,7 @@ Importance must be 1-10.
                     memory
                 )
 
-                print(
-                    f"\n[Memory saved: "
-                    f"{content}]"
-                )
+                print('[AIFren Memory] mutation applied.')
 
             elif action_type == "UPDATE":
 
@@ -258,15 +255,10 @@ Importance must be 1-10.
                             datetime.now().isoformat()
                         )
 
-                        print(
-                            f"\n[Memory updated: "
-                            f"{memory['content']}]"
-                        )
+                        print('[AIFren Memory] mutation applied.')
 
                         break
 
     except Exception as e:
 
-        print(
-            f"\nMemory check failed: {e}"
-        )
+        print('[AIFren Memory] observation failed.')

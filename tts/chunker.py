@@ -10,7 +10,8 @@ class SpeechChunker:
                  preferred_maximum: int = TTS_CHUNK_PREFERRED_MAX_CHARS,
                  hard_maximum: int = TTS_CHUNK_HARD_MAX_CHARS,
                  minimum_chars: int | None = None, preferred_max_chars: int | None = None,
-                 hard_max_chars: int | None = None) -> None:
+                 hard_max_chars: int | None = None,
+                 preserve_whitespace: bool = False) -> None:
         minimum = minimum if minimum_chars is None else minimum_chars
         preferred_maximum = preferred_maximum if preferred_max_chars is None else preferred_max_chars
         hard_maximum = hard_maximum if hard_max_chars is None else hard_max_chars
@@ -18,6 +19,7 @@ class SpeechChunker:
             raise ValueError("invalid TTS chunk bounds")
         self.minimum, self.preferred_maximum, self.hard_maximum = minimum, preferred_maximum, hard_maximum
         self._buffer = ""
+        self._preserve_whitespace = preserve_whitespace
 
     def feed(self, delta: object) -> tuple[str, ...]:
         self._buffer += str(delta or "")
@@ -32,7 +34,9 @@ class SpeechChunker:
         return tuple(chunks)
 
     def finish(self) -> tuple[str, ...]:
-        text, self._buffer = self._buffer.strip(), ""
+        text, self._buffer = self._buffer, ""
+        if not self._preserve_whitespace:
+            text = text.strip()
         return (text,) if text else ()
 
     def _best_boundary(self, *, final: bool) -> int | None:
@@ -46,7 +50,8 @@ class SpeechChunker:
             if preferred:
                 return preferred[-1]
             # A sentence boundary is preferable only while it respects the
-            # actual hard limit, so an oversized sentence must still split at
+            # actual hard limit. Audio8 can produce a repeatable late click on
+            # long generations, so an oversized sentence must still split at
             # a substantial clause/word boundary below.
             if eligible[0] <= self.hard_maximum:
                 return eligible[0]
@@ -59,5 +64,8 @@ class SpeechChunker:
         return whitespace if whitespace > 0 else self.hard_maximum
 
     def _take(self, boundary: int) -> str:
+        if self._preserve_whitespace:
+            value, self._buffer = self._buffer[:boundary], self._buffer[boundary:]
+            return value
         value, self._buffer = self._buffer[:boundary].strip(), self._buffer[boundary:].lstrip()
         return value

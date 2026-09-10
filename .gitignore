@@ -185,3 +185,16 @@ unity/AIFrenUnityPoc/Assets/Resources/LocalBackground.meta
 *.pid
 *.lock
 memory_v2_shadow/
+
+# Runtime identity/data and private validation are never source inputs.
+characters/
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.vrma
+*.zip
+.env*
+*.snapshot

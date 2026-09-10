@@ -127,6 +127,7 @@ def extract_active_scene_mutation(
     relations: Iterable[ActiveSceneRelationRecord] = (),
     profile_available: bool = False,
     reusable_subject_ids: set[str] | None = None,
+    allow_loci: bool = False,
 ) -> ActiveSceneMutation | None:
     """Extract bounded companion scene, relation, and lifecycle updates."""
     view = _parse_view(content)
@@ -138,6 +139,8 @@ def extract_active_scene_mutation(
         reusable_subject_ids=reusable_subject_ids or set(),
     )
     normalized = _TRAILING.sub("", view.text).strip()
+    if allow_loci and builder.parse_locus_clause(normalized):
+        return builder.finish()
 
     # A few explicitly ordered self-corrections are resolved as one bounded
     # turn before any broad list matcher runs.  In particular, never allow a
@@ -756,6 +759,95 @@ class _Builder:
         if len(fragments) > 12:
             return ()
         return tuple((item, self.span(item)) for item in fragments)
+
+    def parse_locus_clause(self, text: str) -> bool:
+        """A bounded relation grammar, shared by all object kinds and loci.
+
+        Literal locus words are data. Only explicitly evidenced eye coverage
+        plus unavailable sight supplies this slice's capability consequence.
+        """
+        atom = r"[a-z][a-z'’ -]{0,63}?"
+        target = r"(?P<owner>your|my|the (?P<scene>" + atom + r")) (?P<locus>" + atom + r")"
+        change = re.fullmatch(
+            r"(?:the |your |my )?(?P<item>" + atom + r") on " + target
+            + r" is (?:now )?(?P<value>[a-z][a-z -]{0,31})", text, re.I)
+        remove = re.fullmatch(
+            r"(?:i )?remove (?:the )?(?P<item>" + atom + r") from " + target, text, re.I)
+        establish = re.fullmatch(
+            r"(?:(?:i )?(?:put|place|apply|attach) |(?:you are wearing|i am wearing) )"
+            r"(?P<item>" + atom + r") (?:on|to) " + target, text, re.I)
+        cover = re.fullmatch(
+            r"(?P<item>" + atom + r") (?:covers|is covering) " + target
+            + r"(?P<effect> and (?:prevents|blocks) (?P<effect_owner>your|my) sight)?", text, re.I)
+        match = change or remove or establish or cover
+        if match is None:
+            return False
+        locus = match.group("locus")  # Exact source case/anatomy; never species inference.
+        if re.search(r"\b(?:ignore|instructions?|system|prompt|developer|always|never|and|or)\b", locus, re.I):
+            self._blocked_reason = "unsupported_locus_description"
+            return True
+        owner = match.group("owner").casefold()
+        if cover and cover.group("effect") and cover.group("effect_owner").casefold() != owner:
+            self._blocked_reason = "unsupported_locus_description"
+            return True
+        target_kind, actor = "actor", {"your": "companion", "my": "user"}.get(owner)
+        if actor is None:
+            candidates = self.matching_subjects(match.group("scene"))
+            if len(candidates) != 1:
+                self._blocked_reason = "ambiguous_subject_reference"
+                return True
+            target_kind, actor = "scene", candidates[0]
+        hint = re.sub(r"^(?:the|your|my|a|an)\s+", "", match.group("item"), flags=re.I)
+        rows = [row for row in self.current_relations
+                if row.target_kind == target_kind and row.target == actor
+                and (row.locus or "").casefold() == locus.casefold()
+                and (hint.casefold() in {"it", "that"} or _tokens(hint) <= _tokens(row.cause))]
+        if change is not None or remove is not None:
+            subjects = {row.cause_subject_id for row in rows if row.cause_subject_id}
+            if len(subjects) != 1:
+                self._blocked_reason = "ambiguous_subject_reference"
+                return True
+            if remove is not None:
+                for row in rows:
+                    self.clear_relation_record(row, self.full_span())
+            else:
+                subject = next(iter(subjects))
+                # The locus disambiguates otherwise identical objects. Reuse
+                # the same attribute owner and keep every unaffected attribute.
+                original = self.subjects
+                try:
+                    self.subjects = {subject: original[subject]}
+                    self.set_subject_attribute(self.subject_label(subject), match.group("value"), self.full_span())
+                finally:
+                    self.subjects = original
+            return True
+        if hint.casefold() in {"it", "that", "them"}:
+            self._blocked_reason = "ambiguous_subject_reference"
+            return True
+        item = _parse_item(match.group("item"))
+        if item is None:
+            self._blocked_reason = "unsupported_locus_description"
+            return True
+        matches = self.matching_subjects(hint)
+        if len(matches) > 1 and re.match(r"(?:the|your|my)\b", match.group("item"), re.I):
+            self._blocked_reason = "ambiguous_subject_reference"
+            return True
+        predicate = "covering" if cover else "located_on"
+        if text.casefold().startswith(("you are wearing ", "i am wearing ")):
+            predicate = "wearing"
+        # Coatings/decorations are scene subjects, not simulated inventory or
+        # single-occupancy equipment slots. Repeated exact references can reuse.
+        reference, item = self.subject_for(match.group("item"), self.full_span(), actor=actor, predicate=predicate)
+        self._metadata(reference, item, self.full_span())
+        anchor = {"eye": "eyes", "eyes": "eyes", "hand": "hands", "hands": "hands",
+                  "ear": "ears", "ears": "ears", "mouth": "mouth", "wrist": "wrists"}.get(locus.casefold())
+        unavailable = bool(cover and cover.group("effect") and anchor == "eyes" and target_kind == "actor")
+        self.add_relation("set", actor, anchor, predicate, "scene", item.label,
+            self.full_span(), target_kind=target_kind, cause_subject_kind=item.kind,
+            cause_subject_ref=reference, locus=locus,
+            semantic_family="vision_obstruction" if unavailable else None,
+            effect_state="unavailable" if unavailable else None)
+        return True
 
     def parse_single_clause(self, text: str) -> bool:
         posture = re.fullmatch(
@@ -1753,6 +1845,7 @@ class _Builder:
                         cause_subject_kind=kind.value, cause_subject_ref=subject_id,
                         semantic_family=relation.semantic_family,
                         quantity=relation.quantity, effect_state=relation.effect_state,
+                        locus=relation.locus,
                     )
         return True
 
@@ -2033,6 +2126,7 @@ class _Builder:
             "clear", item.target, item.facet, item.predicate, item.cause_kind, item.cause,
             span, target_kind=item.target_kind,
             cause_subject_ref=item.cause_subject_id, side=item.side,
+            locus=item.locus,
         )
 
     def clear_actor_slot(
@@ -2219,12 +2313,13 @@ class _Builder:
         semantic_family: str | None = None,
         quantity: int | None = None,
         effect_state: str | None = None,
+        locus: str | None = None,
     ) -> None:
         self.relations.append(SceneRelationProposal(
             operation, target, facet, predicate, cause_kind, cause, cause_subject_kind,
             span[0], span[1], target_kind=target_kind, side=side,
             cause_subject_ref=cause_subject_ref, semantic_family=semantic_family,
-            quantity=quantity, effect_state=effect_state,
+            quantity=quantity, effect_state=effect_state, locus=locus,
         ))
         # Backward-compatible current-scene mirrors keep existing snapshot/UI
         # consumers working. Relations remain authoritative for capability

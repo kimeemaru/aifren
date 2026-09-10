@@ -1,3 +1,4 @@
+using PlayerPrefs = AIFren.UnityPoc.PresentationPreferences;
 using System;
 using System.IO;
 using System.Reflection;
@@ -32,6 +33,7 @@ namespace AIFren.UnityPoc.Avatar
         public string LastError { get; private set; } = string.Empty;
         public string ActiveModelPath { get; private set; } = string.Empty;
         public string LastLoadedModelName { get; private set; } = string.Empty;
+        internal Camera PresentationCamera => previewCamera;
 
         private Camera previewCamera;
         private Light keyLight;
@@ -57,6 +59,9 @@ namespace AIFren.UnityPoc.Avatar
         private bool savedRenderSettings;
         private AvatarAnimationController animationController;
         private AvatarExpressionController expressionController;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        private AvatarGazeController gazeController;
+#endif
         private Vector2Int lastLoggedPresentationTextureSize;
         private bool directPresentation = true;
         private AvatarPresentationValues directPresentationValues = new AvatarPresentationValues { scale = 1f };
@@ -66,9 +71,34 @@ namespace AIFren.UnityPoc.Avatar
         private float directBaselineAspect = -1f;
         private bool avatarVisible = true;
         private int loadGeneration;
+        private bool characterSelectionOwned;
+
+        internal void ClaimCharacterSelection()
+        {
+            // Main-thread ownership transfer also retires an import that has
+            // already started. Start may run after the first selected snapshot.
+            characterSelectionOwned = true;
+            ++loadGeneration;
+        }
+#if UNITY_EDITOR
+        // Substitute only the native import/resource boundary in component tests.
+        internal Func<string, Task<GameObject>> ImportForTesting;
+        internal Func<GameObject> BundledForTesting;
+#endif
+
+        private void Awake()
+        {
+            // Screen-space UI does not clear the player framebuffer. Keep the
+            // direct presentation's opaque background camera alive even when
+            // an avatar is missing or a runtime import fails, so closing an
+            // overlay can never expose pixels from an older frame.
+            activeConfiguration = AvatarConfiguration.Load();
+            ConfigurePreviewCamera(activeConfiguration);
+        }
 
         private void Start()
         {
+            if (characterSelectionOwned) return;
             string savedPath = PlayerPrefs.GetString(CustomModelPathPreference, string.Empty);
             if (!string.IsNullOrWhiteSpace(savedPath) && File.Exists(savedPath))
                 _ = LoadAvatarFromPathAsync(savedPath);
@@ -91,7 +121,12 @@ namespace AIFren.UnityPoc.Avatar
                 return false;
             }
 
-            GameObject avatarPrefab = Resources.Load<GameObject>(configuration.avatarResourcePath);
+            GameObject avatarPrefab;
+#if UNITY_EDITOR
+            if (BundledForTesting != null) avatarPrefab = BundledForTesting();
+            else
+#endif
+                avatarPrefab = Resources.Load<GameObject>(configuration.avatarResourcePath);
             if (avatarPrefab == null)
             {
                 Fail(
@@ -107,7 +142,7 @@ namespace AIFren.UnityPoc.Avatar
                 GameObject candidate = Instantiate(avatarPrefab);
                 if (request != loadGeneration)
                 {
-                    Destroy(candidate);
+                    DestroyOwnedObject(candidate);
                     return false;
                 }
                 ActivateAvatar(candidate, configuration, "Bundled model");
@@ -115,7 +150,7 @@ namespace AIFren.UnityPoc.Avatar
             }
             catch (Exception exception)
             {
-                Fail("Unable to instantiate the VRM avatar: " + exception.Message);
+                Fail("Unable to instantiate the avatar. Choose another model.");
                 return false;
             }
         }
@@ -148,15 +183,21 @@ namespace AIFren.UnityPoc.Avatar
                 Debug.Log("[AvatarLoader] loading " + format + " avatar from " + Path.GetExtension(path) + " container.");
 #endif
                 string metadataName = string.Empty;
+#if UNITY_EDITOR
+                if (ImportForTesting != null) candidate = await ImportForTesting(path);
+                else
+#endif
+                {
                 Vrm10Instance instance = await Vrm10.LoadPathAsync(path, canLoadVrm0X: true, showMeshes: true,
                     vrmMetaInformationCallback: (_, vrm10, vrm0) => metadataName = MetadataName(vrm10) ?? MetadataName(vrm0));
                 if (instance == null) throw new InvalidOperationException("UniVRM returned no avatar instance.");
                 candidate = instance.gameObject;
+                }
                 if (candidate.GetComponentsInChildren<Renderer>(true).Length == 0)
                     throw new InvalidOperationException("The VRM contains no renderable avatar geometry.");
                 if (request != loadGeneration)
                 {
-                    Destroy(candidate);
+                    DestroyOwnedObject(candidate);
                     return false;
                 }
                 ActivateAvatar(candidate, AvatarConfiguration.Load(), path);
@@ -165,9 +206,9 @@ namespace AIFren.UnityPoc.Avatar
             }
             catch (Exception exception)
             {
-                if (candidate != null && candidate != ActiveAvatar) Destroy(candidate);
+                if (candidate != null && candidate != ActiveAvatar) DestroyOwnedObject(candidate);
                 if (request != loadGeneration) return false;
-                Fail("Could not load VRM: " + exception.Message);
+                Fail("Could not load this VRM. Choose another model.");
                 return false;
             }
         }
@@ -199,8 +240,11 @@ namespace AIFren.UnityPoc.Avatar
             activeConfiguration = configuration;
             idleBasePosition = ActiveAvatar.transform.position;
 
-            // UniVRM constructs its runtime ControlRig lazily. Initialize it
-            // before applying AIFren's presentation-only relaxed idle pose.
+            // UniVRM constructs its runtime ControlRig lazily. Its reference
+            // rotations must come from the VRM's imported T-pose, not from
+            // AIFren's presentation-only relaxed idle pose below. Otherwise
+            // portable VRMA rotations are retargeted against arms-down
+            // reference axes and produce a globally malformed body pose.
             Vrm10Instance vrm10 = ActiveAvatar.GetComponentInChildren<Vrm10Instance>();
             EnsurePresentationControlRig(vrm10);
             if (vrm10 != null) _ = vrm10.Runtime;
@@ -210,6 +254,10 @@ namespace AIFren.UnityPoc.Avatar
             idleBaseRotation = ActiveAvatar.transform.rotation;
             expressionController = gameObject.GetComponent<AvatarExpressionController>() ?? gameObject.AddComponent<AvatarExpressionController>();
             expressionController.Configure(ActiveAvatar);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            gazeController = gameObject.GetComponent<AvatarGazeController>() ?? gameObject.AddComponent<AvatarGazeController>();
+            gazeController.Configure(ActiveAvatar);
+#endif
             animationController = gameObject.GetComponent<AvatarAnimationController>() ?? gameObject.AddComponent<AvatarAnimationController>();
             animationController.Configure(ActiveAvatar);
             AvatarPresentationResolver presentationResolver = gameObject.GetComponent<AvatarPresentationResolver>() ?? gameObject.AddComponent<AvatarPresentationResolver>();
@@ -218,13 +266,13 @@ namespace AIFren.UnityPoc.Avatar
             LastError = string.Empty;
             loggedFullBodyFrustum = false;
             AvatarLoaded?.Invoke(ActiveAvatar);
-            if (previous != null && previous != ActiveAvatar) Destroy(previous);
+            if (previous != null && previous != ActiveAvatar) DestroyOwnedObject(previous);
         }
 
         /// <summary>
         /// Runtime-loaded avatars ask UniVRM to create a ControlRig, while a
-        /// Resources-instantiated imported VRM defaults to no ControlRig. Use
-        /// the same normalized rig in both cases. Set the UniVRM 0.130.x
+        /// Resources-instantiated imported VRM defaults to no ControlRig. VRMA
+        /// needs the same normalized rig in both cases. Set the UniVRM 0.130.x
         /// importer option before Runtime is constructed; never rebuild an
         /// already-live runtime around a presentation pose.
         /// </summary>
@@ -506,7 +554,7 @@ namespace AIFren.UnityPoc.Avatar
             {
                 humanPoseHandler?.Dispose();
                 humanPoseHandler = null;
-                Debug.LogWarning("Unable to apply the presentation idle pose: " + exception.Message);
+                Debug.LogWarning("Unable to apply the presentation idle pose.");
             }
         }
 
@@ -621,6 +669,10 @@ namespace AIFren.UnityPoc.Avatar
             previewCamera.targetTexture = null;
             previewCamera.clearFlags = CameraClearFlags.Depth;
             previewCamera.usePhysicalProperties = true;
+            // Bounds fitting and Avatar View use a vertical field of view.
+            // Unity's default horizontal sensor gate changes that projection
+            // with viewport aspect: distant portrait and cropped landscape.
+            previewCamera.gateFit = Camera.GateFitMode.Vertical;
             previewCamera.fieldOfView = view.fieldOfView;
             previewCamera.lensShift = view.lensShift;
             EnsureDirectBackgroundRenderer();
@@ -708,14 +760,35 @@ namespace AIFren.UnityPoc.Avatar
                     continue;
                 }
 
+                Bounds rendererBounds = renderer.bounds;
+                if (renderer is SkinnedMeshRenderer skinned && skinned.sharedMesh != null)
+                {
+                    // Import-time localBounds can lag the normalized Humanoid
+                    // presentation pose. Fit the visible skin too, without
+                    // moving the skeleton or rebuilding a camera every frame.
+                    // This method runs only on load/orientation changes.
+                    var baked = new Mesh();
+                    try
+                    {
+                        skinned.BakeMesh(baked, false);
+                        Bounds posed = baked.bounds;
+                        for (int x = -1; x <= 1; x += 2)
+                        for (int y = -1; y <= 1; y += 2)
+                        for (int z = -1; z <= 1; z += 2)
+                            rendererBounds.Encapsulate(skinned.transform.TransformPoint(posed.center +
+                                Vector3.Scale(posed.extents, new Vector3(x, y, z))));
+                    }
+                    finally { DestroyOwnedObject(baked); }
+                }
+
                 if (!foundRenderer)
                 {
-                    bounds = renderer.bounds;
+                    bounds = rendererBounds;
                     foundRenderer = true;
                 }
                 else
                 {
-                    bounds.Encapsulate(renderer.bounds);
+                    bounds.Encapsulate(rendererBounds);
                 }
             }
 
@@ -727,6 +800,7 @@ namespace AIFren.UnityPoc.Avatar
             hasRelaxedPose = false;
             expressionController?.ClearAvatar();
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
+            gazeController?.ClearAvatar();
 #endif
             animationController?.ClearAvatar();
             humanPoseHandler?.Dispose();
@@ -756,6 +830,16 @@ namespace AIFren.UnityPoc.Avatar
                 ReleasePreviewTexture();
             }
             directBackgroundRenderer?.Dispose();
+            if (previewCamera != null) DestroyOwnedObject(previewCamera.gameObject);
+            if (keyLight != null) DestroyOwnedObject(keyLight.gameObject);
+            if (fillLight != null) DestroyOwnedObject(fillLight.gameObject);
+        }
+
+        private static void DestroyOwnedObject(UnityEngine.Object value)
+        {
+            if (value == null) return;
+            if (Application.isPlaying) Destroy(value);
+            else DestroyImmediate(value);
         }
 
         private void Fail(string error)

@@ -81,7 +81,7 @@ _USER_ACTIVITY_QUERY = re.compile(
     r"^(?:please\s+)?what\s+am\s+i\s+doing(?:\s+right\s+now)?[?.!]*$", re.I,
 )
 _VISION_QUERY = re.compile(
-    r"^(?:please\s+)?(?:can\s+you\s+see(?:\s+(?:me|anything|them|it|this|these))?(?:\s+now)?|"
+    r"^(?:please\s+)?(?:can\s+you\s+see(?:\s+(?:me|anything|them|it|this|these))?(?:\s+(?:right\s+)?now)?|"
     r"what\s+(?:can|do)\s+you\s+see(?:\s+here)?|is\s+your\s+vision\s+(?:blocked|obstructed))[?.!]*$", re.I,
 )
 _EYE_CAUSE_QUERY = re.compile(
@@ -129,6 +129,13 @@ _EXPLICIT_NOT_WEARING = re.compile(
     r"^you\s+(?:aren't|are\s+not)\s+wearing\s+(?:any\s+|the\s+|an?\s+)?"
     r"(?P<item>[a-z][a-z'’ -]{0,70})[.!]*$", re.I,
 )
+
+
+def scene_clarification_requirement() -> ResponseRequirement:
+    return ResponseRequirement("scene_clarification", (), "Which one do you mean?",
+        "[Unresolved scene reference — backend policy] Ask only: Which one do you mean? "
+        "No scene action has been accepted. Do not act, select an object, or narrate completion. "
+        "[End unresolved scene reference]")
 
 
 def derive_response_requirement(
@@ -196,6 +203,19 @@ def _derive_single_response_requirement(
     # Keep this local to requirements so it cannot authorize state mutation.
     text = re.sub(r"^(?:(?:okay|alright)[,!]?\s+)?so[,!]?\s+", "", text, flags=re.I)
     text = re.sub(r"^now[,]?\s+", "", text, flags=re.I)
+    locus_query = re.fullmatch(r"what(?:'s| is) on (?P<owner>your|my) (?P<locus>[a-z][a-z'’ -]{0,63})\??", text, re.I)
+    if locus_query is not None:
+        actor = "companion" if locus_query.group("owner").casefold() == "your" else "user"
+        locus = locus_query.group("locus")
+        rows = tuple(row for row in repository.list_scene_relations(character_id, limit=96)
+                     if row.target_kind == "actor" and row.target == actor
+                     and (row.locus or "").casefold() == locus.casefold())
+        if rows:
+            labels = tuple(dict.fromkeys(row.cause for row in rows))[:8]
+            possessive = "my" if actor == "companion" else "your"
+            return _requirement("current_locus",
+                tuple(RequiredFact("locus_item", label, (label,)) for label in labels),
+                f"There's {' and '.join(labels)} on {possessive} {locus}.")
     explicit_not_wearing = _EXPLICIT_NOT_WEARING.fullmatch(text)
     if explicit_not_wearing is not None:
         item = explicit_not_wearing.group("item").strip().casefold()
@@ -848,6 +868,12 @@ def validate_response_requirement(
 ) -> RequirementValidation:
     if requirement is None:
         return RequirementValidation(True, "not_required")
+    if requirement.intent == "scene_clarification":
+        accepted = str(dialogue).strip() == requirement.fallback_dialogue
+        return RequirementValidation(accepted, "accepted" if accepted else "unresolved_scene_reference")
+    if requirement.intent == "interaction_elapsed_unknown":
+        accepted = str(dialogue).strip() == requirement.fallback_dialogue
+        return RequirementValidation(accepted, "accepted" if accepted else "unknown_interaction_interval")
     normalized = _normalize(dialogue)
     if not normalized:
         return RequirementValidation(

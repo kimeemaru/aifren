@@ -65,6 +65,10 @@ class DurablePromptIntegrationTests(unittest.TestCase):
             display_name="Test",
             memory_file=self.root / "memories.json",
         )
+        self.repository = MemoryV2Repository(self.writer.store)
+        self.repository.ensure_character(self.character_id, "Test")
+        scope = self.repository.active_truth_scope(self.character_id)
+        self.truth_scope = {"kind": scope.kind, "scope_id": scope.truth_scope_id}
         self.memory = _Memory([{"category": "profile", "content": "V1 context remains separate."}])
         self.service = AssistantService(
             llm=self.llm,
@@ -76,8 +80,9 @@ class DurablePromptIntegrationTests(unittest.TestCase):
             tts=_TTS(),
             memory_v2_shadow_writer=self.writer,
             character_id=self.character_id,
+            memory_authority="v1",
         )
-        # Prompt admission is the target here; retrieval telemetry is not.
+        # Prompt admission is the target here; V2 shadow evaluation is not.
         self.service._run_memory_v2_shadow = lambda query: None
 
     def tearDown(self):
@@ -85,9 +90,12 @@ class DurablePromptIntegrationTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _persist_name(self, text="My name is Elena."):
-        self.conversation.add_user_message(text)
+        self.conversation.add_user_message(text, truth_scope=self.truth_scope)
         index = len(self.conversation.messages) - 1
         message = self.conversation.messages[index]
+        self.conversation.add_assistant_message(
+            "Synthetic completed response.", truth_scope=self.truth_scope,
+        )
         self.conversation.save()
         result = self.writer.observe_canonical_user_message(
             message, conversation_index=index, conversation_file=self.conversation.conversation_file,
@@ -176,15 +184,23 @@ class DurablePromptIntegrationTests(unittest.TestCase):
                 try:
                     root = Path(temp.name)
                     conversation = root / "conversation.json"
-                    conversation.write_text(json.dumps([
-                        {"role": "user", "content": assertion, "timestamp": "2020-01-01T00:00:00Z"},
-                    ], ensure_ascii=False), encoding="utf-8")
                     character = str(uuid.uuid4())
                     writer = MemoryV2ShadowWriter(root, character_id=character, display_name="Test", memory_file=root / "m.json")
                     try:
+                        repository = MemoryV2Repository(writer.store)
+                        repository.ensure_character(character, "Test")
+                        scope = repository.active_truth_scope(character)
+                        provenance = {"kind": scope.kind, "scope_id": scope.truth_scope_id}
+                        message = {
+                            "role": "user", "content": assertion,
+                            "timestamp": "2020-01-01T00:00:00Z", "truth_scope": provenance,
+                        }
+                        conversation.write_text(json.dumps([message, {
+                            "role": "assistant", "content": "Synthetic completed response.",
+                            "timestamp": "2020-01-01T00:00:01Z", "truth_scope": provenance,
+                        }], ensure_ascii=False), encoding="utf-8")
                         writer.observe_canonical_user_message(
-                            {"role": "user", "content": assertion, "timestamp": "2020-01-01T00:00:00Z"},
-                            conversation_index=0, conversation_file=conversation,
+                            message, conversation_index=0, conversation_file=conversation,
                         )
                         decision = admit_identity_name_context(
                             MemoryV2Repository(writer.store), character, "What is my name?",
@@ -213,12 +229,20 @@ class DurablePromptIntegrationTests(unittest.TestCase):
         )
         try:
             other_conversation = self.root / "other-conversation.json"
-            other_conversation.write_text(json.dumps([
-                {"role": "user", "content": "My name is Blair.", "timestamp": "2020-01-01T00:00:00Z"},
-            ]), encoding="utf-8")
+            other_repository = MemoryV2Repository(other.store)
+            other_repository.ensure_character(self.other_character_id, "Other")
+            scope = other_repository.active_truth_scope(self.other_character_id)
+            provenance = {"kind": scope.kind, "scope_id": scope.truth_scope_id}
+            message = {
+                "role": "user", "content": "My name is Blair.",
+                "timestamp": "2020-01-01T00:00:00Z", "truth_scope": provenance,
+            }
+            other_conversation.write_text(json.dumps([message, {
+                "role": "assistant", "content": "Synthetic completed response.",
+                "timestamp": "2020-01-01T00:00:01Z", "truth_scope": provenance,
+            }]), encoding="utf-8")
             other.observe_canonical_user_message(
-                {"role": "user", "content": "My name is Blair.", "timestamp": "2020-01-01T00:00:00Z"},
-                conversation_index=0, conversation_file=other_conversation,
+                message, conversation_index=0, conversation_file=other_conversation,
             )
             decision = admit_identity_name_context(
                 MemoryV2Repository(self.writer.store), self.character_id, "What is my name?")

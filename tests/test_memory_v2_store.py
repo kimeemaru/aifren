@@ -5,6 +5,9 @@ import threading
 import unittest
 import uuid
 
+from benchmarks.memory_v2.adapters import MemoryV2StructuralAdapter
+from benchmarks.memory_v2.fixtures import build_core_fixture, structural_baseline_cases
+from benchmarks.memory_v2.harness import run_retrieval_benchmark
 from memory_v2_store import MemoryV2Store, StoreError
 
 
@@ -26,10 +29,39 @@ class MemoryV2StoreTests(unittest.TestCase):
         self.store.add_claim(character_id, claim_id, claim_type="fact", assertion_scope="user_fact", content="The user likes tea.", created_at_us=1_000, **kwargs)
 
     def test_schema_pragmas_version_and_integrity(self):
-        self.assertEqual(self.store.schema_version(), 17)
+        self.assertEqual(self.store.schema_version(), 21)
         self.assertEqual(self.store.pragma("foreign_keys"), 1)
         self.assertEqual(self.store.pragma("synchronous"), 2)
         self.assertEqual(self.store.integrity_check(), "ok")
+
+    def test_version19_synthetic_upgrade_adds_optional_locus_without_rewriting_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "v19.sqlite3")
+            store = MemoryV2Store(path)
+            try:
+                store.create_character(self.character_a, "Synthetic upgrade")
+                store.add_event(self.character_a, "original", 1, actor_kind="user",
+                                recorded_at_us=1, content_text="Synthetic original evidence.")
+                original = tuple(store.connection.execute("SELECT * FROM events").fetchone())
+                store.connection.executescript("""
+                    DROP INDEX active_scene_relation_current_identity;
+                    ALTER TABLE active_scene_relations DROP COLUMN locus;
+                    CREATE UNIQUE INDEX active_scene_relation_current_identity ON active_scene_relations(
+                        character_id,truth_scope_id,target_kind,target_actor,COALESCE(facet,''),COALESCE(side,''),
+                        predicate,cause_kind,cause,COALESCE(cause_subject_id,'')) WHERE valid_to_us IS NULL;
+                    DELETE FROM schema_migrations WHERE version=20;
+                    UPDATE database_meta SET value='19' WHERE key='schema_version';
+                """)
+            finally:
+                store.close()
+            upgraded = MemoryV2Store(path)
+            try:
+                self.assertEqual(20, upgraded.schema_version())
+                self.assertEqual(original, tuple(upgraded.connection.execute("SELECT * FROM events").fetchone()))
+                self.assertIn("locus", [row[1] for row in upgraded.connection.execute("PRAGMA table_info(active_scene_relations)")])
+                self.assertEqual("ok", upgraded.integrity_check())
+            finally:
+                upgraded.close()
 
     def test_v7_telemetry_database_migrates_without_losing_rows(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -56,7 +88,7 @@ class MemoryV2StoreTests(unittest.TestCase):
             connection.close()
             migrated = MemoryV2Store(path)
             try:
-                self.assertEqual(17, migrated.schema_version())
+                self.assertEqual(21, migrated.schema_version())
                 row = migrated.connection.execute("SELECT retrieval_strategy FROM retrieval_telemetry").fetchone()
                 self.assertEqual("unknown", row["retrieval_strategy"])
             finally:
@@ -141,6 +173,19 @@ class MemoryV2StoreTests(unittest.TestCase):
             # The WebSocket lifecycle thread owns retirement after a safe
             # character swap; it need not be the factory worker.
             store.close()
+
+    def test_v2_structural_adapter_meets_fixture_integrity_gates(self):
+        fixture = build_core_fixture()
+        report, _ = run_retrieval_benchmark(
+            fixture, MemoryV2StructuralAdapter(fixture),
+            cases=structural_baseline_cases(fixture),
+        )
+        self.assertEqual(report.character_isolation_violation_rate, 0.0)
+        self.assertEqual(report.provenance_completeness, 1.0)
+        self.assertEqual(report.temporal_correctness, 1.0)
+        self.assertEqual(report.forbidden_retrieval_rate, 0.0)
+        self.assertEqual(report.negative_false_positive_rate, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

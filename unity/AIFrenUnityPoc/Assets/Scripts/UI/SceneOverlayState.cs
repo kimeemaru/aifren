@@ -40,7 +40,7 @@ namespace AIFren.UnityPoc.UI
 
         public static bool ShouldShow(bool preferenceEnabled, int rowCount, bool normalUiVisible)
         {
-            return preferenceEnabled && rowCount > 0 && normalUiVisible;
+            return preferenceEnabled && normalUiVisible;
         }
 
         public static SceneOverlayRow[] Rows(ContinuitySnapshot snapshot)
@@ -55,7 +55,11 @@ namespace AIFren.UnityPoc.UI
                 ContinuitySceneRelation relation = snapshot.scene_relations[index];
                 if (relation == null) continue;
                 string text = RelationText(relation, snapshot.capability_effects);
-                if (string.IsNullOrEmpty(text) || !seen.Add(text)) continue;
+                // Two causes may render the same description and still own
+                // different removal commands. Text is not an object identity.
+                string identity = text + "|" + (relation.clear_token ?? "");
+                if (string.IsNullOrEmpty(text) || !seen.Add(identity)) continue;
+                seen.Add(text);
                 result.Add(new SceneOverlayRow {
                     text = text,
                     // Compact overlay X is an in-world gesture. The detailed

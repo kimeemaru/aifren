@@ -20,7 +20,7 @@ def require_local_assets(model_dir: Path | str, voice: str) -> tuple[Path, Path,
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         raise RuntimeError(
-            "Kokoro local assets are missing. Run scripts/setup_aifren_runtime_linux.sh while online "
+            "Kokoro local assets are missing. Run setup_aifren_runtime.bat while online "
             "to install the selected model and voice into the local models directory. Missing: " +
             ", ".join(missing)
         )

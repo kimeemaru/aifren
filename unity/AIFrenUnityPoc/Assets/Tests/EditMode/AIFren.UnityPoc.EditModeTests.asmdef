@@ -1,6 +1,6 @@
 {
   "name": "AIFren.UnityPoc.EditModeTests",
-  "references": ["AIFren.UnityPoc", "VRM10", "Unity.TextMeshPro", "Unity.ugui"],
+  "references": ["AIFren.UnityPoc", "VRM10", "UniGLTF", "Unity.TextMeshPro", "Unity.ugui"],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

@@ -265,6 +265,7 @@ def preview_capability_effects(
     user_message: object,
     *,
     recent_user_turns: tuple[object, ...] = (),
+    allow_loci: bool = False,
 ) -> CapabilityPreview:
     """Apply validated proposals to an in-memory view, never to production state."""
     current = repository.capability_effects(character_id)
@@ -272,6 +273,7 @@ def preview_capability_effects(
         extraction = extract_current_continuity(
             repository, character_id, user_message,
             recent_user_turns=recent_user_turns,
+            allow_loci=allow_loci,
         )
     except Exception:
         return CapabilityPreview(current, None, False)
@@ -359,7 +361,7 @@ def preview_capability_effects(
             target_kind=proposal.target_kind, side=proposal.side,
             cause_subject_id=proposal.cause_subject_ref,
             semantic_family=proposal.semantic_family, quantity=proposal.quantity,
-            effect_state=proposal.effect_state,
+            effect_state=proposal.effect_state, locus=proposal.locus,
         ))
         changed = True
     effects = compose_capability_effects(
@@ -542,6 +544,7 @@ def _proposal_matches_record(
         and proposal.target == record.target
         and (proposal.facet is None or proposal.facet == record.facet)
         and (proposal.side is None or proposal.side == record.side)
+        and (proposal.locus is None or proposal.locus == record.locus)
         and (proposal.predicate is None or proposal.predicate == record.predicate)
         and (proposal.cause_kind is None or proposal.cause_kind == record.cause_kind)
         and (proposal.cause is None or proposal.cause.casefold() == record.cause.casefold())
@@ -557,11 +560,11 @@ def _same_relation_identity(
     return (
         proposal.target_kind, proposal.target, proposal.facet, proposal.side,
         proposal.predicate, proposal.cause_kind, str(proposal.cause).casefold(),
-        proposal.cause_subject_ref,
+        proposal.cause_subject_ref, proposal.locus,
     ) == (
         record.target_kind, record.target, record.facet, record.side,
         record.predicate, record.cause_kind, record.cause.casefold(),
-        record.cause_subject_id,
+        record.cause_subject_id, record.locus,
     )
 
 
@@ -670,6 +673,11 @@ def _prohibited_visual_claim(dialogue: object) -> bool:
         if item.strip(" *")
     )
     for clause in clauses:
+        # A color preference is remembered/described information, not a
+        # present visual observation. Keep the rest of the clause intact so
+        # "I can see ..." cannot hide beside an otherwise valid preference.
+        # Source/value authority is still checked by response requirements.
+        clause = re.sub(r"\bfavou?rite\s+colou?rs?\b", "preference", clause, flags=re.I)
         # Rhetorical/embedded references to the concept of seeing are not a
         # present observation ("Can I see?", "what I see"). The following
         # declarative capability statement still has to satisfy requirements.

@@ -9,7 +9,7 @@ open and leaves the established recent-dialogue path unchanged.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 import hashlib
 import inspect
@@ -22,6 +22,8 @@ from typing import Callable, Mapping, Sequence
 import uuid
 
 from llm.output_canonicalization import canonicalize_model_output
+from memory_query_decision import MemoryQueryDecision, decide_memory_query
+from benchmarks.memory_v2.models import RetrievalHealth, RetrievalLaneHealth
 from memory_v2_store import MemoryV2Store
 from memory_v2_store.store import utc_now_us
 from conversation.temporal_context import parse_conversation_timestamp
@@ -37,11 +39,16 @@ from conversation.truth_scope import (
 
 
 COMPACTION_SCHEMA = "aifren.memory_v2.episode_compaction"
-COMPACTION_VERSION = 5
-SEGMENTATION_VERSION = 2
+COMPACTION_VERSION = 7
+SEGMENTATION_VERSION = 3
 SUMMARY_LEVEL = "episode_compaction"
 GENERATOR_NAME = "aifren_episode_compactor"
-GENERATOR_VERSION = "4"
+GENERATOR_VERSION = "5"
+EPISODE_SOURCE_CANONICAL = "canonical_conversation"
+EPISODE_SOURCE_HISTORICAL = "canonical_historical_evidence"
+EPISODE_PURPOSE_RUNTIME = "runtime_context"
+EPISODE_PURPOSE_HISTORICAL = "historical_recall"
+HISTORICAL_RANGE_POLICY = "independent_historical_ranges_v1"
 CONTINUITY_ANCHOR_SCHEMA = "aifren.memory_v2.episode_continuity_anchors"
 CONTINUITY_ANCHOR_VERSION = 2
 ERA_COMPACTION_SCHEMA = "aifren.memory_v2.episode_era_compaction"
@@ -73,6 +80,7 @@ ERA_RETENTION_SEED = int.from_bytes(
 # filtered only by Context Hygiene V1.
 MAX_EXCHANGES_PER_EPISODE = 40
 RECENT_EXCHANGES_TO_KEEP = 24
+MAX_GENERATED_SCENE_RECORDS_PER_INTERACTION = 8
 MAX_CONTEXT_EPISODES = 8
 MAX_EPISODE_SUMMARY_CHARACTERS = 1_200
 MIN_EPISODES_PER_ERA = 4
@@ -88,6 +96,8 @@ EPISODE_RETRIEVAL_VERSION = 3
 TEMPORAL_RETRIEVAL_VERSION = 3
 MAX_RETRIEVED_EPISODES = 1
 MIN_EPISODE_RETRIEVAL_SCORE = 8
+MAX_EPISODE_SOURCE_REFINEMENTS = 2
+MAX_EPISODE_SOURCE_REFINEMENT_CHARACTERS = 420
 MAX_TEMPORAL_SOURCE_SPANS = 4
 MAX_TEMPORAL_SOURCE_RECORDS_PER_SPAN = 2
 MAX_TEMPORAL_SOURCE_EPISODES = 3
@@ -117,6 +127,12 @@ _RETRIEVAL_STOP_WORDS = {
     "our", "that", "the", "then", "this", "to", "was", "we", "were", "what",
     "when", "where", "which", "who", "why", "with", "you", "your",
 }
+_SOURCE_REFINEMENT_GENERIC_TERMS = frozenset({
+    "ago", "anything", "before", "connected", "conversation", "conversations",
+    "detail", "different", "give", "long", "memory", "mentioned", "oddly", "old",
+    "one", "related", "remember", "remembered", "said", "something",
+    "specific", "talked", "telling", "think", "time", "what's", "words",
+})
 _TEMPORAL_DAYS_AGO = re.compile(
     r"\b(?P<count>\d{1,2}|one|two|three|four|five|six|seven)\s+days?\s+ago\b",
     re.IGNORECASE,
@@ -137,8 +153,6 @@ _TEMPORAL_ACTIVITY_TERMS = {
     "talk": frozenset({"talk", "talked", "talking", "discuss", "discussed"}),
     "do": frozenset({"do", "does", "did", "doing"}),
 }
-
-
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -472,6 +486,132 @@ def _bounded_source_excerpt(
     return ("…" if start else "") + excerpt + ("…" if end < len(text) else "")
 
 
+def _anchor_attribution_state(
+    detail: str,
+    source_indices: Sequence[int],
+    messages: Sequence[Mapping[str, object]],
+) -> str:
+    """Compare summary attribution language with exact canonical speakers."""
+    declared: set[str] = set()
+    lowered = str(detail).casefold()
+    if re.search(r"\b(?:the\s+)?user\b", lowered):
+        declared.add("user")
+    if re.search(r"\b(?:the\s+)?(?:assistant|companion)\b", lowered):
+        declared.add("assistant")
+    supported = {
+        str(messages[index].get("role") or "")
+        for index in source_indices
+        if 0 <= index < len(messages)
+        and str(messages[index].get("role") or "") in {"user", "assistant"}
+    }
+    if len(supported) > 1:
+        return "mixed_source"
+    if not declared or len(declared) > 1 or not supported:
+        return "ambiguous_attribution"
+    owner = next(iter(declared))
+    return (
+        f"{owner}_supported"
+        if owner in supported
+        else f"{owner}_attribution_unsupported"
+    )
+
+
+def _historical_episode_source_refinements(
+    messages: Sequence[Mapping[str, object]],
+    candidate: "EpisodeRetrievalCandidate",
+    metadata: Mapping[str, object],
+    query: str,
+) -> tuple["EpisodeSourceRefinement", ...]:
+    """Refine one admitted historical episode to exact canonical evidence.
+
+    Summary and anchor prose are locators, never independent truth.  This
+    bounded pass searches only the already-validated episode source range and
+    labels speaker ownership explicitly.  It requires either a query-matched,
+    source-verified anchor or agreement on at least two concrete source terms.
+    """
+    if candidate.generation_purpose != EPISODE_PURPOSE_HISTORICAL:
+        return ()
+    query_terms = set(_retrieval_terms(query))
+    concrete_query_terms = query_terms - _SOURCE_REFINEMENT_GENERIC_TERMS
+    if len(concrete_query_terms) < 2:
+        return ()
+
+    anchored: dict[int, set[str]] = {}
+    attribution_by_index: dict[int, str] = {}
+    anchors = metadata.get("continuity_anchors", ())
+    if isinstance(anchors, list):
+        for anchor in anchors:
+            if not isinstance(anchor, Mapping):
+                continue
+            detail = str(anchor.get("detail") or "")
+            key_terms = tuple(str(value) for value in anchor.get("key_terms", ()))
+            anchor_terms = set(_retrieval_terms(" ".join((detail, *key_terms))))
+            phrase_match = any(
+                len(_retrieval_terms(key_term)) >= 2
+                and _normalized_retrieval_text(key_term) in _normalized_retrieval_text(query)
+                for key_term in key_terms
+            )
+            entity_match = any(
+                len(terms := _retrieval_terms(key_term)) == 1
+                and terms[0] in concrete_query_terms
+                and _single_retrieval_key_is_entity_like(key_term)
+                for key_term in key_terms
+            )
+            if (
+                not phrase_match and not entity_match
+                and len(concrete_query_terms & anchor_terms) < 2
+            ):
+                continue
+            needles = set(key_terms) | (concrete_query_terms & anchor_terms)
+            source_indices = tuple(
+                value for value in anchor.get("source_record_indices", ())
+                if isinstance(value, int)
+                and candidate.source_start_index <= value < candidate.source_end_index_exclusive
+            )
+            attribution_state = _anchor_attribution_state(
+                detail, source_indices, messages,
+            )
+            for value in source_indices:
+                if (
+                    candidate.source_start_index <= value < candidate.source_end_index_exclusive
+                ):
+                    anchored.setdefault(value, set()).update(str(item) for item in needles)
+                    attribution_by_index[value] = attribution_state
+
+    ranked: list[tuple[int, int, EpisodeSourceRefinement]] = []
+    for index in range(candidate.source_start_index, candidate.source_end_index_exclusive):
+        message = messages[index]
+        role = str(message.get("role") or "")
+        if role not in {"user", "assistant"}:
+            continue
+        source_terms = set(_retrieval_terms(message.get("content", "")))
+        overlap = len(concrete_query_terms & source_terms)
+        anchored_match = index in anchored
+        if not anchored_match and overlap < 2:
+            continue
+        needles = tuple(dict.fromkeys((
+            *sorted(concrete_query_terms), *sorted(anchored.get(index, ())),
+        )))
+        content = _bounded_source_excerpt(
+            message.get("content", ""), needles,
+            maximum=MAX_EPISODE_SOURCE_REFINEMENT_CHARACTERS,
+        )
+        if not content:
+            continue
+        source_class = "generated_scene_ui" if _is_generated_scene_ui_user(message) else (
+            f"canonical_conversation_{role}"
+        )
+        refinement = EpisodeSourceRefinement(
+            canonical_record_id(index, message), index, index + 1, role,
+            source_class, content, "verified_anchor" if anchored_match else "source_terms",
+            attribution_by_index.get(index, "canonical_source_only"),
+        )
+        ranked.append((overlap + (4 if anchored_match else 0), index, refinement))
+    return tuple(value for _score, _index, value in sorted(
+        ranked, key=lambda item: (-item[0], item[1], item[2].canonical_record_id),
+    )[:MAX_EPISODE_SOURCE_REFINEMENTS])
+
+
 def _temporal_source_matches(
     messages: Sequence[Mapping[str, object]],
     indices: Sequence[int] | range,
@@ -519,6 +659,7 @@ def _episode_retrieval_score(
     query: str,
     metadata: Mapping[str, object],
     term_episode_frequency: Mapping[str, int],
+    content: str = "",
 ) -> int:
     """Return conservative relevance from source-verified continuity anchors."""
     normalized_query = _normalized_retrieval_text(query)
@@ -537,7 +678,7 @@ def _episode_retrieval_score(
             normalized_detail = _normalized_retrieval_text(anchor.get("detail", ""))
             detail_subject = normalized_detail.split(maxsplit=1)[0] if normalized_detail else ""
             if user_self_reference and detail_subject in {
-                "assistant", "serval", "character", "cat",
+                "assistant", "character", "cat",
             }:
                 continue
             if assistant_reference and not user_self_reference and detail_subject == "user":
@@ -562,6 +703,26 @@ def _episode_retrieval_score(
             detail_overlap = len(query_terms & set(_retrieval_terms(normalized_detail)))
             if detail_overlap >= 3:
                 best = max(best, 4 + min(8, detail_overlap * 2))
+
+    # A verified compact account is itself source-grounded derived evidence.
+    # It may participate when the query has several concrete terms even if an
+    # older compactor emitted no optional distinctive anchors. The same score
+    # function is used by runtime context selection and shadow recall.
+    def score_terms(value: object) -> set[str]:
+        result: set[str] = set()
+        for term in _retrieval_terms(value):
+            if term.endswith("ing") and len(term) > 5:
+                term = term[:-3]
+            elif term.endswith("ed") and len(term) > 4:
+                term = term[:-2]
+            elif term.endswith("s") and len(term) > 4:
+                term = term[:-1]
+            result.add(term)
+        return result
+
+    content_overlap = len(score_terms(query) & score_terms(content))
+    if content_overlap >= 3:
+        best = max(best, 4 + min(8, content_overlap * 2))
 
     return best
 
@@ -796,15 +957,19 @@ def deterministic_episode_id(
     provider_identity_digest: str,
     compaction_version: int = COMPACTION_VERSION,
     generator_version: str = GENERATOR_VERSION,
+    segmentation_version: int = SEGMENTATION_VERSION,
+    source_authority: str = EPISODE_SOURCE_CANONICAL,
 ) -> str:
     identity = {
         "schema": COMPACTION_SCHEMA,
         "compaction_version": int(compaction_version),
+        "segmentation_version": int(segmentation_version),
         "summary_level": SUMMARY_LEVEL,
         "generator_name": GENERATOR_NAME,
         "generator_version": str(generator_version),
         "provider_identity_digest": str(provider_identity_digest),
         "character_id": str(character_id),
+        "source_authority": str(source_authority),
         "source_start_index": boundary.start_index,
         "source_end_index_exclusive": boundary.end_index_exclusive,
         "source_digest": boundary.source_digest,
@@ -837,6 +1002,16 @@ class EpisodeBoundary:
     @property
     def source_record_count(self) -> int:
         return self.end_index_exclusive - self.start_index
+
+
+@dataclass(frozen=True)
+class EpisodeSourceGroup:
+    """One indivisible, scope-coherent canonical interaction source range."""
+
+    start_index: int
+    end_index_exclusive: int
+    scope: CanonicalTruthScope
+    source_kind: str = "user_assistant"
 
 
 @dataclass(frozen=True)
@@ -948,6 +1123,113 @@ class EpisodeContextSelection:
 
 
 @dataclass(frozen=True)
+class EpisodeRecordValidation:
+    """One cache-owned validation decision for a lower or era record."""
+
+    record_id: str
+    summary_level: str
+    state: str
+    reason: str
+    generation_id: str = ""
+    truth_scope_kind: str = INVALID_SCOPE
+    truth_scope_id: str = ""
+    source_start_index: int | None = None
+    source_end_index_exclusive: int | None = None
+    source_start_sequence: int | None = None
+    source_end_sequence: int | None = None
+    source_count: int = 0
+    lower_episode_ids: tuple[str, ...] = ()
+    content: str = ""
+    created_at_us: int = 0
+    provenance_state: str = ""
+    source_authority: str = EPISODE_SOURCE_CANONICAL
+    generation_purpose: str = EPISODE_PURPOSE_RUNTIME
+    scope_state: str = ""
+    row: object | None = None
+    metadata: Mapping[str, object] | None = None
+
+    @property
+    def accepted(self) -> bool:
+        return self.state == "current_valid"
+
+    @property
+    def scope(self) -> CanonicalTruthScope:
+        return CanonicalTruthScope(self.truth_scope_kind, self.truth_scope_id)
+
+
+@dataclass(frozen=True)
+class EpisodeCacheValidationResult:
+    """The sole structured validity decision consumed by runtime and Viewer."""
+
+    accepted: bool
+    state: str
+    reason: str
+    generation_id: str = ""
+    raw_start_index: int = 0
+    records: tuple[EpisodeRecordValidation, ...] = ()
+    lower_records: tuple[EpisodeRecordValidation, ...] = ()
+    era_records: tuple[EpisodeRecordValidation, ...] = ()
+    generation_identity_digest: str = ""
+    generation_seed_applied: bool | None = None
+    generation_local_reproducibility: bool | None = None
+    era_account_count: int = 0
+    era_candidate_run_count: int = 0
+    source_authority: str = EPISODE_SOURCE_CANONICAL
+    generation_purpose: str = EPISODE_PURPOSE_RUNTIME
+    rejection_reasons: tuple[str, ...] = ()
+    covered_source_ranges: tuple[tuple[int, int], ...] = ()
+
+    def record(self, record_id: str) -> EpisodeRecordValidation | None:
+        return next((value for value in self.records if value.record_id == record_id), None)
+
+
+@dataclass(frozen=True)
+class EpisodeRetrievalCandidate:
+    """One bounded source-grounded candidate selected by the cache owner."""
+
+    record_id: str
+    content: str
+    score: int
+    generation_id: str
+    truth_scope_kind: str
+    truth_scope_id: str
+    source_start_index: int
+    source_end_index_exclusive: int
+    source_start_sequence: int
+    source_end_sequence: int
+    source_authority: str = EPISODE_SOURCE_CANONICAL
+    generation_purpose: str = EPISODE_PURPOSE_RUNTIME
+    scope_state: str = ""
+    source_refinements: tuple["EpisodeSourceRefinement", ...] = ()
+
+
+@dataclass(frozen=True)
+class EpisodeSourceRefinement:
+    """One exact, bounded canonical record located through a valid episode."""
+
+    canonical_record_id: str
+    canonical_index: int
+    source_sequence: int
+    speaker_role: str
+    source_class: str
+    content: str
+    match_kind: str
+    attribution_state: str = "canonical_source_only"
+
+
+@dataclass(frozen=True)
+class EpisodeRetrievalResult:
+    """Typed cache-owned recall result sharing runtime validation/ranking."""
+
+    candidates: tuple[EpisodeRetrievalCandidate, ...]
+    validation_state: str
+    abstention_reason: str = ""
+    generation_id: str = ""
+    generated_candidate_count: int = 0
+    health: RetrievalHealth = RetrievalHealth()
+
+
+@dataclass(frozen=True)
 class TemporalSourceSpan:
     episode_index: int
     start_index: int
@@ -1001,6 +1283,92 @@ class EpisodeRolloverMetrics:
     temporary_fallback: bool = False
 
 
+def _is_generated_scene_ui_user(record: object) -> bool:
+    if not isinstance(record, Mapping) or str(record.get("role", "")) != "user":
+        return False
+    from scene_ui_event import valid_scene_ui_origin
+    return valid_scene_ui_origin(record.get("origin"))
+
+
+def canonical_episode_source_groups(
+    messages: Sequence[Mapping[str, object]],
+    *,
+    valid_scope_ids: set[str] | frozenset[str] | None = None,
+) -> tuple[EpisodeSourceGroup, ...]:
+    """Return the exact safe canonical prefix as indivisible interactions.
+
+    Ordinary dialogue remains one user/assistant pair. A bounded contiguous
+    run of backend-generated Scene UI user events followed by its single
+    assistant reaction is one interaction. An explicitly tagged scope change
+    between adjacent user/assistant records preserves each record as its own
+    source group. Other consecutive-user, incomplete, malformed, or unknown
+    structures stop derivation rather than being skipped or repaired.
+    """
+    groups: list[EpisodeSourceGroup] = []
+    index = 0
+    while index < len(messages):
+        first = messages[index]
+        if str(first.get("role", "")) != "user":
+            break
+        if _is_generated_scene_ui_user(first):
+            end = index
+            while end < len(messages) and _is_generated_scene_ui_user(messages[end]):
+                end += 1
+                if end - index > MAX_GENERATED_SCENE_RECORDS_PER_INTERACTION:
+                    return tuple(groups)
+            if end >= len(messages) or str(messages[end].get("role", "")) != "assistant":
+                break
+            scopes = tuple(
+                parse_canonical_truth_scope(
+                    messages[position], valid_scope_ids=valid_scope_ids,
+                )
+                for position in range(index, end + 1)
+            )
+            if not scopes or not all(
+                scope.is_valid and scope.identity == scopes[0].identity for scope in scopes
+            ):
+                break
+            groups.append(EpisodeSourceGroup(
+                index, end + 1, scopes[0], "generated_scene_ui_run",
+            ))
+            index = end + 1
+            continue
+        if index + 1 >= len(messages):
+            break
+        assistant = messages[index + 1]
+        if str(assistant.get("role", "")) != "assistant":
+            break
+        exchange_scope = coherent_exchange_scope(
+            first, assistant, valid_scope_ids=valid_scope_ids,
+        )
+        if not exchange_scope.is_valid:
+            user_scope = parse_canonical_truth_scope(
+                first, valid_scope_ids=valid_scope_ids,
+            )
+            assistant_scope = parse_canonical_truth_scope(
+                assistant, valid_scope_ids=valid_scope_ids,
+            )
+            if (
+                not user_scope.is_valid or not assistant_scope.is_valid
+                or user_scope.identity == assistant_scope.identity
+            ):
+                break
+            # An explicit scope transition between adjacent canonical records
+            # is not a coherent exchange, but neither record is malformed.
+            # Preserve both independently so no scope is guessed or mixed.
+            groups.extend((
+                EpisodeSourceGroup(index, index + 1, user_scope, "scope_transition_record"),
+                EpisodeSourceGroup(
+                    index + 1, index + 2, assistant_scope, "scope_transition_record",
+                ),
+            ))
+            index += 2
+            continue
+        groups.append(EpisodeSourceGroup(index, index + 2, exchange_scope))
+        index += 2
+    return tuple(groups)
+
+
 def deterministic_episode_boundaries(
     messages: Sequence[Mapping[str, object]],
     *,
@@ -1008,48 +1376,68 @@ def deterministic_episode_boundaries(
     recent_exchanges: int = RECENT_EXCHANGES_TO_KEEP,
     valid_scope_ids: set[str] | frozenset[str] | None = None,
 ) -> tuple[EpisodeBoundary, ...]:
-    """Return stable, contiguous source ranges of complete user/assistant pairs.
+    """Return stable, contiguous ranges of complete canonical interactions.
 
     Segmentation stops before the first structurally incomplete record.  Such
     records remain raw; no exchange is ever split merely to fill a range.
     """
     if max_exchanges < 1 or recent_exchanges < 0:
         raise ValueError("episode segmentation bounds are invalid")
-    exchanges: list[tuple[int, int, CanonicalTruthScope]] = []
+    exchanges = canonical_episode_source_groups(
+        messages, valid_scope_ids=valid_scope_ids,
+    )
+
+    return _episode_boundaries_from_groups(messages, exchanges,
+        max_exchanges=max_exchanges, recent_exchanges=recent_exchanges)
+
+
+def historical_episode_source_groups(messages, *, valid_scope_ids=None):
+    """Independent eligible interactions, with original offsets and no gap edges.
+
+    Unlike the frozen prefix projection, runtime history may resume at a later
+    adjacent ordinary user/assistant pair. Both original records must pass the
+    shared historical resolver. Excluded/orphan records are never bridged.
+    """
+    from memory_v2_historical_evidence import resolve_historical_evidence
+    groups = []
     index = 0
     while index + 1 < len(messages):
-        user = messages[index]
-        assistant = messages[index + 1]
-        if str(user.get("role", "")) != "user" or str(assistant.get("role", "")) != "assistant":
-            break
-        exchange_scope = coherent_exchange_scope(
-            user, assistant, valid_scope_ids=valid_scope_ids,
-        )
-        # Unknown/malformed tags remain canonical and raw.  Since this cache
-        # represents one exact prefix, derivation stops rather than skipping
-        # over an unclassifiable source record.
-        if not exchange_scope.is_valid:
-            break
-        exchanges.append((index, index + 1, exchange_scope))
+        pair = messages[index:index + 2]
+        if (not all(isinstance(record, Mapping) for record in pair)
+                or pair[0].get("role") != "user" or pair[1].get("role") != "assistant"):
+            index += 1
+            continue
+        evidence = [resolve_historical_evidence(messages, i,
+            valid_scope_ids=valid_scope_ids).evidence for i in (index, index + 1)]
+        if all(e is not None and e.source_class == "ordinary_conversation" for e in evidence):
+            groups.extend(replace(group, start_index=group.start_index + index,
+                end_index_exclusive=group.end_index_exclusive + index)
+                for group in canonical_episode_source_groups(pair, valid_scope_ids=valid_scope_ids))
         index += 2
+    return tuple(groups)
+
+
+def _episode_boundaries_from_groups(messages, exchanges, *,
+        max_exchanges=MAX_EXCHANGES_PER_EPISODE, recent_exchanges=0):
 
     eligible_count = max(0, len(exchanges) - recent_exchanges)
     boundaries: list[EpisodeBoundary] = []
     first = 0
     while first < eligible_count:
-        scope = exchanges[first][2]
+        scope = exchanges[first].scope
         last = first
         while (
             last < eligible_count
             and last - first < max_exchanges
-            and exchanges[last][2].identity == scope.identity
+            and exchanges[last].scope.identity == scope.identity
+            and (last == first or exchanges[last - 1].end_index_exclusive == exchanges[last].start_index)
         ):
             last += 1
         batch = exchanges[first:last]
         if not batch:
             break
-        start = batch[0][0]
-        end = batch[-1][1] + 1
+        start = batch[0].start_index
+        end = batch[-1].end_index_exclusive
         record_ids = tuple(canonical_record_id(position, messages[position]) for position in range(start, end))
         boundaries.append(EpisodeBoundary(
             start_index=start,
@@ -1254,6 +1642,10 @@ Rank candidates in this order:
 Assistant-created story details are low priority unless the user later refers
 to them. Do not let a sequence of one-off stories fill the anchor budget while
 a user-introduced named callback or concrete technical event is omitted.
+Preserve speaker ownership exactly: a USER question does not establish its
+premise, and an ASSISTANT guess, suggestion, tease, or invented story must not
+be rewritten as a user fact. If such assistant material is retained, identify
+it explicitly as something the assistant said or invented.
 When a distinctive shared activity involved a short, externally referable set
 of actions, items, formats, or names, include the key members in one anchor;
 do not replace them with only a generic category such as "actions" or "tests".
@@ -1497,11 +1889,15 @@ END INPUT
         for position, episode in enumerate(episodes, start=1):
             boundary = episode.boundary
             summaries.append(f"EPISODE {position}: {episode.content}")
-            exchange_starts = list(range(boundary.start_index, boundary.end_index_exclusive, 2))
-            sample_positions = sorted({0, len(exchange_starts) // 2, len(exchange_starts) - 1})
+            groups = canonical_episode_source_groups(
+                messages[boundary.start_index:boundary.end_index_exclusive],
+            )
+            sample_positions = sorted({0, len(groups) // 2, len(groups) - 1})
             for sample_position in sample_positions:
-                start = exchange_starts[sample_position]
-                for message in messages[start:min(start + 2, boundary.end_index_exclusive)]:
+                group = groups[sample_position]
+                start = boundary.start_index + group.start_index
+                end = boundary.start_index + group.end_index_exclusive
+                for message in messages[start:end]:
                     role = str(message.get("role", "unknown")).upper()
                     content = str(message.get("content", ""))[:600]
                     excerpts.append(f"EPISODE {position} {role}: {content}")
@@ -1535,6 +1931,11 @@ Preserve only useful continuity:
 - every member of a fully populated bracketed concrete set, or an
   unmistakable grammatical variant; use smaller term lists only to
   disambiguate their anchor, without making a list-like fact dump
+
+Keep speaker ownership exact. A USER question does not establish its premise.
+An ASSISTANT guess, suggestion, tease, or invented story is something the
+assistant said; never rewrite it as a user assertion, preference, possession,
+or completed action.
 
 Collapse repetitive testing, repeated corrections, echoing, and near-duplicate
 reactions into one conceptual event. Temporary testing-induced behavior must
@@ -1927,11 +2328,970 @@ class EpisodeCompactionCache:
             generation_ids.add(generation_id)
         return next(iter(generation_ids)) if len(generation_ids) == 1 else None
 
+    def validate_for_context(
+        self,
+        messages: Sequence[Mapping[str, object]],
+        *,
+        maximum_episodes: int = MAX_CONTEXT_EPISODES,
+        maximum_raw_messages: int = 100,
+        maximum_raw_characters: int = 60_000,
+        use_consolidated: bool = True,
+        active_truth_scope: Mapping[str, object] | None = None,
+        allow_historical_recall: bool = False,
+    ) -> EpisodeCacheValidationResult:
+        """Return the sole cache-validity decision for runtime and inspection."""
+        active_scope = active_scope_from_provenance(active_truth_scope)
+        known_scope_ids = self._known_truth_scope_ids()
+        if maximum_episodes < 1:
+            return EpisodeCacheValidationResult(
+                accepted=False,
+                state="invalid",
+                reason="maximum episode selection must be positive",
+                rejection_reasons=("maximum episode selection must be positive",),
+            )
+        if active_scope is not None and (
+            not active_scope.is_valid
+            or (not active_scope.is_legacy and active_scope.scope_id not in known_scope_ids)
+        ):
+            return EpisodeCacheValidationResult(
+                accepted=False,
+                state="invalid",
+                reason="active truth scope is invalid or unavailable",
+                rejection_reasons=("active truth scope is invalid or unavailable",),
+            )
+        canonical_groups_by_start = {
+            value.start_index: value
+            for value in canonical_episode_source_groups(
+                messages, valid_scope_ids=set(known_scope_ids),
+            )
+        }
+        historical_groups_by_start = {
+            value.start_index: value for value in historical_episode_source_groups(
+                messages, valid_scope_ids=set(known_scope_ids))
+        } if allow_historical_recall else {}
+
+        rows = self.store.connection.execute(
+            """SELECT s.*, r.start_sequence, r.end_sequence,
+                      (SELECT COUNT(*) FROM summary_source_ranges rc
+                        WHERE rc.character_id=s.character_id
+                          AND rc.summary_id=s.summary_id) AS range_count
+                 FROM summaries s LEFT JOIN summary_source_ranges r
+                   ON r.character_id=s.character_id AND r.summary_id=s.summary_id
+                WHERE s.character_id=? AND s.summary_level=?
+                ORDER BY COALESCE(r.start_sequence, 2147483647),
+                         COALESCE(r.end_sequence, 2147483647), s.summary_id""",
+            (self.character_id, SUMMARY_LEVEL),
+        ).fetchall()
+        current_generation = self._latest_inspection_generation()
+        lower_records: list[EpisodeRecordValidation] = []
+        valid_rows: list[EpisodeRecordValidation] = []
+        rejection_reasons: list[str] = []
+        expected_start = 0
+        generation_id: str | None = None
+        generation_identity_digest: str | None = None
+        generation_seed_applied: bool | None = None
+        generation_local_reproducibility: bool | None = None
+        era_account_count: int | None = None
+        era_candidate_run_count: int | None = None
+        generation_source_authority: str | None = None
+        generation_purpose: str | None = None
+        seen_ids: set[str] = set()
+
+        for row in rows:
+            record_id = str(row["summary_id"])
+            if record_id in seen_ids:
+                continue
+            seen_ids.add(record_id)
+            range_count = int(row["range_count"] or 0)
+            base = {
+                "record_id": record_id,
+                "summary_level": SUMMARY_LEVEL,
+                "content": str(row["content"] or ""),
+                "created_at_us": int(row["created_at_us"]),
+                "provenance_state": str(row["provenance_state"] or ""),
+                "source_start_sequence": int(row["start_sequence"]) if row["start_sequence"] is not None else None,
+                "source_end_sequence": int(row["end_sequence"]) if row["end_sequence"] is not None else None,
+                "source_count": int(row["source_count"] or 0),
+                "row": row,
+            }
+            try:
+                preliminary_metadata = json.loads(row["legacy_metadata_json"] or "{}")
+                preliminary_generation = (
+                    str(preliminary_metadata.get("generation_id") or "")
+                    if isinstance(preliminary_metadata, Mapping) else ""
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                preliminary_metadata = {}
+                preliminary_generation = ""
+            if (
+                current_generation and preliminary_generation
+                and preliminary_generation != current_generation
+            ):
+                lower_records.append(EpisodeRecordValidation(
+                    **base,
+                    state="superseded",
+                    reason="record belongs to an older derived generation",
+                    generation_id=preliminary_generation,
+                    truth_scope_kind=str(
+                        preliminary_metadata.get("truth_scope_kind") or INVALID_SCOPE
+                    ),
+                    truth_scope_id=str(preliminary_metadata.get("truth_scope_id") or ""),
+                    source_start_index=(
+                        int(preliminary_metadata["source_start_index"])
+                        if isinstance(preliminary_metadata.get("source_start_index"), int)
+                        else None
+                    ),
+                    source_end_index_exclusive=(
+                        int(preliminary_metadata["source_end_index_exclusive"])
+                        if isinstance(preliminary_metadata.get("source_end_index_exclusive"), int)
+                        else None
+                    ),
+                    metadata=preliminary_metadata,
+                ))
+                continue
+            try:
+                metadata = json.loads(row["legacy_metadata_json"] or "{}")
+                if not isinstance(metadata, dict):
+                    raise TypeError("metadata is not an object")
+                start = int(metadata["source_start_index"])
+                end = int(metadata["source_end_index_exclusive"])
+                record_ids = tuple(str(value) for value in metadata["source_record_ids"])
+                stored_identity = metadata["compactor_identity"]
+                stored_identity_digest = str(metadata["compactor_identity_digest"])
+                stored_seed = int(metadata["derived_generation_seed"])
+                seed_applied = metadata["derived_seed_applied"]
+                local_reproducibility = metadata["local_byte_reproducibility_required"]
+                stored_anchors = metadata["continuity_anchors"]
+                stored_anchor_count = int(metadata["continuity_anchor_count"])
+                anchor_verification_status = str(metadata["anchor_verification_status"])
+                anchor_missing_count = int(metadata["anchor_missing_count"])
+                anchor_refinement_attempted = metadata["anchor_refinement_attempted"]
+                scope = CanonicalTruthScope(
+                    str(metadata["truth_scope_kind"]),
+                    str(metadata.get("truth_scope_id") or ""),
+                )
+                source_authority = str(
+                    metadata.get("source_authority") or EPISODE_SOURCE_CANONICAL
+                )
+                purpose = str(
+                    metadata.get("generation_purpose") or EPISODE_PURPOSE_RUNTIME
+                )
+                scope_state = str(metadata.get("scope_state") or (
+                    "unknown_scope" if scope.is_legacy else scope.kind
+                ))
+                row_generation = str(metadata.get("generation_id") or "")
+                row_era_count = int(metadata["era_account_count"])
+                row_candidate_count = int(metadata["era_candidate_run_count"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                record = EpisodeRecordValidation(
+                    **base, state="invalid", reason="metadata is malformed or incomplete",
+                )
+                lower_records.append(record)
+                # Runtime historically selected only source-ranged rows. Keep
+                # an orphan inspectable without letting it poison an otherwise
+                # valid disposable generation.
+                if range_count > 0:
+                    rejection_reasons.append(record.reason)
+                continue
+            details = {
+                **base, "generation_id": row_generation,
+                "truth_scope_kind": scope.kind, "truth_scope_id": scope.scope_id,
+                "source_authority": source_authority,
+                "generation_purpose": purpose,
+                "scope_state": scope_state,
+                "source_start_index": start, "source_end_index_exclusive": end,
+                "metadata": metadata,
+            }
+            if range_count == 0:
+                lower_records.append(EpisodeRecordValidation(
+                    **details, state="missing_source_coverage",
+                    reason="summary has no retained source range",
+                ))
+                continue
+            if (
+                range_count != 1 or start < expected_start
+                or (start != expected_start and metadata.get("coverage_policy") != HISTORICAL_RANGE_POLICY)
+                or end <= start
+                or end > len(messages) or row["start_sequence"] is None
+                or row["end_sequence"] is None
+                or int(row["start_sequence"]) != start + 1
+                or int(row["end_sequence"]) != end
+                or int(row["source_count"] or -1) != end - start
+            ):
+                record = EpisodeRecordValidation(
+                    **details, state="missing_source_coverage",
+                    reason="required canonical source coverage is missing or discontinuous",
+                )
+                lower_records.append(record)
+                rejection_reasons.append(record.reason)
+                continue
+            metadata_valid = (
+                metadata.get("compaction_schema") == COMPACTION_SCHEMA
+                and metadata.get("compaction_version") == COMPACTION_VERSION
+                and metadata.get("summary_level") == SUMMARY_LEVEL
+                and metadata.get("segmentation_version") == SEGMENTATION_VERSION
+                and metadata.get("generator_name") == GENERATOR_NAME
+                and metadata.get("generator_version") == GENERATOR_VERSION
+                and metadata.get("continuity_anchor_schema") == CONTINUITY_ANCHOR_SCHEMA
+                and metadata.get("continuity_anchor_version") == CONTINUITY_ANCHOR_VERSION
+                and metadata.get("era_compaction_version") == ERA_COMPACTION_VERSION
+                and str(row["generator_name"] or "") == GENERATOR_NAME
+                and str(row["generator_version"] or "") == GENERATOR_VERSION
+                and isinstance(stored_identity, Mapping)
+                and compactor_identity_digest(stored_identity) == stored_identity_digest
+                and isinstance(seed_applied, bool)
+                and isinstance(local_reproducibility, bool)
+                and not (local_reproducibility and not seed_applied)
+                and isinstance(stored_anchors, list)
+                and stored_anchor_count == len(stored_anchors)
+                and stored_anchor_count <= MAX_CONTINUITY_ANCHORS
+                and anchor_verification_status in {"pass", "fallback"}
+                and anchor_missing_count >= 0
+                and isinstance(anchor_refinement_attempted, bool)
+                and source_authority in {
+                    EPISODE_SOURCE_CANONICAL, EPISODE_SOURCE_HISTORICAL,
+                }
+                and purpose in {EPISODE_PURPOSE_RUNTIME, EPISODE_PURPOSE_HISTORICAL}
+                and (
+                    purpose == EPISODE_PURPOSE_RUNTIME
+                    or allow_historical_recall
+                )
+                and (
+                    (source_authority == EPISODE_SOURCE_CANONICAL
+                     and purpose == EPISODE_PURPOSE_RUNTIME)
+                    or (source_authority == EPISODE_SOURCE_HISTORICAL
+                        and purpose == EPISODE_PURPOSE_HISTORICAL)
+                )
+                and scope_state == ("unknown_scope" if scope.is_legacy else scope.kind)
+                and scope.is_valid and scope.kind != INVALID_SCOPE
+                and not (scope.is_legacy and bool(scope.scope_id))
+                and (scope.is_legacy or scope.scope_id in known_scope_ids)
+                and bool(row_generation)
+                and row_era_count >= 0 and row_candidate_count >= 0
+                and row_era_count <= row_candidate_count
+                and metadata.get("coverage_policy", "prefix") in {"prefix", HISTORICAL_RANGE_POLICY}
+                and metadata.get("source_grouping", "prefix") in {"prefix", HISTORICAL_RANGE_POLICY}
+                and (metadata.get("coverage_policy", "prefix") == "prefix"
+                     or (purpose == EPISODE_PURPOSE_HISTORICAL and row_candidate_count == 0))
+            )
+            if not metadata_valid:
+                record = EpisodeRecordValidation(
+                    **details, state="invalid",
+                    reason="compaction schema, generator, scope, or lifecycle metadata is invalid",
+                )
+                lower_records.append(record)
+                rejection_reasons.append(record.reason)
+                continue
+            current_ids = tuple(canonical_record_id(index, messages[index]) for index in range(start, end))
+            digest = hashlib.sha256(_canonical_json(current_ids).encode("utf-8")).hexdigest()
+            source_groups_list: list[EpisodeSourceGroup] = []
+            source_cursor = start
+            while source_cursor < end:
+                source_group = (historical_groups_by_start if metadata.get("source_grouping")
+                    == HISTORICAL_RANGE_POLICY else canonical_groups_by_start).get(source_cursor)
+                if source_group is None or source_group.end_index_exclusive > end:
+                    break
+                source_groups_list.append(source_group)
+                source_cursor = source_group.end_index_exclusive
+            source_groups = tuple(source_groups_list)
+            source_groups_complete = bool(source_groups) and source_cursor == end
+            source_scopes = {value.scope.identity for value in source_groups}
+            content_digest = hashlib.sha256(str(row["content"] or "").encode("utf-8")).hexdigest()
+            if (
+                current_ids != record_ids
+                or metadata.get("source_digest") != digest
+                or metadata.get("summary_content_sha256") != content_digest
+            ):
+                record = EpisodeRecordValidation(
+                    **details, state="stale",
+                    reason="canonical source identity or digest has changed",
+                )
+                lower_records.append(record)
+                rejection_reasons.append(record.reason)
+                continue
+            boundary = EpisodeBoundary(
+                start, end, len(source_groups), current_ids, digest,
+                scope.kind, scope.scope_id,
+            )
+            expected_seed = deterministic_derived_seed(
+                digest, summary_level=f"{SUMMARY_LEVEL}:summary",
+                provider_identity_digest=stored_identity_digest,
+            )
+            expected_episode_id = deterministic_episode_id(
+                self.character_id, boundary,
+                provider_identity_digest=stored_identity_digest,
+                source_authority=source_authority,
+            )
+            anchors_valid = True
+            key_term_characters = 0
+            for position, anchor in enumerate(stored_anchors, start=1):
+                if not isinstance(anchor, Mapping):
+                    anchors_valid = False
+                    break
+                try:
+                    anchor_id = str(anchor["anchor_id"])
+                    detail = str(anchor["detail"])
+                    indices = tuple(int(value) for value in anchor["source_record_indices"])
+                    key_terms = tuple(str(value) for value in anchor["key_terms"])
+                except (KeyError, TypeError, ValueError):
+                    anchors_valid = False
+                    break
+                if (
+                    anchor_id != f"A{position}" or not detail
+                    or len(detail) > MAX_CONTINUITY_ANCHOR_CHARACTERS or not indices
+                    or any(value < start or value >= end for value in indices)
+                    or len(key_terms) > MAX_CONTINUITY_ANCHOR_KEY_TERMS
+                    or any(not value or len(value) > MAX_CONTINUITY_ANCHOR_KEY_TERM_CHARACTERS for value in key_terms)
+                ):
+                    anchors_valid = False
+                    break
+                key_term_characters += sum(len(value) for value in key_terms)
+            invariant_valid = (
+                stored_seed == expected_seed
+                and record_id == expected_episode_id
+                and source_groups_complete
+                and source_scopes == {scope.identity}
+                and anchors_valid
+                and key_term_characters <= MAX_CONTINUITY_ANCHOR_KEY_TERM_TOTAL_CHARACTERS
+                and (generation_id is None or generation_id == row_generation)
+                and (generation_identity_digest is None or generation_identity_digest == stored_identity_digest)
+                and (generation_seed_applied is None or generation_seed_applied == seed_applied)
+                and (
+                    generation_local_reproducibility is None
+                    or generation_local_reproducibility == local_reproducibility
+                )
+                and (era_account_count is None or era_account_count == row_era_count)
+                and (era_candidate_run_count is None or era_candidate_run_count == row_candidate_count)
+                and (
+                    generation_source_authority is None
+                    or generation_source_authority == source_authority
+                )
+                and (generation_purpose is None or generation_purpose == purpose)
+            )
+            if not invariant_valid:
+                record = EpisodeRecordValidation(
+                    **details, state="invalid",
+                    reason="deterministic identity, anchor, or generation invariants are invalid",
+                )
+                lower_records.append(record)
+                rejection_reasons.append(record.reason)
+                continue
+            record = EpisodeRecordValidation(
+                **details, state="current_valid",
+                reason="accepted by the shared episode-cache validator",
+            )
+            lower_records.append(record)
+            valid_rows.append(record)
+            expected_start = end
+            generation_id = row_generation
+            generation_identity_digest = stored_identity_digest
+            generation_seed_applied = seed_applied
+            generation_local_reproducibility = local_reproducibility
+            era_account_count = row_era_count
+            era_candidate_run_count = row_candidate_count
+            generation_source_authority = source_authority
+            generation_purpose = purpose
+
+        ranged_count = 0
+        for row in rows:
+            if int(row["range_count"] or 0) <= 0:
+                continue
+            try:
+                metadata = json.loads(row["legacy_metadata_json"] or "{}")
+                row_generation = str(metadata.get("generation_id") or "")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                row_generation = ""
+            if not current_generation or row_generation == current_generation:
+                ranged_count += 1
+        lower_accepted = bool(valid_rows) and len(valid_rows) == ranged_count and not rejection_reasons
+        if not rows or ranged_count == 0:
+            rejection_reasons.append("no source-ranged lower episodes are available")
+        raw = messages[expected_start:]
+        raw_characters = sum(len(str(message.get("content", ""))) for message in raw)
+        if lower_accepted and generation_purpose != EPISODE_PURPOSE_HISTORICAL and (
+            not raw or len(raw) > maximum_raw_messages or raw_characters > maximum_raw_characters
+        ):
+            lower_accepted = False
+            rejection_reasons.append("required bounded raw suffix is missing or exceeds runtime limits")
+        if lower_accepted:
+            selected = _selected_episode_indices(len(valid_rows), maximum_episodes)
+            identities = [(value.truth_scope_kind, value.truth_scope_id) for value in valid_rows]
+            if (not all(value.metadata.get("coverage_policy") == HISTORICAL_RANGE_POLICY for value in valid_rows)
+                    and maximum_episodes == MAX_CONTEXT_EPISODES and era_candidate_run_count != len(
+                _scope_compatible_selected_runs(selected, identities)
+            )):
+                lower_accepted = False
+                rejection_reasons.append("era candidate accounting does not match the selected lower runs")
+        if lower_accepted and active_scope is not None and not any(
+            self._retrieval_scope_compatible(value, active_scope) for value in valid_rows
+        ):
+            lower_accepted = False
+            rejection_reasons.append("no validated lower episode is compatible with the active truth scope")
+
+        era_records = self._validate_era_records(
+            messages, tuple(valid_rows), generation_id or "",
+            int(era_account_count or 0), known_scope_ids,
+            active_scope=active_scope, use_consolidated=use_consolidated,
+        ) if lower_accepted else ()
+        primary_rejection_state = next(
+            (
+                value.state for value in lower_records
+                if not value.accepted and value.state != "superseded"
+            ),
+            "missing_source_coverage",
+        )
+        if not lower_accepted:
+            lower_records = [
+                value if not value.accepted else replace(
+                    value, state="missing_source_coverage",
+                    reason="generation cannot provide the complete validated prefix and raw suffix",
+                )
+                for value in lower_records
+            ]
+        state = "current_valid" if lower_accepted else primary_rejection_state
+        reason = (
+            "shared validator accepted the current derived generation"
+            if lower_accepted else (rejection_reasons[0] if rejection_reasons else "derived cache is unavailable")
+        )
+        return EpisodeCacheValidationResult(
+            accepted=lower_accepted,
+            state=state,
+            reason=reason,
+            generation_id=generation_id or current_generation or "",
+            raw_start_index=expected_start,
+            records=tuple((*lower_records, *era_records)),
+            lower_records=tuple(lower_records),
+            era_records=tuple(era_records),
+            generation_identity_digest=generation_identity_digest or "",
+            generation_seed_applied=generation_seed_applied,
+            generation_local_reproducibility=generation_local_reproducibility,
+            era_account_count=int(era_account_count or 0),
+            era_candidate_run_count=int(era_candidate_run_count or 0),
+            source_authority=generation_source_authority or EPISODE_SOURCE_CANONICAL,
+            generation_purpose=generation_purpose or EPISODE_PURPOSE_RUNTIME,
+            rejection_reasons=tuple(dict.fromkeys(rejection_reasons)),
+            covered_source_ranges=tuple((value.source_start_index, value.source_end_index_exclusive)
+                for value in valid_rows) if lower_accepted else (),
+        )
+
+    def retrieve_candidates(
+        self,
+        messages: Sequence[Mapping[str, object]],
+        query: str,
+        *,
+        limit: int = MAX_RETRIEVED_EPISODES,
+        active_truth_scope: Mapping[str, object] | None = None,
+        allow_historical_recall: bool = False,
+        memory_query_decision: MemoryQueryDecision | None = None,
+    ) -> EpisodeRetrievalResult:
+        """Return bounded typed episode candidates through cache authority."""
+        if not 1 <= limit <= MAX_RETRIEVED_EPISODES:
+            raise ValueError("episode retrieval limit is outside the cache-owned bound")
+        validation = self.validate_for_context(
+            messages, active_truth_scope=active_truth_scope,
+            allow_historical_recall=allow_historical_recall,
+        )
+        if not validation.accepted:
+            # A genuinely absent optional generation is different from an
+            # existing generation that failed the shared validity contract.
+            missing = validation.state == "missing_source_coverage" and not validation.records and not validation.generation_id
+            return EpisodeRetrievalResult(
+                (), validation.state, validation.reason, validation.generation_id,
+                health=RetrievalHealth((RetrievalLaneHealth(
+                    "episodes", "unused" if missing else "incomplete", "cache",
+                    "cache_missing" if missing else "cache_invalid",
+                ),)),
+            )
+        decision = memory_query_decision or decide_memory_query(query)
+        if (
+            validation.generation_purpose == EPISODE_PURPOSE_HISTORICAL
+            and not (decision.applicable and decision.historical)
+        ):
+            return EpisodeRetrievalResult(
+                (), validation.state,
+                "historical episode recall requires explicit recollection intent",
+                validation.generation_id,
+                health=RetrievalHealth((RetrievalLaneHealth("episodes", "unused", "routing", "not_applicable"),)),
+            )
+        active_scope = active_scope_from_provenance(active_truth_scope)
+        ranked = self._rank_validated_retrieval_candidates(
+            validation, str(query), active_scope,
+        )
+        admitted = tuple(value for value in ranked if value.score >= MIN_EPISODE_RETRIEVAL_SCORE)
+        if not admitted:
+            return EpisodeRetrievalResult(
+                (), validation.state, "no cache-owned episode candidate met the relevance gate",
+                validation.generation_id, len(ranked),
+                health=RetrievalHealth((RetrievalLaneHealth("episodes", "complete"),)),
+            )
+        selected: list[EpisodeRetrievalCandidate] = []
+        for candidate in admitted[:limit]:
+            validation_record = validation.record(candidate.record_id)
+            metadata = validation_record.metadata if validation_record is not None else None
+            selected.append(replace(
+                candidate,
+                source_refinements=_historical_episode_source_refinements(
+                    messages, candidate, metadata or {}, str(query),
+                ),
+            ))
+        return EpisodeRetrievalResult(
+            tuple(selected), validation.state, "", validation.generation_id, len(ranked),
+            health=RetrievalHealth((RetrievalLaneHealth("episodes", "complete"),)),
+        )
+
+    @staticmethod
+    def _rank_validated_retrieval_candidates(
+        validation: EpisodeCacheValidationResult,
+        query: str,
+        active_scope: CanonicalTruthScope | None,
+    ) -> tuple[EpisodeRetrievalCandidate, ...]:
+        records = [
+            value for value in validation.lower_records
+            if value.accepted and EpisodeCompactionCache._retrieval_scope_compatible(
+                value, active_scope,
+            )
+        ]
+        term_episode_frequency: Counter[str] = Counter()
+        for record in records:
+            episode_terms = set(_retrieval_terms(record.content))
+            metadata = record.metadata or {}
+            for anchor in metadata.get("continuity_anchors", ()):
+                if not isinstance(anchor, Mapping):
+                    continue
+                episode_terms.update(_retrieval_terms(anchor.get("detail", "")))
+                for key_term in anchor.get("key_terms", ()):
+                    episode_terms.update(_retrieval_terms(key_term))
+            term_episode_frequency.update(episode_terms)
+        ranked: list[tuple[int, int, EpisodeRetrievalCandidate]] = []
+        for index, record in enumerate(records):
+            if None in (
+                record.source_start_index,
+                record.source_end_index_exclusive,
+                record.source_start_sequence,
+                record.source_end_sequence,
+            ):
+                continue
+            score = _episode_retrieval_score(
+                query, record.metadata or {}, term_episode_frequency, record.content,
+            )
+            ranked.append((score, index, EpisodeRetrievalCandidate(
+                record.record_id,
+                record.content,
+                score,
+                record.generation_id,
+                record.truth_scope_kind,
+                record.truth_scope_id,
+                int(record.source_start_index),
+                int(record.source_end_index_exclusive),
+                int(record.source_start_sequence),
+                int(record.source_end_sequence),
+                record.source_authority,
+                record.generation_purpose,
+                record.scope_state,
+            )))
+        return tuple(value for _score, _index, value in sorted(
+            ranked, key=lambda item: (-item[0], -item[1], item[2].record_id),
+        ))
+
+    @staticmethod
+    def _retrieval_scope_compatible(
+        record: EpisodeRecordValidation,
+        active_scope: CanonicalTruthScope | None,
+    ) -> bool:
+        """Keep unknown historical scope useful without treating it as universal.
+
+        Legacy runtime context keeps its established compatibility contract.
+        A reconstructed historical episode is narrower: unknown scope may be
+        recalled only from a known real-world view, while tagged source ranges
+        still require their exact governed scope.
+        """
+        if record.generation_purpose != EPISODE_PURPOSE_HISTORICAL:
+            return active_scope is None or scope_is_compatible(record.scope, active_scope)
+        if active_scope is None or not active_scope.is_valid or active_scope.is_legacy:
+            return False
+        if record.scope_state == "unknown_scope":
+            return active_scope.kind == "real_world"
+        return (
+            record.scope_state in {"real_world", "scenario"}
+            and not record.scope.is_legacy
+            and record.scope.identity == active_scope.identity
+        )
+
+    def _validate_era_records(
+        self,
+        messages: Sequence[Mapping[str, object]],
+        lower_records: tuple[EpisodeRecordValidation, ...],
+        generation_id: str,
+        expected_era_count: int,
+        known_scope_ids: frozenset[str],
+        *,
+        active_scope: CanonicalTruthScope | None,
+        use_consolidated: bool,
+    ) -> tuple[EpisodeRecordValidation, ...]:
+        if not use_consolidated:
+            return ()
+        rows = self.store.connection.execute(
+            """SELECT s.*, r.start_sequence, r.end_sequence,
+                      (SELECT COUNT(*) FROM summary_source_ranges rc
+                        WHERE rc.character_id=s.character_id AND rc.summary_id=s.summary_id) AS range_count
+                 FROM summaries s LEFT JOIN summary_source_ranges r
+                   ON r.character_id=s.character_id AND r.summary_id=s.summary_id
+                WHERE s.character_id=? AND s.summary_level=?
+                ORDER BY COALESCE(r.start_sequence, 2147483647),
+                         COALESCE(r.end_sequence, 2147483647), s.summary_id""",
+            (self.character_id, ERA_SUMMARY_LEVEL),
+        ).fetchall()
+        lower_by_id = {value.record_id: (index, value) for index, value in enumerate(lower_records)}
+        results: list[EpisodeRecordValidation] = []
+        set_failed = False
+        current_row_count = 0
+        seen: set[str] = set()
+        for row in rows:
+            record_id = str(row["summary_id"])
+            if record_id in seen:
+                set_failed = True
+                continue
+            seen.add(record_id)
+            base = {
+                "record_id": record_id, "summary_level": ERA_SUMMARY_LEVEL,
+                "content": str(row["content"] or ""),
+                "created_at_us": int(row["created_at_us"]),
+                "provenance_state": str(row["provenance_state"] or ""),
+                "source_start_sequence": int(row["start_sequence"]) if row["start_sequence"] is not None else None,
+                "source_end_sequence": int(row["end_sequence"]) if row["end_sequence"] is not None else None,
+                "source_count": int(row["source_count"] or 0), "row": row,
+            }
+            try:
+                preliminary_metadata = json.loads(row["legacy_metadata_json"] or "{}")
+                preliminary_generation = (
+                    str(preliminary_metadata.get("generation_id") or "")
+                    if isinstance(preliminary_metadata, Mapping) else ""
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                preliminary_metadata = {}
+                preliminary_generation = ""
+            if (
+                generation_id and preliminary_generation
+                and preliminary_generation != generation_id
+            ):
+                results.append(EpisodeRecordValidation(
+                    **base, state="superseded",
+                    reason="era belongs to an older derived generation",
+                    generation_id=preliminary_generation,
+                    metadata=preliminary_metadata,
+                ))
+                continue
+            try:
+                metadata = json.loads(row["legacy_metadata_json"] or "{}")
+                start = int(metadata["source_start_index"])
+                end = int(metadata["source_end_index_exclusive"])
+                record_ids = tuple(str(value) for value in metadata["source_record_ids"])
+                lower_ids = tuple(str(value) for value in metadata["lower_episode_ids"])
+                retention_checked = int(metadata["retention_distinctive_items_checked"])
+                retention_missing = int(metadata["retention_missing_item_count"])
+                scope = CanonicalTruthScope(
+                    str(metadata["truth_scope_kind"]), str(metadata.get("truth_scope_id") or ""),
+                )
+                source_authority = str(
+                    metadata.get("source_authority") or EPISODE_SOURCE_CANONICAL
+                )
+                purpose = str(
+                    metadata.get("generation_purpose") or EPISODE_PURPOSE_RUNTIME
+                )
+                scope_state = str(metadata.get("scope_state") or (
+                    "unknown_scope" if scope.is_legacy else scope.kind
+                ))
+                row_generation = str(metadata.get("generation_id") or "")
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                results.append(EpisodeRecordValidation(
+                    **base, state="invalid", reason="era metadata is malformed or incomplete",
+                ))
+                set_failed = True
+                continue
+            details = {
+                **base, "generation_id": row_generation,
+                "truth_scope_kind": scope.kind, "truth_scope_id": scope.scope_id,
+                "source_authority": source_authority,
+                "generation_purpose": purpose,
+                "scope_state": scope_state,
+                "source_start_index": start, "source_end_index_exclusive": end,
+                "lower_episode_ids": lower_ids, "metadata": metadata,
+            }
+            applicable = self._retrieval_scope_compatible(
+                EpisodeRecordValidation(**details, state="current_valid", reason="scope probe"),
+                active_scope,
+            )
+            if row_generation and generation_id and row_generation != generation_id:
+                results.append(EpisodeRecordValidation(
+                    **details, state="superseded", reason="era belongs to an older derived generation",
+                ))
+                continue
+            current_row_count += 1
+            refs = [lower_by_id.get(value) for value in lower_ids]
+            if (
+                int(row["range_count"] or 0) != 1 or start < 0 or end <= start
+                or end > len(messages) or not lower_ids or any(value is None for value in refs)
+                or row["start_sequence"] is None or row["end_sequence"] is None
+            ):
+                results.append(EpisodeRecordValidation(
+                    **details, state="missing_source_coverage",
+                    reason="era source coverage or lower-episode dependencies are missing",
+                ))
+                if applicable:
+                    set_failed = True
+                continue
+            typed_refs = [value for value in refs if value is not None]
+            current_ids = tuple(canonical_record_id(index, messages[index]) for index in range(start, end))
+            digest = hashlib.sha256(_canonical_json(current_ids).encode("utf-8")).hexdigest()
+            content_digest = hashlib.sha256(str(row["content"] or "").encode("utf-8")).hexdigest()
+            if (
+                current_ids != record_ids
+                or metadata.get("source_digest") != digest
+                or metadata.get("summary_content_sha256") != content_digest
+            ):
+                results.append(EpisodeRecordValidation(
+                    **details, state="stale", reason="era canonical source identity or digest has changed",
+                ))
+                if applicable:
+                    set_failed = True
+                continue
+            gates_valid = (
+                metadata.get("compaction_schema") == ERA_COMPACTION_SCHEMA
+                and metadata.get("compaction_version") == ERA_COMPACTION_VERSION
+                and metadata.get("lower_compaction_version") == COMPACTION_VERSION
+                and metadata.get("segmentation_version") == SEGMENTATION_VERSION
+                and row_generation == generation_id
+                and metadata.get("retention_gate_schema") == ERA_RETENTION_GATE_SCHEMA
+                and metadata.get("retention_gate_version") == ERA_RETENTION_GATE_VERSION
+                and metadata.get("retention_gate_passed") is True
+                and metadata.get("retention_verifier_name") == ERA_RETENTION_VERIFIER_NAME
+                and metadata.get("retention_verifier_version") == ERA_RETENTION_VERIFIER_VERSION
+                and retention_checked >= 0 and retention_missing == 0
+                and bool(lower_records)
+                and source_authority == lower_records[0].source_authority
+                and purpose == lower_records[0].generation_purpose
+                and scope_state == ("unknown_scope" if scope.is_legacy else scope.kind)
+                and scope.is_valid and scope.kind != INVALID_SCOPE
+                and (scope.is_legacy or scope.scope_id in known_scope_ids)
+                and [value[0] for value in typed_refs] == list(
+                    range(typed_refs[0][0], typed_refs[0][0] + len(typed_refs))
+                )
+                and start == typed_refs[0][1].source_start_index
+                and end == typed_refs[-1][1].source_end_index_exclusive
+                and int(row["start_sequence"]) == start + 1
+                and int(row["end_sequence"]) == end
+                and int(row["source_count"] or -1) == end - start
+                and all(value[1].scope.identity == scope.identity for value in typed_refs)
+            )
+            if not gates_valid:
+                results.append(EpisodeRecordValidation(
+                    **details, state="invalid",
+                    reason="era retention, generation, scope, or compaction gates are invalid",
+                ))
+                if applicable:
+                    set_failed = True
+                continue
+            results.append(EpisodeRecordValidation(
+                **details, state="current_valid", reason="accepted by the shared era validator",
+            ))
+        if current_row_count != expected_era_count:
+            set_failed = True
+        if set_failed:
+            results = [
+                value if not value.accepted else replace(
+                    value, state="invalid",
+                    reason="era set is unusable; runtime falls back to validated lower episodes",
+                )
+                for value in results
+            ]
+        return tuple(results)
+
+    def inspect_records(
+        self,
+        messages: Sequence[Mapping[str, object]],
+        *,
+        query: str = "",
+        status_filter: str = "current",
+        scope_filter: str = "applicable",
+        limit: int = 20,
+        offset: int = 0,
+        record_id: str = "",
+        active_truth_scope: Mapping[str, object] | None = None,
+        allow_historical_recall: bool = False,
+    ) -> dict[str, object]:
+        """Return a bounded diagnostic projection of this derived cache.
+
+        The shared structured validator supplies both the runtime verdict and
+        every row-local status. This method only pages that result and never
+        returns canonical source messages.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            raise ValueError("episode inspection limit must be from 1 to 50")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("episode inspection offset must not be negative")
+        if status_filter not in {"current", "historical", "all"}:
+            raise ValueError("invalid episode inspection status filter")
+        if scope_filter not in {"applicable", "all"}:
+            raise ValueError("invalid episode inspection scope filter")
+        query = " ".join(str(query or "").split())
+        if len(query) > 160:
+            raise ValueError("episode inspection query exceeds 160 characters")
+
+        try:
+            validation = self.validate_for_context(
+                messages, use_consolidated=True,
+                active_truth_scope=active_truth_scope,
+                allow_historical_recall=allow_historical_recall,
+            )
+        except Exception as error:
+            validation = EpisodeCacheValidationResult(
+                accepted=False,
+                state="invalid",
+                reason=f"shared validation unavailable ({type(error).__name__})",
+                rejection_reasons=(f"shared validation unavailable ({type(error).__name__})",),
+            )
+        current_generation = validation.generation_id
+        active_scope = active_scope_from_provenance(active_truth_scope)
+        known_scope_ids = self._known_truth_scope_ids()
+
+        statement = """
+            SELECT s.*,
+                   (SELECT MIN(r.start_sequence) FROM summary_source_ranges r
+                     WHERE r.character_id=s.character_id AND r.summary_id=s.summary_id) AS start_sequence,
+                   (SELECT MAX(r.end_sequence) FROM summary_source_ranges r
+                     WHERE r.character_id=s.character_id AND r.summary_id=s.summary_id) AS end_sequence,
+                   (SELECT COUNT(*) FROM summary_source_ranges r
+                     WHERE r.character_id=s.character_id AND r.summary_id=s.summary_id) AS range_count
+              FROM summaries s
+             WHERE s.character_id=?
+               AND s.summary_level IN (?, ?)
+        """
+        arguments: list[object] = [self.character_id, SUMMARY_LEVEL, ERA_SUMMARY_LEVEL]
+        if record_id:
+            statement += " AND s.summary_id=?"
+            arguments.append(str(record_id))
+        else:
+            if query:
+                statement += " AND instr(lower(s.content), lower(?)) > 0"
+                arguments.append(query)
+            generation_sql = """CASE WHEN json_valid(s.legacy_metadata_json)
+                THEN COALESCE(json_extract(s.legacy_metadata_json, '$.generation_id'), '')
+                ELSE '' END"""
+            if status_filter == "historical":
+                statement += f" AND ?<>'' AND {generation_sql}<>'' AND {generation_sql}<>?"
+                arguments.extend((current_generation or "", current_generation or ""))
+            elif status_filter == "current":
+                statement += f" AND NOT (?<>'' AND {generation_sql}<>'' AND {generation_sql}<>?)"
+                arguments.extend((current_generation or "", current_generation or ""))
+            if scope_filter == "applicable" and active_scope is not None and known_scope_ids:
+                scope_kind_sql = """CASE WHEN json_valid(s.legacy_metadata_json)
+                    THEN COALESCE(json_extract(s.legacy_metadata_json, '$.truth_scope_kind'), '')
+                    ELSE '' END"""
+                scope_id_sql = """CASE WHEN json_valid(s.legacy_metadata_json)
+                    THEN COALESCE(json_extract(s.legacy_metadata_json, '$.truth_scope_id'), '')
+                    ELSE '' END"""
+                placeholders = ",".join("?" for _ in known_scope_ids)
+                statement += f""" AND NOT (
+                    {scope_kind_sql} IN ('real_world','scenario')
+                    AND {scope_id_sql} IN ({placeholders})
+                    AND NOT ({scope_kind_sql}=? AND {scope_id_sql}=?))"""
+                arguments.extend((*sorted(known_scope_ids), active_scope.kind, active_scope.scope_id))
+        statement += " ORDER BY COALESCE(end_sequence, 0) DESC, s.created_at_us DESC, s.summary_id LIMIT ? OFFSET ?"
+        fetch_limit = 2 if record_id else limit + 1
+        arguments.extend((fetch_limit, offset))
+        rows = self.store.connection.execute(statement, arguments).fetchall()
+
+        diagnosed: list[dict[str, object]] = []
+        for row in rows:
+            record = validation.record(str(row["summary_id"]))
+            if record is None:
+                record = EpisodeRecordValidation(
+                    record_id=str(row["summary_id"]),
+                    summary_level=str(row["summary_level"] or ""),
+                    state="invalid", reason="record was not represented by shared validation",
+                    content=str(row["content"] or ""),
+                    created_at_us=int(row["created_at_us"]),
+                    provenance_state=str(row["provenance_state"] or ""),
+                )
+            item = self._inspection_item(record, known_scope_ids)
+            item["applicable"] = (
+                active_scope is None
+                or (
+                    bool(item["scope_valid"])
+                    and scope_is_compatible(
+                        CanonicalTruthScope(
+                            str(item["truth_scope_kind"]), str(item["truth_scope_id"]),
+                        ),
+                        active_scope,
+                    )
+                )
+            )
+            diagnosed.append(item)
+        return {
+            "items": diagnosed[:limit],
+            "has_more": len(diagnosed) > limit,
+            "cache_state": validation.state,
+            "cache_reason": validation.reason,
+            "generation_id": current_generation or "",
+            "validation_accepted": validation.accepted,
+        }
+
+    @staticmethod
+    def _inspection_item(
+        record: EpisodeRecordValidation,
+        known_scope_ids: frozenset[str],
+    ) -> dict[str, object]:
+        scope = record.scope
+        return {
+            "record_id": record.record_id,
+            "summary_level": record.summary_level,
+            "content": record.content,
+            "created_at_us": record.created_at_us,
+            "provenance_state": record.provenance_state,
+            "source_authority": record.source_authority,
+            "generation_purpose": record.generation_purpose,
+            "scope_state": record.scope_state,
+            "truth_scope_kind": record.truth_scope_kind,
+            "truth_scope_id": record.truth_scope_id,
+            "scope_valid": (
+                scope.is_valid and scope.kind != INVALID_SCOPE
+                and (scope.is_legacy or scope.scope_id in known_scope_ids)
+            ),
+            "generation_id": record.generation_id,
+            "source_start_index": record.source_start_index,
+            "source_end_index_exclusive": record.source_end_index_exclusive,
+            "source_start_sequence": record.source_start_sequence,
+            "source_end_sequence": record.source_end_sequence,
+            "source_count": record.source_count,
+            "lower_episode_ids": record.lower_episode_ids[:MAX_CONTEXT_EPISODES],
+            "diagnostic_state": record.state,
+            "diagnostic_reason": record.reason,
+        }
+
+    def _latest_inspection_generation(self) -> str | None:
+        rows = self.store.connection.execute(
+            """SELECT legacy_metadata_json FROM summaries
+                WHERE character_id=? AND summary_level=?
+                ORDER BY created_at_us DESC, summary_id DESC LIMIT 16""",
+            (self.character_id, SUMMARY_LEVEL),
+        ).fetchall()
+        for row in rows:
+            try:
+                generation = str(json.loads(row[0] or "{}").get("generation_id") or "")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if generation:
+                return generation
+        return None
+
     def _reusable_lower_episodes(
         self,
         boundaries: Sequence[EpisodeBoundary],
         compactor: EpisodeCompactor,
         generation_id: str,
+        *,
+        source_authority: str = EPISODE_SOURCE_CANONICAL,
+        generation_purpose: str = EPISODE_PURPOSE_RUNTIME,
     ) -> dict[str, CompactedEpisode]:
         """Load only byte-identical lower rows safe to reuse in one rollover."""
         rows = self.store.connection.execute(
@@ -1948,6 +3308,7 @@ class EpisodeCompactionCache:
                 self.character_id,
                 boundary,
                 provider_identity_digest=compactor.provider_identity_digest,
+                source_authority=source_authority,
             )
             row = rows_by_id.get(episode_id)
             if row is None:
@@ -1996,6 +3357,13 @@ class EpisodeCompactionCache:
                 or metadata.get("continuity_anchor_schema") != CONTINUITY_ANCHOR_SCHEMA
                 or metadata.get("continuity_anchor_version") != CONTINUITY_ANCHOR_VERSION
                 or metadata.get("era_compaction_version") != ERA_COMPACTION_VERSION
+                or metadata.get("source_authority", EPISODE_SOURCE_CANONICAL)
+                   != source_authority
+                or metadata.get("generation_purpose", EPISODE_PURPOSE_RUNTIME)
+                   != generation_purpose
+                or metadata.get("summary_content_sha256") != hashlib.sha256(
+                    str(row["content"] or "").encode("utf-8")
+                ).hexdigest()
                 or str(row["generator_name"] or "") != GENERATOR_NAME
                 or str(row["generator_version"] or "") != GENERATOR_VERSION
                 or metadata.get("compactor_identity_digest") != compactor.provider_identity_digest
@@ -2036,6 +3404,32 @@ class EpisodeCompactionCache:
             )
         return reusable
 
+    def historical_append_plan(self, messages):
+        """Retain every validated range; offer uncovered independent older groups.
+
+        The maximum represented offset is deliberately not used as a cursor.
+        Existing frozen generations retain their original grouping contract.
+        New ranges use the stricter eligible runtime projection.
+        """
+        validation = self.validate_for_context(messages, allow_historical_recall=True)
+        prior = {row.record_id: row for row in validation.lower_records if row.accepted}
+        if not validation.accepted or validation.generation_purpose != EPISODE_PURPOSE_HISTORICAL:
+            prior = {}
+        boundaries = []
+        for row in prior.values():
+            metadata = row.metadata
+            boundaries.append(EpisodeBoundary(row.source_start_index,
+                row.source_end_index_exclusive, 0, tuple(metadata["source_record_ids"]),
+                metadata["source_digest"], row.truth_scope_kind, row.truth_scope_id))
+        groups = historical_episode_source_groups(messages,
+            valid_scope_ids=set(self._known_truth_scope_ids()))
+        older = groups[:max(0, len(groups) - RECENT_EXCHANGES_TO_KEEP)]
+        uncovered = [g for g in older if not any(
+            g.start_index < b.end_index_exclusive and g.end_index_exclusive > b.start_index
+            for b in boundaries)]
+        boundaries.extend(_episode_boundaries_from_groups(messages, uncovered))
+        return tuple(sorted(boundaries, key=lambda b: b.start_index)), prior
+
     def rebuild(
         self,
         messages: Sequence[Mapping[str, object]],
@@ -2044,26 +3438,61 @@ class EpisodeCompactionCache:
         reuse_existing: bool = False,
         expected_generation_id: str | None = None,
         publish_guard: Callable[[], bool] | None = None,
+        source_authority: str = EPISODE_SOURCE_CANONICAL,
+        generation_purpose: str = EPISODE_PURPOSE_RUNTIME,
+        preserve_prior_generations: bool = False,
+        maximum_new_episodes: int | None = None,
+        independent_historical_ranges: bool = False,
     ) -> EpisodeRebuildReport:
+        if (source_authority, generation_purpose) not in {
+            (EPISODE_SOURCE_CANONICAL, EPISODE_PURPOSE_RUNTIME),
+            (EPISODE_SOURCE_HISTORICAL, EPISODE_PURPOSE_HISTORICAL),
+        }:
+            raise ValueError("episode source authority and generation purpose disagree")
+        if preserve_prior_generations and generation_purpose != EPISODE_PURPOSE_HISTORICAL:
+            raise ValueError("prior generations may be preserved only for historical recall")
+        if maximum_new_episodes is not None and (
+            isinstance(maximum_new_episodes, bool) or not 1 <= maximum_new_episodes <= 4
+            or generation_purpose != EPISODE_PURPOSE_HISTORICAL
+        ):
+            raise ValueError("bounded append compaction requires historical purpose and 1-4 episodes")
         started = time.perf_counter()
+        if independent_historical_ranges and (generation_purpose != EPISODE_PURPOSE_HISTORICAL
+                or not reuse_existing or maximum_new_episodes is None):
+            raise ValueError("independent ranges require bounded historical append ownership")
+        prior_records = {}
         boundaries = deterministic_episode_boundaries(
             messages, valid_scope_ids=set(self._known_truth_scope_ids()),
         )
+        if independent_historical_ranges:
+            boundaries, prior_records = self.historical_append_plan(messages)
         generation_id = str(uuid.uuid4())
         reusable = (
-            self._reusable_lower_episodes(boundaries, compactor, generation_id)
+            self._reusable_lower_episodes(boundaries, compactor, generation_id,
+                source_authority=source_authority, generation_purpose=generation_purpose)
             if reuse_existing else {}
         )
         episodes: list[CompactedEpisode] = []
+        if independent_historical_ranges and not set(prior_records).issubset(reusable):
+            # Never regenerate an old range (possibly using a frozen grouping
+            # policy) under a different provider identity during idle append.
+            raise ValueError("retained episode provider identity requires explicit rebuild")
+        new_episode_count = 0
         for boundary in boundaries:
             episode_id = deterministic_episode_id(
                 self.character_id,
                 boundary,
                 provider_identity_digest=compactor.provider_identity_digest,
+                source_authority=source_authority,
             )
             if episode_id in reusable:
                 episodes.append(reusable[episode_id])
                 continue
+            if maximum_new_episodes is not None and new_episode_count >= maximum_new_episodes:
+                if independent_historical_ranges:
+                    continue  # Later retained ranges still belong to this generation.
+                break  # A complete validated prefix; the suffix stays raw/searchable.
+            new_episode_count += 1
             derived_seed = compactor.derived_seed(boundary)
             compacted = compactor.compact_episode(
                 messages, boundary, derived_seed=derived_seed,
@@ -2092,6 +3521,8 @@ class EpisodeCompactionCache:
                 for episode in episodes
             ],
         )
+        if independent_historical_ranges:
+            candidate_runs = []  # Never consolidate across coverage gaps or add idle LLM work.
         eras: list[EpisodeEra] = []
         retention_gate_checked_count = 0
         retention_gate_rejected_count = 0
@@ -2199,24 +3630,25 @@ class EpisodeCompactionCache:
                 (publish_guard is not None and not publish_guard())
                 or (
                     expected_generation_id is not None
-                    and self._current_generation_id() != expected_generation_id
+                    and (self._current_generation_id() or "") != expected_generation_id
                 )
             ):
                 return rebuild_report(published=False, stale=True)
-            old_ids = [row[0] for row in self.store.connection.execute(
-                "SELECT summary_id FROM summaries WHERE character_id=? AND summary_level IN (?, ?)",
-                (self.character_id, SUMMARY_LEVEL, ERA_SUMMARY_LEVEL),
-            ).fetchall()]
-            if old_ids:
-                placeholders = ",".join("?" for _ in old_ids)
-                self.store.connection.execute(
-                    f"DELETE FROM summary_source_ranges WHERE character_id=? AND summary_id IN ({placeholders})",
-                    (self.character_id, *old_ids),
-                )
-                self.store.connection.execute(
-                    "DELETE FROM summaries WHERE character_id=? AND summary_level IN (?, ?)",
+            if not preserve_prior_generations:
+                old_ids = [row[0] for row in self.store.connection.execute(
+                    "SELECT summary_id FROM summaries WHERE character_id=? AND summary_level IN (?, ?)",
                     (self.character_id, SUMMARY_LEVEL, ERA_SUMMARY_LEVEL),
-                )
+                ).fetchall()]
+                if old_ids:
+                    placeholders = ",".join("?" for _ in old_ids)
+                    self.store.connection.execute(
+                        f"DELETE FROM summary_source_ranges WHERE character_id=? AND summary_id IN ({placeholders})",
+                        (self.character_id, *old_ids),
+                    )
+                    self.store.connection.execute(
+                        "DELETE FROM summaries WHERE character_id=? AND summary_level IN (?, ?)",
+                        (self.character_id, SUMMARY_LEVEL, ERA_SUMMARY_LEVEL),
+                    )
             created_at = utc_now_us()
             for episode in episodes:
                 boundary = episode.boundary
@@ -2230,6 +3662,16 @@ class EpisodeCompactionCache:
                     "continuity_anchor_schema": CONTINUITY_ANCHOR_SCHEMA,
                     "continuity_anchor_version": CONTINUITY_ANCHOR_VERSION,
                     "generation_id": generation_id,
+                    "source_authority": source_authority,
+                    "generation_purpose": generation_purpose,
+                    "scope_state": (
+                        "unknown_scope"
+                        if boundary.truth_scope_kind == LEGACY_UNTAGGED_SCOPE
+                        else boundary.truth_scope_kind
+                    ),
+                    "summary_content_sha256": hashlib.sha256(
+                        episode.content.encode("utf-8")
+                    ).hexdigest(),
                     "derived_generation_seed": episode.derived_generation_seed,
                     "derived_seed_applied": compactor.explicit_seed_supported,
                     "local_byte_reproducibility_required": compactor.local_seed_reproducibility,
@@ -2270,6 +3712,11 @@ class EpisodeCompactionCache:
                     "era_candidate_run_count": len(candidate_runs),
                     "era_account_count": len(eras),
                 }
+                if independent_historical_ranges:
+                    metadata["coverage_policy"] = HISTORICAL_RANGE_POLICY
+                    previous = prior_records.get(episode.episode_id)
+                    metadata["source_grouping"] = (previous.metadata.get("source_grouping", "prefix")
+                        if previous is not None else HISTORICAL_RANGE_POLICY)
                 self.store.add_summary(
                     self.character_id,
                     episode.episode_id,
@@ -2297,6 +3744,16 @@ class EpisodeCompactionCache:
                     "lower_compaction_version": COMPACTION_VERSION,
                     "segmentation_version": SEGMENTATION_VERSION,
                     "generation_id": generation_id,
+                    "source_authority": source_authority,
+                    "generation_purpose": generation_purpose,
+                    "scope_state": (
+                        "unknown_scope"
+                        if boundary.truth_scope_kind == LEGACY_UNTAGGED_SCOPE
+                        else boundary.truth_scope_kind
+                    ),
+                    "summary_content_sha256": hashlib.sha256(
+                        era.content.encode("utf-8")
+                    ).hexdigest(),
                     "source_start_index": boundary.start_index,
                     "source_end_index_exclusive": boundary.end_index_exclusive,
                     "source_digest": boundary.source_digest,
@@ -2331,6 +3788,11 @@ class EpisodeCompactionCache:
                     boundary.end_index_exclusive,
                 )
 
+            if maximum_new_episodes is not None:
+                validation = self.validate_for_context(messages, allow_historical_recall=True)
+                if not validation.accepted:
+                    raise ValueError("incremental episode generation failed shared validation")
+
         return rebuild_report(published=True, stale=False)
 
     def select_for_context(
@@ -2346,215 +3808,24 @@ class EpisodeCompactionCache:
         active_truth_scope: Mapping[str, object] | None = None,
     ) -> EpisodeContextSelection | None:
         """Return a validated compacted prefix plus its raw suffix boundary."""
-        if maximum_episodes < 1:
+        validation = self.validate_for_context(
+            messages, maximum_episodes=maximum_episodes,
+            maximum_raw_messages=maximum_raw_messages,
+            maximum_raw_characters=maximum_raw_characters,
+            use_consolidated=use_consolidated,
+            active_truth_scope=active_truth_scope,
+        )
+        if not validation.accepted:
             return None
         active_scope = active_scope_from_provenance(active_truth_scope)
-        if active_scope is not None and not active_scope.is_valid:
-            return None
         known_scope_ids = self._known_truth_scope_ids()
-        if (
-            active_scope is not None
-            and not active_scope.is_legacy
-            and active_scope.scope_id not in known_scope_ids
-        ):
-            return None
-        rows = self.store.connection.execute(
-            """SELECT s.*, r.start_sequence, r.end_sequence
-                 FROM summaries s JOIN summary_source_ranges r
-                   ON r.character_id=s.character_id AND r.summary_id=s.summary_id
-                WHERE s.character_id=? AND s.summary_level=?
-                ORDER BY r.start_sequence, r.end_sequence, s.summary_id""",
-            (self.character_id, SUMMARY_LEVEL),
-        ).fetchall()
-        if not rows:
-            return None
-
-        validated: list[tuple[object, dict[str, object], int, int]] = []
-        generation_id: str | None = None
-        generation_identity_digest: str | None = None
-        generation_seed_applied: bool | None = None
-        generation_local_reproducibility: bool | None = None
-        era_account_count: int | None = None
-        era_candidate_run_count: int | None = None
-        expected_start = 0
-        for row in rows:
-            try:
-                metadata = json.loads(row["legacy_metadata_json"] or "{}")
-                start = int(metadata["source_start_index"])
-                end = int(metadata["source_end_index_exclusive"])
-                record_ids = tuple(str(value) for value in metadata["source_record_ids"])
-                stored_identity = metadata["compactor_identity"]
-                stored_identity_digest = str(metadata["compactor_identity_digest"])
-                stored_seed = int(metadata["derived_generation_seed"])
-                seed_applied = metadata["derived_seed_applied"]
-                local_reproducibility = metadata["local_byte_reproducibility_required"]
-                stored_anchors = metadata["continuity_anchors"]
-                stored_anchor_count = int(metadata["continuity_anchor_count"])
-                anchor_verification_status = str(metadata["anchor_verification_status"])
-                anchor_missing_count = int(metadata["anchor_missing_count"])
-                anchor_refinement_attempted = metadata["anchor_refinement_attempted"]
-                scope_kind = str(metadata["truth_scope_kind"])
-                scope_id = str(metadata.get("truth_scope_id") or "")
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                return None
-            stored_scope = CanonicalTruthScope(scope_kind, scope_id)
-            if (
-                metadata.get("compaction_schema") != COMPACTION_SCHEMA
-                or metadata.get("compaction_version") != COMPACTION_VERSION
-                or metadata.get("summary_level") != SUMMARY_LEVEL
-                or metadata.get("segmentation_version") != SEGMENTATION_VERSION
-                or metadata.get("generator_name") != GENERATOR_NAME
-                or metadata.get("generator_version") != GENERATOR_VERSION
-                or metadata.get("continuity_anchor_schema") != CONTINUITY_ANCHOR_SCHEMA
-                or metadata.get("continuity_anchor_version") != CONTINUITY_ANCHOR_VERSION
-                or metadata.get("era_compaction_version") != ERA_COMPACTION_VERSION
-                or str(row["generator_name"] or "") != GENERATOR_NAME
-                or str(row["generator_version"] or "") != GENERATOR_VERSION
-                or not isinstance(stored_identity, Mapping)
-                or compactor_identity_digest(stored_identity) != stored_identity_digest
-                or not isinstance(seed_applied, bool)
-                or not isinstance(local_reproducibility, bool)
-                or (local_reproducibility and not seed_applied)
-                or not isinstance(stored_anchors, list)
-                or stored_anchor_count != len(stored_anchors)
-                or stored_anchor_count > MAX_CONTINUITY_ANCHORS
-                or anchor_verification_status not in {"pass", "fallback"}
-                or anchor_missing_count < 0
-                or not isinstance(anchor_refinement_attempted, bool)
-                or not stored_scope.is_valid
-                or stored_scope.kind == INVALID_SCOPE
-                or (stored_scope.is_legacy and bool(stored_scope.scope_id))
-                or (
-                    not stored_scope.is_legacy
-                    and stored_scope.scope_id not in known_scope_ids
-                )
-                or (
-                    generation_identity_digest is not None
-                    and generation_identity_digest != stored_identity_digest
-                )
-                or (
-                    generation_seed_applied is not None
-                    and generation_seed_applied != seed_applied
-                )
-                or (
-                    generation_local_reproducibility is not None
-                    and generation_local_reproducibility != local_reproducibility
-                )
-                or start != expected_start
-                or end <= start
-                or end > len(messages)
-                or int(row["start_sequence"]) != start + 1
-                or int(row["end_sequence"]) != end
-                or int(row["source_count"] or -1) != end - start
-            ):
-                return None
-            current_ids = tuple(canonical_record_id(index, messages[index]) for index in range(start, end))
-            digest = hashlib.sha256(_canonical_json(current_ids).encode("utf-8")).hexdigest()
-            source_scopes = {
-                coherent_exchange_scope(
-                    messages[index], messages[index + 1],
-                    valid_scope_ids=set(known_scope_ids),
-                ).identity
-                for index in range(start, end, 2)
-                if index + 1 < end
-            }
-            boundary = EpisodeBoundary(
-                start_index=start,
-                end_index_exclusive=end,
-                exchange_count=(end - start) // 2,
-                source_record_ids=current_ids,
-                source_digest=digest,
-                truth_scope_kind=stored_scope.kind,
-                truth_scope_id=stored_scope.scope_id,
-            )
-            expected_seed = deterministic_derived_seed(
-                digest,
-                summary_level=f"{SUMMARY_LEVEL}:summary",
-                provider_identity_digest=stored_identity_digest,
-            )
-            expected_episode_id = deterministic_episode_id(
-                self.character_id,
-                boundary,
-                provider_identity_digest=stored_identity_digest,
-            )
-            if (
-                current_ids != record_ids
-                or metadata.get("source_digest") != digest
-                or stored_seed != expected_seed
-                or str(row["summary_id"]) != expected_episode_id
-                or source_scopes != {stored_scope.identity}
-            ):
-                return None
-            stored_key_term_characters = 0
-            for position, anchor in enumerate(stored_anchors, start=1):
-                if not isinstance(anchor, Mapping):
-                    return None
-                try:
-                    anchor_id = str(anchor["anchor_id"])
-                    detail = str(anchor["detail"])
-                    indices = tuple(int(value) for value in anchor["source_record_indices"])
-                    key_terms = tuple(str(value) for value in anchor["key_terms"])
-                except (KeyError, TypeError, ValueError):
-                    return None
-                if (
-                    anchor_id != f"A{position}"
-                    or not detail
-                    or len(detail) > MAX_CONTINUITY_ANCHOR_CHARACTERS
-                    or not indices
-                    or any(value < start or value >= end for value in indices)
-                    or len(key_terms) > MAX_CONTINUITY_ANCHOR_KEY_TERMS
-                    or any(
-                        not value or len(value) > MAX_CONTINUITY_ANCHOR_KEY_TERM_CHARACTERS
-                        for value in key_terms
-                    )
-                ):
-                    return None
-                stored_key_term_characters += sum(len(value) for value in key_terms)
-            if stored_key_term_characters > MAX_CONTINUITY_ANCHOR_KEY_TERM_TOTAL_CHARACTERS:
-                return None
-            row_generation = str(metadata.get("generation_id") or "")
-            if not row_generation or (generation_id is not None and generation_id != row_generation):
-                return None
-            try:
-                row_era_count = int(metadata["era_account_count"])
-                row_candidate_count = int(metadata["era_candidate_run_count"])
-            except (KeyError, TypeError, ValueError):
-                return None
-            if (
-                row_era_count < 0
-                or row_candidate_count < 0
-                or row_era_count > row_candidate_count
-                or (era_account_count is not None and era_account_count != row_era_count)
-                or (era_candidate_run_count is not None and era_candidate_run_count != row_candidate_count)
-            ):
-                return None
-            generation_id = row_generation
-            generation_identity_digest = stored_identity_digest
-            generation_seed_applied = seed_applied
-            generation_local_reproducibility = local_reproducibility
-            era_account_count = row_era_count
-            era_candidate_run_count = row_candidate_count
-            validated.append((row, metadata, start, end))
-            expected_start = end
-
-        raw = messages[expected_start:]
-        raw_characters = sum(len(str(message.get("content", ""))) for message in raw)
-        if not raw or len(raw) > maximum_raw_messages or raw_characters > maximum_raw_characters:
-            return None
-
-        all_validated = list(validated)
-        all_selected_indices = _selected_episode_indices(len(all_validated), maximum_episodes)
-        all_scope_identities = [
-            (
-                str(metadata.get("truth_scope_kind") or ""),
-                str(metadata.get("truth_scope_id") or ""),
-            )
-            for _row, metadata, _start, _end in all_validated
+        generation_id = validation.generation_id
+        expected_start = validation.raw_start_index
+        all_validated = [
+            (value.row, value.metadata, value.source_start_index, value.source_end_index_exclusive)
+            for value in validation.lower_records if value.accepted
         ]
-        if maximum_episodes == MAX_CONTEXT_EPISODES and era_candidate_run_count != len(
-            _scope_compatible_selected_runs(all_selected_indices, all_scope_identities)
-        ):
-            return None
+        validated = list(all_validated)
         if active_scope is not None:
             validated = [
                 item for item in all_validated
@@ -2637,28 +3908,17 @@ class EpisodeCompactionCache:
                 temporal_raw_matches = _temporal_source_matches(
                     messages, raw_indices, temporal_query,
                 )
-        term_episode_frequency: Counter[str] = Counter()
-        for row, metadata, _start, _end in validated:
-            episode_terms = set(_retrieval_terms(row["content"]))
-            for anchor in metadata.get("continuity_anchors", ()):
-                if not isinstance(anchor, Mapping):
-                    continue
-                episode_terms.update(_retrieval_terms(anchor.get("detail", "")))
-                for key_term in anchor.get("key_terms", ()):
-                    episode_terms.update(_retrieval_terms(key_term))
-            term_episode_frequency.update(episode_terms)
-        ranked_retrieval = sorted(
-            (
-                (
-                    _episode_retrieval_score(
-                        retrieval_query, metadata, term_episode_frequency,
-                    ),
-                    index,
-                )
-                for index, (row, metadata, _start, _end) in enumerate(validated)
-            ),
-            key=lambda value: (-value[0], -value[1]),
-        )
+        validated_index_by_id = {
+            str(row["summary_id"]): index
+            for index, (row, _metadata, _start, _end) in enumerate(validated)
+        }
+        ranked_retrieval = [
+            (candidate.score, validated_index_by_id[candidate.record_id])
+            for candidate in self._rank_validated_retrieval_candidates(
+                validation, retrieval_query, active_scope,
+            )
+            if candidate.record_id in validated_index_by_id
+        ]
         entity_retrieval_candidates = [
             (score, index) for score, index in ranked_retrieval
             if score >= MIN_EPISODE_RETRIEVAL_SCORE
@@ -2815,83 +4075,13 @@ class EpisodeCompactionCache:
             for index in retrieved_indices if index in selected_index_set
         ]
 
-        valid_eras: list[tuple[object, dict[str, object], int, int]] = []
-        if use_consolidated:
-            era_rows = self.store.connection.execute(
-                """SELECT s.*, r.start_sequence, r.end_sequence
-                     FROM summaries s JOIN summary_source_ranges r
-                       ON r.character_id=s.character_id AND r.summary_id=s.summary_id
-                    WHERE s.character_id=? AND s.summary_level=?
-                    ORDER BY r.start_sequence, r.end_sequence, s.summary_id""",
-                (self.character_id, ERA_SUMMARY_LEVEL),
-            ).fetchall()
-            expected_era_count = era_account_count if era_account_count is not None else -1
-            expected_candidate_count = (
-                era_candidate_run_count if era_candidate_run_count is not None else -1
+        valid_eras = [
+            (value.row, value.metadata, value.source_start_index, value.source_end_index_exclusive)
+            for value in validation.era_records
+            if value.accepted and (
+                active_scope is None or scope_is_compatible(value.scope, active_scope)
             )
-            if expected_era_count >= 0 and expected_candidate_count >= 0 and len(era_rows) == expected_era_count:
-                lower_by_id = {str(row["summary_id"]): (index, start, end) for index, (row, _m, start, end) in enumerate(validated)}
-                era_validation_failed = False
-                for row in era_rows:
-                    try:
-                        metadata = json.loads(row["legacy_metadata_json"] or "{}")
-                        start = int(metadata["source_start_index"])
-                        end = int(metadata["source_end_index_exclusive"])
-                        record_ids = tuple(str(value) for value in metadata["source_record_ids"])
-                        lower_ids = tuple(str(value) for value in metadata["lower_episode_ids"])
-                        retention_checked = int(metadata["retention_distinctive_items_checked"])
-                        retention_missing = int(metadata["retention_missing_item_count"])
-                        era_scope = CanonicalTruthScope(
-                            str(metadata["truth_scope_kind"]),
-                            str(metadata.get("truth_scope_id") or ""),
-                        )
-                    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                        era_validation_failed = True
-                        break
-                    if active_scope is not None and not scope_is_compatible(era_scope, active_scope):
-                        continue
-                    lower_refs = [lower_by_id.get(value) for value in lower_ids]
-                    if (
-                        metadata.get("compaction_schema") != ERA_COMPACTION_SCHEMA
-                        or metadata.get("compaction_version") != ERA_COMPACTION_VERSION
-                        or metadata.get("lower_compaction_version") != COMPACTION_VERSION
-                        or metadata.get("segmentation_version") != SEGMENTATION_VERSION
-                        or metadata.get("generation_id") != generation_id
-                        or metadata.get("retention_gate_schema") != ERA_RETENTION_GATE_SCHEMA
-                        or metadata.get("retention_gate_version") != ERA_RETENTION_GATE_VERSION
-                        or metadata.get("retention_gate_passed") is not True
-                        or metadata.get("retention_verifier_name") != ERA_RETENTION_VERIFIER_NAME
-                        or metadata.get("retention_verifier_version") != ERA_RETENTION_VERIFIER_VERSION
-                        or retention_checked < 0
-                        or retention_missing != 0
-                        or not era_scope.is_valid
-                        or not lower_ids
-                        or any(value is None for value in lower_refs)
-                        or [value[0] for value in lower_refs] != list(range(lower_refs[0][0], lower_refs[0][0] + len(lower_refs)))
-                        or start != lower_refs[0][1]
-                        or end != lower_refs[-1][2]
-                        or int(row["start_sequence"]) != start + 1
-                        or int(row["end_sequence"]) != end
-                        or int(row["source_count"] or -1) != end - start
-                        or any(
-                            (
-                                str(validated[value[0]][1].get("truth_scope_kind") or ""),
-                                str(validated[value[0]][1].get("truth_scope_id") or ""),
-                            ) != era_scope.identity
-                            for value in lower_refs
-                            if value is not None
-                        )
-                    ):
-                        era_validation_failed = True
-                        break
-                    current_ids = tuple(canonical_record_id(index, messages[index]) for index in range(start, end))
-                    digest = hashlib.sha256(_canonical_json(current_ids).encode("utf-8")).hexdigest()
-                    if current_ids != record_ids or metadata.get("source_digest") != digest:
-                        era_validation_failed = True
-                        break
-                    valid_eras.append((row, metadata, start, end))
-                if era_validation_failed:
-                    valid_eras = []
+        ]
 
         applicable_eras = []
         covered_lower_ids: set[str] = set()
@@ -3077,6 +4267,8 @@ class EpisodeCompactionRollover:
         hard_limit_messages: int = EPISODE_RAW_SUFFIX_HARD_LIMIT,
         grace_limit_messages: int = EPISODE_ROLLOVER_GRACE_MESSAGES,
         retry_seconds: float = EPISODE_ROLLOVER_RETRY_SECONDS,
+        historical_runtime: bool = False,
+        canonical_source_provider: Callable[[], Sequence[Mapping[str, object]]] | None = None,
     ) -> None:
         if not 0 < trigger_messages < hard_limit_messages < grace_limit_messages:
             raise ValueError("episode rollover message bounds are invalid")
@@ -3087,6 +4279,8 @@ class EpisodeCompactionRollover:
         self.hard_limit_messages = int(hard_limit_messages)
         self.grace_limit_messages = int(grace_limit_messages)
         self.retry_seconds = max(0.0, float(retry_seconds))
+        self.historical_runtime = bool(historical_runtime)
+        self.canonical_source_provider = canonical_source_provider
         store_path = str(getattr(cache.store, "path", ":memory:"))
         self._store_path = store_path
         self._key = (
@@ -3226,6 +4420,10 @@ class EpisodeCompactionRollover:
 
     def start_pending(self, messages: Sequence[Mapping[str, object]]) -> bool:
         """Start at most one post-persistence refresh and return immediately."""
+        if self.historical_runtime:
+            # Keep exact global offsets. The cache owns eligibility and gaps.
+            if not messages:
+                return False
         already_running = False
         with self._lock:
             if self._stopped or not self._pending:
@@ -3255,7 +4453,11 @@ class EpisodeCompactionRollover:
             token = self._worker_token
             expected_generation_id = self._pending_generation_id
             source_end_before = self._pending_source_end
-            snapshot = tuple(dict(message) for message in messages)
+            if self.historical_runtime:
+                from copy import deepcopy
+                snapshot = tuple(deepcopy(message) for message in messages)
+            else:
+                snapshot = tuple(dict(message) for message in messages)
             thread = threading.Thread(
                 target=self._run_worker,
                 args=(snapshot, expected_generation_id, source_end_before, token),
@@ -3266,9 +4468,35 @@ class EpisodeCompactionRollover:
         thread.start()
         return True
 
+    def request_historical_page(self, messages: Sequence[Mapping[str, object]]) -> bool:
+        """Development runtime append seam; the frozen staged backfill is unchanged."""
+        if not self.historical_runtime:
+            return False
+        boundaries, prior = self.cache.historical_append_plan(messages)
+        if not boundaries:
+            return False
+        validation = self.cache.validate_for_context(messages, allow_historical_recall=True)
+        end = validation.raw_start_index if validation.accepted else 0
+        retained_ranges = {(row.source_start_index, row.source_end_index_exclusive) for row in prior.values()}
+        if all((b.start_index, b.end_index_exclusive) in retained_ranges for b in boundaries):
+            return False
+        with self._lock:
+            if self._stopped:
+                return False
+            self._pending = True
+            self._pending_generation_id = self.cache._current_generation_id() or ""
+            self._pending_source_end = end
+        return self.start_pending(messages)
+
     def _publish_allowed(self, token: int) -> bool:
         with self._lock:
             return not self._stopped and self._worker_token == token
+
+    def _source_still_matches(self, messages) -> bool:
+        if not self.historical_runtime or self.canonical_source_provider is None:
+            return True
+        current = self.canonical_source_provider()
+        return len(current) >= len(messages) and tuple(current[:len(messages)]) == tuple(messages)
 
     def _run_worker(
         self,
@@ -3295,7 +4523,11 @@ class EpisodeCompactionRollover:
                 self.compactor_factory(),
                 reuse_existing=True,
                 expected_generation_id=expected_generation_id,
-                publish_guard=lambda: self._publish_allowed(token),
+                publish_guard=lambda: self._publish_allowed(token) and self._source_still_matches(messages),
+                **({"source_authority": EPISODE_SOURCE_HISTORICAL,
+                    "generation_purpose": EPISODE_PURPOSE_HISTORICAL,
+                    "maximum_new_episodes": 1,
+                    "independent_historical_ranges": True} if self.historical_runtime else {}),
             )
             if report.stale_publish_rejected:
                 self._emit(

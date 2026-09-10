@@ -38,7 +38,7 @@ def listener_pid() -> int | None:
         check=False,
     )
     if result.returncode not in (0, 1):
-        raise RuntimeError(f"Could not inspect port {PORT}: {result.stderr.strip()}")
+        raise RuntimeError("Could not inspect the backend listener.")
 
     for field in result.stdout.split():
         if "pid=" not in field:
@@ -115,23 +115,20 @@ def start_backend(python: Path, repository_root: Path, ownership_file: Path) -> 
             )
         stop_expected_backend(python, checker, existing_pid, repository_root)
 
-    logs = repository_root / "logs"
-    logs.mkdir(exist_ok=True)
-    log_handle = (logs / "aifren-backend-linux.log").open("a", encoding="utf-8")
+    # Detached owner outlives this readiness helper. A reader thread here would
+    # disappear at readiness and break its pipe. Arbitrary backend output is
+    # discarded; structured service errors remain available over transport.
     process = subprocess.Popen(
-        [str(python), str(backend)],
-        cwd=repository_root,
-        stdout=log_handle,
-        stderr=subprocess.STDOUT,
+        [str(python), str(backend)], cwd=repository_root,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    log_handle.close()
 
     deadline = time.monotonic() + READY_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError(
-                f"AIFren backend exited with code {process.returncode}; see logs/aifren-backend-linux.log."
+                f"AIFren backend exited with code {process.returncode}; use the existing reconnect/console controls."
             )
         if run_protocol_check(python, checker) == 0:
             ownership_file.parent.mkdir(parents=True, exist_ok=True)
@@ -154,7 +151,10 @@ def ensure_backend(python: Path, repository_root: Path, ownership_file: Path) ->
                 "it will not be stopped."
             )
         checker = repository_root / "scripts" / "check_backend_protocol.py"
-        if run_protocol_check(python, checker) == 0:
+        result = run_protocol_check(python, checker)
+        if result == 3:
+            raise RuntimeError("Existing backend has another memory authority; close it explicitly before this launch.")
+        if result == 0:
             print(f"AIFren backend transport v2 is already ready (PID {existing_pid}).")
             return
 
@@ -207,5 +207,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except RuntimeError as error:
-        print(f"AIFren backend lifecycle error: {error}", file=sys.stderr)
+        print("AIFren backend lifecycle failed; check runtime availability and listener ownership.", file=sys.stderr)
         raise SystemExit(1)

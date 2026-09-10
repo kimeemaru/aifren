@@ -37,7 +37,7 @@ class FakeService:
     def __init__(self):
         self.conversation = FakeConversation()
         self.character = {
-            "name": "Serval",
+            "name": "Lyra",
             "description": "A companion",
             "avatar": "avatar.png",
         }
@@ -58,6 +58,7 @@ class FakeService:
         self.release_turn = threading.Event()
         self.block_turns = False
         self.switch_busy = False
+        self.development_qa_calls = []
         self.truth_scope = {"kind": "real_world", "label": ""}
         self.continuity = {
             "scope": dict(self.truth_scope), "activity": None,
@@ -68,6 +69,9 @@ class FakeService:
         self.continuity_control_started = threading.Event()
         self.release_continuity_control = threading.Event()
         self.provider_active = False
+        self.memory_view_queries = []
+        self.memory_view_details = []
+        self.memory_view_mutations = []
 
     def provider_request_active(self):
         return self.provider_active
@@ -96,6 +100,10 @@ class FakeService:
         self.emit("assistant_response", content="Reply")
         self.emit("status", state="ready", message="Ready")
         return TurnResult(user_message=text, reply="Reply")
+
+    def run_development_presentation_qa(self, response):
+        self.development_qa_calls.append(response)
+        return True
 
     def stop_speaking(self):
         self.stop_calls += 1
@@ -159,6 +167,39 @@ class FakeService:
         return {
             "accepted": True, "duplicate": False, "outcome": "applied",
             "command_id": command["command_id"], "continuity": dict(self.continuity),
+        }
+
+    def memory_view_page(self, **query):
+        self.memory_view_queries.append(dict(query))
+        return {
+            "character_id": query["character_id"], "lane": query["lane"],
+            "query": query["query"], "status_filter": query["status_filter"],
+            "scope_filter": query["scope_filter"], "offset": query["offset"],
+            "limit": query["limit"], "has_more": False, "availability": "ready",
+            "authority_label": "Memory V1 · canonical prompt-facing memory authority",
+            "warning": "", "items": [{
+                "record_id": "v1:1", "lane": "v1", "authority": "Memory V1",
+                "content": "Synthetic memory", "category": "test", "importance": 5,
+                "status": "current", "scope": "Character-owned / general",
+                "provenance": "synthetic", "editable": True, "retirable": True,
+                "derived": False,
+            }],
+        }
+
+    def apply_memory_view_mutation(self, **mutation):
+        self.memory_view_mutations.append(dict(mutation))
+        return {"accepted": True, "action": mutation["action"], "record_id": mutation["record_id"]}
+
+    def memory_view_detail(self, **query):
+        self.memory_view_details.append(dict(query))
+        return {
+            "character_id": query["character_id"], "lane": query["lane"],
+            "record_id": query["record_id"], "limit": query["limit"],
+            "offset": query["offset"], "has_more": False, "availability": "ready",
+            "warning": "", "detail": {
+                "kind": "claim_provenance", "claim_id": query["record_id"],
+                "evidence": [{"event_id": "synthetic-event", "source_class": "canonical_conversation"}],
+            },
         }
 
 
@@ -282,12 +323,12 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.service.provider_active = False
         self.service._active_turn_cancel = threading.Event()
         idle = self.host._flight_recorder_state()
-        self.assertFalse(idle["model_generating"])
+        self.assertFalse(idle["qwen_generating"])
         self.assertEqual(0, idle["provider_streams"])
 
         self.service.provider_active = True
         generating = self.host._flight_recorder_state()
-        self.assertTrue(generating["model_generating"])
+        self.assertTrue(generating["qwen_generating"])
         self.assertEqual(1, generating["provider_streams"])
 
     async def test_snapshot_contains_frontend_state(self):
@@ -295,7 +336,7 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         message = await self.receive_json()
 
         self.assertEqual(message["type"], "snapshot")
-        self.assertEqual(message["data"]["character"]["name"], "Serval")
+        self.assertEqual(message["data"]["character"]["name"], "Lyra")
         self.assertTrue(message["data"]["character"]["character_id"])
         self.assertEqual(1, len(message["data"]["characters"]))
         self.assertTrue(message["data"]["characters"][0]["is_active"])
@@ -308,7 +349,7 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(message["data"]["models"]["current"]["configured"])
         self.assertEqual(message["data"]["models"]["current"]["model"], "")
         self.assertEqual(message["data"]["models"]["current"]["availability"], "unconfigured")
-        self.assertEqual(6, message["data"]["transport_version"])
+        self.assertEqual(8, message["data"]["transport_version"])
         self.assertEqual({"kind": "real_world", "label": ""}, message["data"]["truth_scope"])
         self.assertEqual("1", message["data"]["continuity"]["revision"])
         self.assertTrue(message["data"]["companion"]["proactive_behavior"])
@@ -386,10 +427,10 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("fdaf8a65-8bf8-42af-a164-bc2c845fc25f", accepted["event"]["data"]["command_id"])
 
     async def test_truth_scope_snapshot_and_event_are_frontend_neutral(self):
-        self.service.truth_scope = {"kind": "scenario", "label": "Gensokyo"}
+        self.service.truth_scope = {"kind": "scenario", "label": "Silvervale"}
         await self.client.send(json.dumps({"command": "get_snapshot"}))
         snapshot = await self.receive_until(lambda item: item.get("type") == "snapshot")
-        self.assertEqual({"kind": "scenario", "label": "Gensokyo"}, snapshot["data"]["truth_scope"])
+        self.assertEqual({"kind": "scenario", "label": "Silvervale"}, snapshot["data"]["truth_scope"])
         self.service.emit("truth_scope_changed", scope_kind="real_world", scope_label="")
         event = await self.receive_until(
             lambda item: item.get("type") == "event" and item["event"]["type"] == "truth_scope_changed"
@@ -460,6 +501,89 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.service.submitted, ["Hello"])
         self.assertEqual(message["event"]["data"]["content"], "Reply")
+
+    async def test_development_presentation_qa_is_gated_and_uses_fixed_synthetic_text(self):
+        await self.client.send(json.dumps({"command": "development_presentation_qa", "scenario": "cold"}))
+        disabled = await self.receive_until(lambda item: item.get("type") == "command_error")
+        self.assertEqual("development_qa_disabled", disabled["error"]["code"])
+        self.assertEqual([], self.service.development_qa_calls)
+
+        with patch("backend_host._DEVELOPMENT_QA_ENABLED", True):
+            await self.client.send(json.dumps({"command": "development_presentation_qa", "scenario": "cold"}))
+            for _ in range(20):
+                if self.service.development_qa_calls:
+                    break
+                await asyncio.sleep(.01)
+        self.assertEqual(1, len(self.service.development_qa_calls))
+        self.assertIn("first portrait test", self.service.development_qa_calls[0])
+
+    async def test_memory_view_query_is_bounded_character_scoped_and_frontend_neutral(self):
+        request_id = str(__import__("uuid").uuid4())
+        await self.client.send(json.dumps({
+            "command": "memory_view_query", "request_id": request_id,
+            "character_id": "character-a", "memory_lane": "v1",
+            "query": "synthetic", "status_filter": "current",
+            "scope_filter": "applicable", "limit": 20, "offset": 0,
+        }))
+        message = await self.receive_until(
+            lambda item: item.get("type") == "event"
+            and item["event"]["type"] == "memory_view_page"
+        )
+
+        self.assertEqual(request_id, message["event"]["data"]["request_id"])
+        page = message["event"]["data"]["memory_page"]
+        self.assertEqual("character-a", page["character_id"])
+        self.assertEqual(20, page["limit"])
+        self.assertEqual(1, len(page["items"]))
+        self.assertNotIn("embedding", page["items"][0])
+        self.assertEqual("synthetic", self.service.memory_view_queries[0]["query"])
+
+    async def test_memory_view_mutation_preserves_request_identity_and_transport(self):
+        import uuid
+        request_id, command_id = str(uuid.uuid4()), str(uuid.uuid4())
+        await self.client.send(json.dumps({
+            "command": "memory_view_mutate", "request_id": request_id,
+            "command_id": command_id, "character_id": "character-a",
+            "action": "edit_v1", "record_id": "v1:1",
+            "content": "Updated synthetic memory", "category": "test", "importance": 5,
+        }))
+        message = await self.receive_until(
+            lambda item: item.get("type") == "event"
+            and item["event"]["type"] == "memory_view_mutation_result"
+        )
+
+        data = message["event"]["data"]
+        self.assertTrue(data["accepted"])
+        self.assertEqual(request_id, data["request_id"])
+        self.assertEqual(command_id, data["command_id"])
+        self.assertEqual("character-a", data["character_id"])
+        self.assertEqual(1, len(self.service.memory_view_mutations))
+
+        await self.client.send(json.dumps({"command": "get_snapshot"}))
+        snapshot = await self.receive_until(lambda item: item.get("type") == "snapshot")
+        self.assertEqual(8, snapshot["data"]["transport_version"])
+
+    async def test_memory_view_detail_is_bounded_and_preserves_request_identity(self):
+        import uuid
+        request_id = str(uuid.uuid4())
+        await self.client.send(json.dumps({
+            "command": "memory_view_detail", "request_id": request_id,
+            "character_id": "character-a", "memory_lane": "v2_claims",
+            "record_id": "claim-a", "limit": 8, "offset": 0,
+        }))
+        message = await self.receive_until(
+            lambda item: item.get("type") == "event"
+            and item["event"]["type"] == "memory_view_detail"
+        )
+
+        data = message["event"]["data"]
+        self.assertEqual(request_id, data["request_id"])
+        self.assertEqual("claim-a", data["memory_detail"]["record_id"])
+        self.assertEqual(8, self.service.memory_view_details[0]["limit"])
+        self.assertEqual(
+            "canonical_conversation",
+            data["memory_detail"]["detail"]["evidence"][0]["source_class"],
+        )
 
     async def test_optional_presentation_metadata_is_forwarded_without_breaking_old_events(self):
         self.service.emit("assistant_response", content="New reply")
@@ -771,12 +895,43 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.closed, 1)
         self.assertIsNotNone(self.client.close_code)
 
+    async def test_packaged_backend_shutdown_requires_matching_launcher_nonce(self):
+        await self.client.close()
+        await self.host.stop()
+        self.service = FakeService()
+        self.host = AIFrenWebSocketHost(
+            service=self.service,
+            port=0,
+            application_dir=self.temp.name,
+            backend_owner_token="package-owner-token",
+        )
+        await self.host.start()
+        self.client = await websockets.connect(f"ws://{LOOPBACK_HOST}:{self.host.port}")
+
+        await self.client.send(json.dumps({
+            "command": "probe_runtime_owner", "owner_token": "wrong-token",
+        }))
+        wrong = await self.receive_json()
+        self.assertEqual({"matched": False}, wrong["data"])
+        await self.client.send(json.dumps({
+            "command": "shutdown", "owner_token": "wrong-token",
+        }))
+        rejected = await self.receive_json()
+        self.assertEqual("backend_owner_mismatch", rejected["error"]["code"])
+        self.assertTrue(self.host._running)
+
+        await self.client.send(json.dumps({
+            "command": "probe_runtime_owner", "owner_token": "package-owner-token",
+        }))
+        matched = await self.receive_json()
+        self.assertEqual({"matched": True}, matched["data"])
+
     async def test_character_create_select_and_snapshot_refresh_are_frontend_neutral(self):
         replacement_b = FakeService()
         replacement_b.character["name"] = "Second"
         replacement_b.conversation.messages[0]["content"] = "Second history."
         replacement_legacy = FakeService()
-        replacement_legacy.character["name"] = "Serval"
+        replacement_legacy.character["name"] = "Lyra"
         replacement_legacy.conversation.messages[0]["content"] = "Welcome back."
         replacements = [replacement_b, replacement_legacy]
         self.host._service_factory = lambda: replacements.pop(0)

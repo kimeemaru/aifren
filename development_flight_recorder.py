@@ -18,6 +18,76 @@ import time
 from typing import Any, Callable
 
 
+class ProcessOutputCapture:
+    """Content-free child-output accounting owned by Development diagnostics.
+
+    Never parse, decode, queue or persist child text: even a familiar prefix may
+    contain private provider output. Fixed-size draining continues when memory
+    or disk retention is full/unavailable. Release retains nothing. Existing
+    status/console transport carries software errors independently of stdout.
+    """
+    READ_BYTES = 8192
+    MEMORY_RECORDS = 64
+    FILE_BYTES = 65536
+    FILE_COUNT = 2
+
+    def __init__(self, *, development: bool, directory: Path | None = None):
+        self.development = bool(development)
+        self.directory = directory if development else None
+        self.records = deque(maxlen=self.MEMORY_RECORDS)
+        self.byte_count = 0
+        self._lock = threading.Lock()
+        self._disk_disabled = False
+
+    def _record(self, count: int) -> None:
+        with self._lock:
+            self.byte_count = min(2**63 - 1, self.byte_count + count)
+            if not self.development:
+                return
+            line = f"child_output_discarded bytes={count} total={self.byte_count}\n"
+            self.records.append(line)
+        if self.directory is None or self._disk_disabled:
+            return
+        try:
+            directory = self.directory.absolute()
+            if any(path.is_symlink() for path in (directory, *directory.parents)):
+                raise OSError("output directory must not be a symlink")
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / "process-output-counts.log"
+            previous = directory / "process-output-counts.1.log"
+            if path.is_symlink() or previous.is_symlink():
+                raise OSError("output counters must not be symlinks")
+            encoded = line.encode("ascii")
+            if path.exists() and path.stat().st_size + len(encoded) > self.FILE_BYTES:
+                os.replace(path, previous)
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND
+                                 | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(descriptor, "ab") as handle:
+                handle.write(encoded)
+        except OSError:
+            # Never stop draining because the optional counter sink failed.
+            self._disk_disabled = True
+
+    def drain(self, stream) -> None:
+        try:
+            read = getattr(stream, "read1", stream.read)
+            while True:
+                chunk = read(self.READ_BYTES)
+                if not chunk:
+                    break
+                self._record(len(chunk))
+        except (OSError, ValueError):
+            pass
+        finally:
+            stream.close()
+
+    def take_records(self) -> tuple[str, ...]:
+        with self._lock:
+            records = tuple(self.records)
+            self.records.clear()
+            return records
+
+
 _CAPTURE_ID = re.compile(r"^\d{8}T\d{6}-[0-9a-f]{6}$")
 _SAFE_STRING_KEYS = {
     "event", "state", "source", "provider", "model", "device", "reason",
@@ -29,6 +99,12 @@ _SAFE_STRING_KEYS = {
     "primary_parse_failure", "primary_semantic_rejection",
     "contract_admission", "primary_contract_admission",
     "application_outcome", "accelerator_backend",
+    "memory_authority", "memory_query_intent", "requested_relation",
+    "requested_speaker", "memory_answer_state", "recent_context_policy",
+    "memory_time_semantics", "memory_query_reason", "absence_kind",
+    "repair_disposition", "code", "generation_stage", "generation_output_state",
+    "retrieval_health", "retrieval_error_stage", "retrieval_error_code",
+    "memory_realization", "reaction_status",
 }
 _SAFE_NUMBER_KEYS = {
     "turn_id", "playback_id", "chunk_index", "pid", "unity_pid", "frame",
@@ -72,6 +148,19 @@ _SAFE_NUMBER_KEYS = {
     "lower_level_episodes_replaced",
     "intent_count", "attempt", "scene_subject_count", "scene_relation_count",
     "capability_effect_count", "baseline_fact_count",
+    "v1_memory_count", "v2_memory_count", "overlap_count",
+    "canonical_action_span_count", "spoken_emphasis_span_count",
+    "normalized_parenthesized_star_action_count",
+    "normalized_starred_parenthetical_action_count",
+    "spoken_projection_action_count",
+    "memory_query_decision_version", "memory_context_characters",
+    "recent_context_characters", "recent_context_approximate_tokens",
+    "retrieval_ms", "retrospective_claim_count",
+    "unsupported_retrospective_claim_count", "memory_candidate_count",
+    "gpu_total_bytes", "managed_model_bytes", "device_required_bytes",
+    "insufficient_memory_candidate_count",
+    "retrieval_failed_lanes", "retrieval_recovered_lanes",
+    "memory_supported_slots", "memory_missing_slots", "memory_unavailable_slots",
 }
 _SAFE_BOOL_KEYS = {
     "active", "generating", "synthesizing", "playing", "loaded", "listening",
@@ -89,11 +178,150 @@ _SAFE_BOOL_KEYS = {
     "accepted_direct", "repair_attempted", "repair_succeeded",
     "minimal_plain_text", "applied_before_generation",
     "mutation_expected", "mutation_applied", "response_suppressed",
+    "shadow_failed", "abstained",
+    "provider_called", "provider_bypassed", "memory_query_applicable",
+    "authoritative_no_evidence", "v1_prompt_retrieval_entered",
+    "v1_write_path_enabled", "spontaneous_retrospective_claims_detected",
+    "unsupported_retrospective_claims_rejected",
+    "recall_anchor_used",
+    "reasoning_content_present", "visible_content_present",
 }
 
 
 def valid_capture_id(value: Any) -> bool:
     return isinstance(value, str) and _CAPTURE_ID.fullmatch(value) is not None
+
+
+def _shadow_label(value: Any, maximum: int = 80) -> str:
+    text = str(value or "")
+    if len(text) > maximum or re.fullmatch(r"[A-Za-z0-9_.:+-]*", text) is None:
+        raise ValueError("memory recall shadow field is not structural")
+    return text
+
+
+def _shadow_category(value: Any) -> str:
+    """Reduce a bounded V1 category without dropping its whole turn.
+
+    Legacy V1 categories are user-extensible and existing canonical records
+    include separators such as ``question/inquiry``.  The recorder keeps only
+    its established structural alphabet; it never needs the exact category
+    spelling to resolve the selected memory by ID during authorized review.
+    """
+    text = re.sub(r"[^A-Za-z0-9_.:+-]+", "_", str(value or "unknown"))
+    return _shadow_label(text.strip("_") or "unknown", 64)
+
+
+def _shadow_number(value: Any, *, integer: bool = False) -> int | float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("memory recall shadow number is invalid")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("memory recall shadow number is not finite")
+    return int(value) if integer else number
+
+
+def _sanitize_memory_recall_shadow(record: dict[str, Any]) -> dict[str, Any]:
+    """Copy the closed structural schema; unknown/content fields disappear."""
+    v1 = []
+    for row in list(record.get("v1", ()))[:5]:
+        if not isinstance(row, dict):
+            raise TypeError("invalid V1 shadow row")
+        v1.append({
+            "memory_id": _shadow_label(row.get("memory_id")),
+            "category": _shadow_category(row.get("category")),
+            "rank": _shadow_number(row.get("rank"), integer=True),
+        })
+    v2 = []
+    for row in list(record.get("v2", ()))[:5]:
+        if not isinstance(row, dict):
+            raise TypeError("invalid V2 shadow row")
+        signals = []
+        for signal in list(row.get("signals", ()))[:12]:
+            if not isinstance(signal, (list, tuple)) or len(signal) != 2:
+                raise TypeError("invalid V2 shadow signal")
+            signals.append([_shadow_label(signal[0], 64), _shadow_number(signal[1])])
+        evidence = []
+        for source in list(row.get("evidence", ()))[:4]:
+            if not isinstance(source, dict):
+                raise TypeError("invalid V2 shadow evidence")
+            evidence.append({
+                "source_type": _shadow_label(source.get("source_type"), 64),
+                "source_id": _shadow_label(source.get("source_id")),
+                "source_reference_sha256": _shadow_label(source.get("source_reference_sha256"), 64),
+                "sequence": _shadow_number(source.get("sequence"), integer=True),
+                "recorded_at_us": _shadow_number(source.get("recorded_at_us"), integer=True),
+                "source_start_sequence": _shadow_number(source.get("source_start_sequence"), integer=True),
+                "source_end_sequence": _shadow_number(source.get("source_end_sequence"), integer=True),
+            })
+        v2.append({
+            "memory_id": _shadow_label(row.get("memory_id")),
+            "lane": _shadow_label(row.get("lane"), 64),
+            "rank": _shadow_number(row.get("rank"), integer=True),
+            "score": _shadow_number(row.get("score")),
+            "signals": signals,
+            "truth_scope_key": _shadow_label(row.get("truth_scope_key"), 64),
+            "status": _shadow_label(row.get("status"), 64),
+            "associated_from": _shadow_label(row.get("associated_from")),
+            "speaker_role": _shadow_label(row.get("speaker_role"), 16),
+            "speech_act": _shadow_label(row.get("speech_act"), 16),
+            "source_class": _shadow_label(row.get("source_class"), 64),
+            "scope_state": _shadow_label(row.get("scope_state"), 32),
+            "attribution_state": _shadow_label(row.get("attribution_state"), 64),
+            "canonical_record_id": _shadow_label(
+                row.get("canonical_record_id"), 160,
+            ),
+            "canonical_index": _shadow_number(
+                row.get("canonical_index"), integer=True,
+            ),
+            "episode_id": _shadow_label(row.get("episode_id"), 160),
+            "episode_source_start_index": _shadow_number(
+                row.get("episode_source_start_index"), integer=True,
+            ),
+            "episode_source_end_index_exclusive": _shadow_number(
+                row.get("episode_source_end_index_exclusive"), integer=True,
+            ),
+            "evidence": evidence,
+        })
+    generated = []
+    for item in list(record.get("generated_counts", ()))[:12]:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise TypeError("invalid generated count")
+        generated.append([_shadow_label(item[0], 64), _shadow_number(item[1], integer=True)])
+    return {
+        "version": 1,
+        "recorded_at": time.time(),
+        "monotonic": time.monotonic(),
+        "turn_id": _shadow_number(record.get("turn_id"), integer=True),
+        "generation": _shadow_number(record.get("generation"), integer=True),
+        "canonical_user_index": _shadow_number(record.get("canonical_user_index"), integer=True),
+        "character_key": _shadow_label(record.get("character_key"), 64),
+        "query_sha256": _shadow_label(record.get("query_sha256"), 64),
+        "v1_latency_ms": _shadow_number(record.get("v1_latency_ms")),
+        "v2_latency_ms": _shadow_number(record.get("v2_latency_ms")),
+        "v1": v1,
+        "v2": v2,
+        "v2_abstention_reason": _shadow_label(record.get("v2_abstention_reason")),
+        "generated_counts": generated,
+        "overlap_claim_ids": [
+            _shadow_label(value) for value in list(record.get("overlap_claim_ids", ()))[:5]
+        ],
+        "error_kind": _shadow_label(record.get("error_kind")),
+        "error_stage": _shadow_label(record.get("error_stage"), 64),
+        "sqlite_error_name": _shadow_label(record.get("sqlite_error_name"), 64),
+        "sqlite_error_code": _shadow_number(record.get("sqlite_error_code"), integer=True),
+        "error_disposition": _shadow_label(record.get("error_disposition"), 64),
+        "retry_disposition": _shadow_label(record.get("retry_disposition"), 64),
+        "memory_query_intent": _shadow_label(record.get("memory_query_intent"), 64),
+        "requested_relation": _shadow_label(record.get("requested_relation"), 32),
+        "requested_speaker": _shadow_label(record.get("requested_speaker"), 16),
+        "retrieval_health": _shadow_label(record.get("retrieval_health"), 16),
+        "retrieval_error_stage": _shadow_label(record.get("retrieval_error_stage"), 16),
+        "retrieval_error_code": _shadow_label(record.get("retrieval_error_code"), 32),
+        "retrieval_failed_lanes": _shadow_number(record.get("retrieval_failed_lanes"), integer=True),
+        "retrieval_recovered_lanes": _shadow_number(record.get("retrieval_recovered_lanes"), integer=True),
+    }
 
 
 class DevelopmentFlightRecorder:
@@ -104,6 +332,7 @@ class DevelopmentFlightRecorder:
         self._lock = threading.RLock()
         self._events: deque[dict[str, Any]] = deque(maxlen=4096)
         self._samples: deque[dict[str, Any]] = deque(maxlen=int(self.sample_hz * 35) + 8)
+        self._memory_recall_shadow: deque[dict[str, Any]] = deque(maxlen=128)
         self._enabled = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -204,6 +433,12 @@ class DevelopmentFlightRecorder:
             metadata["state"] = values["state"]
         if isinstance(values.get("source"), str):
             metadata["source"] = values["source"]
+        if isinstance(values.get("code"), str):
+            metadata["code"] = values["code"]
+        if isinstance(values.get("generation_stage"), str):
+            metadata["generation_stage"] = values["generation_stage"]
+        if isinstance(values.get("provider_called"), bool):
+            metadata["provider_called"] = values["provider_called"]
         if isinstance(values.get("streamed"), bool):
             metadata["streamed"] = values["streamed"]
         if isinstance(values.get("proactive"), bool):
@@ -234,10 +469,38 @@ class DevelopmentFlightRecorder:
         text = str(message)
         prompt = re.search(r"prompt eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+) tokens", text, re.I)
         if prompt:
-            self.mark("model_prompt_eval_end", duration_ms=float(prompt.group(1)), prompt_tokens=int(prompt.group(2)))
+            self.mark("qwen_prompt_eval_end", duration_ms=float(prompt.group(1)), prompt_tokens=int(prompt.group(2)))
         generated = re.search(r"eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+) runs.*?([\d.]+) tokens per second", text, re.I)
         if generated:
-            self.mark("model_generation_end", duration_ms=float(generated.group(1)), generated_tokens=int(generated.group(2)), tok_s=float(generated.group(3)))
+            self.mark("qwen_generation_end", duration_ms=float(generated.group(1)), generated_tokens=int(generated.group(2)), tok_s=float(generated.group(3)))
+
+    def record_memory_recall_shadow(self, record: dict[str, Any]) -> bool:
+        """Attach one already-sanitized structural recall comparison.
+
+        This separate bounded ring deliberately rejects unknown fields and all
+        text-bearing values. Human-readable content is resolved only by the
+        explicit local inspection tool against an authorized character.
+        """
+        if not self.enabled or not isinstance(record, dict):
+            return False
+        try:
+            safe = _sanitize_memory_recall_shadow(record)
+        except (TypeError, ValueError):
+            return False
+        with self._lock:
+            self._memory_recall_shadow.append(safe)
+        self.mark(
+            "memory_recall_shadow_complete",
+            turn_id=safe["turn_id"],
+            duration_ms=safe["v2_latency_ms"],
+            v1_memory_count=len(safe["v1"]),
+            v2_memory_count=len(safe["v2"]),
+            overlap_count=len(safe["overlap_claim_ids"]),
+            abstained=not bool(safe["error_kind"]) and not bool(safe["v2"]),
+            shadow_failed=bool(safe["error_kind"]),
+            succeeded=not bool(safe["error_kind"]),
+        )
+        return True
 
     def trigger(self, capture_id: str, reason: str) -> bool:
         if not self.enabled or not valid_capture_id(capture_id):
@@ -250,6 +513,7 @@ class DevelopmentFlightRecorder:
                 "triggered_at": time.time(),
                 "events": list(self._events),
                 "samples": list(self._samples),
+                "memory_recall_shadow": list(self._memory_recall_shadow),
             }
         self.mark("capture_triggered", reason=reason)
         return True
@@ -265,10 +529,15 @@ class DevelopmentFlightRecorder:
                     "triggered_at": time.time(),
                     "events": list(self._events),
                     "samples": list(self._samples),
+                    "memory_recall_shadow": list(self._memory_recall_shadow),
                 }
             trigger_mono = max((item.get("monotonic", 0.0) for item in frozen["events"]), default=0.0)
             post_events = [item for item in self._events if item.get("monotonic", 0.0) > trigger_mono]
             post_samples = [item for item in self._samples if item.get("monotonic", 0.0) > trigger_mono]
+            post_shadow = [
+                item for item in self._memory_recall_shadow
+                if item.get("recorded_at", 0.0) > float(frozen["triggered_at"])
+            ]
         events = frozen["events"] + post_events
         samples = frozen["samples"] + post_samples
         bundle = Path("/tmp") / f"aifren-flight-recorder-{capture_id}"
@@ -281,6 +550,11 @@ class DevelopmentFlightRecorder:
         with (bundle / "backend_summary.json").open("w", encoding="utf-8") as handle:
             json.dump(summary, handle, indent=2, sort_keys=True)
             handle.write("\n")
+        shadow = list(frozen.get("memory_recall_shadow", ())) + post_shadow
+        if shadow:
+            with (bundle / "memory_recall_shadow.json").open("w", encoding="utf-8") as handle:
+                json.dump({"version": 1, "records": shadow}, handle, indent=2, sort_keys=True)
+                handle.write("\n")
         return summary
 
     @staticmethod
@@ -325,7 +599,7 @@ class DevelopmentFlightRecorder:
             sample["tts_cancellations_total"] = self._tts_cancellations
         for key in (
             "turn_tasks", "event_tasks", "provider_streams", "tts_active_jobs", "tts_pending_jobs",
-            "audio_queue_depth", "stale_tts_results", "model_generating", "kokoro_synthesizing",
+            "audio_queue_depth", "stale_tts_results", "qwen_generating", "kokoro_synthesizing",
             "portaudio_playing", "whisper_loaded", "whisper_active", "ptt_worker_alive",
             "ptt_worker_age_seconds", "ptt_stage_age_seconds", "ptt_post_release_age_seconds",
             "ptt_recording", "ptt_listening", "ptt_transcribing", "ptt_post_release",

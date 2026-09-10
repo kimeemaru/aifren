@@ -1,0 +1,32 @@
+{
+  "version": "identity-name-admission-v1",
+  "cases": [
+    {"case_id": "direct-name", "category": "direct_identity", "query": "What is my name?", "expected": "admit"},
+    {"case_id": "direct-name-again", "category": "direct_identity", "query": "What's my name again?", "expected": "admit"},
+    {"case_id": "direct-remember-name", "category": "direct_identity", "query": "Do you remember my name?", "expected": "admit"},
+
+    {"case_id": "paraphrase-call-me", "category": "identity_paraphrase", "query": "What should you call me?", "expected": "admit"},
+    {"case_id": "paraphrase-know-me-as", "category": "identity_paraphrase", "query": "What do you know me as?", "expected": "admit"},
+    {"case_id": "paraphrase-address-me", "category": "identity_paraphrase", "query": "How do you address me?", "expected": "admit"},
+
+    {"case_id": "self-introduce", "category": "self_reference", "query": "Introduce me in one sentence.", "expected": "withhold_product_dependent"},
+    {"case_id": "self-bio", "category": "self_reference", "query": "Write a short bio for me.", "expected": "withhold_product_dependent"},
+
+    {"case_id": "creative-spaceship", "category": "creative", "query": "Help me name a spaceship.", "expected": "withhold"},
+    {"case_id": "creative-town", "category": "creative", "query": "Give me a fantasy town name.", "expected": "withhold"},
+    {"case_id": "creative-spooky", "category": "creative", "query": "Write a spooky opening sentence.", "expected": "withhold"},
+    {"case_id": "creative-concept", "category": "creative", "query": "Come up with a character concept.", "expected": "withhold"},
+
+    {"case_id": "advice-eat", "category": "advice", "query": "What should I eat tonight?", "expected": "withhold"},
+    {"case_id": "advice-desk", "category": "advice", "query": "How should I organize my desk?", "expected": "withhold"},
+    {"case_id": "advice-go-out", "category": "advice", "query": "Should I go out tomorrow?", "expected": "withhold"},
+    {"case_id": "reasoning-sky", "category": "advice", "query": "Explain why the sky is blue.", "expected": "withhold"},
+
+    {"case_id": "hypothetical-name", "category": "hypothetical", "query": "If my name were Victor, what nickname would fit?", "expected": "withhold"},
+    {"case_id": "roleplay-character-call", "category": "hypothetical", "query": "What should my character be called?", "expected": "withhold"},
+    {"case_id": "roleplay-elena", "category": "hypothetical", "query": "Pretend my character's name is Elena.", "expected": "withhold"},
+
+    {"case_id": "third-sister-name", "category": "third_person", "query": "What was my sister's name?", "expected": "withhold"},
+    {"case_id": "third-npc-call", "category": "third_person", "query": "What should I call that NPC?", "expected": "withhold"}
+  ]
+}

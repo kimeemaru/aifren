@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import threading
@@ -13,19 +14,25 @@ from memory_v2_episode_compaction import (
     CONTINUITY_ANCHOR_VERSION,
     GENERATOR_VERSION,
     MAX_CONTINUITY_ANCHORS,
+    MAX_GENERATED_SCENE_RECORDS_PER_INTERACTION,
+    SEGMENTATION_VERSION,
     ERA_COMPACTION_VERSION,
     ERA_RETENTION_GATE_VERSION,
     ERA_SUMMARY_LEVEL,
+    EPISODE_PURPOSE_HISTORICAL,
     EpisodeCompactionCache,
     EpisodeCompactionRollover,
     EpisodeCompactor,
+    EpisodeRetrievalCandidate,
     EPISODE_RAW_SUFFIX_HARD_LIMIT,
     EPISODE_ROLLOVER_TRIGGER_MESSAGES,
     canonical_record_id,
+    canonical_episode_source_groups,
     deterministic_derived_seed,
     deterministic_episode_boundaries,
     deterministic_episode_id,
     _episode_retrieval_score,
+    _historical_episode_source_refinements,
     _resolve_temporal_retrieval_query,
     _single_retrieval_key_is_entity_like,
     _source_span_directly_supports_performed_activity,
@@ -53,6 +60,19 @@ def scoped_exchanges(count, scope, *, prefix="synthetic", start_index=0):
         record["timestamp"] = f"2026-01-01T01:{(start_index + offset) // 60:02d}:{(start_index + offset) % 60:02d}Z"
         record["truth_scope"] = dict(scope)
     return result
+
+
+def generated_scene_record(index, scope):
+    return {
+        "role": "user",
+        "content": f"Synthetic scene relation {index} cleared.",
+        "timestamp": f"2026-01-01T03:00:{index:02d}Z",
+        "truth_scope": dict(scope),
+        "origin": {
+            "kind": "scene_ui", "generated_event": True,
+            "operation": "clear_relation",
+        },
+    }
 
 
 def temporal_exchanges():
@@ -406,6 +426,10 @@ class EpisodeCompactionFoundationTests(unittest.TestCase):
             prompt for prompt, _seed in provider.calls
             if "Extract a SMALL source-grounded set" in prompt
         )
+        summary_prompt = next(
+            prompt for prompt, _seed in provider.calls
+            if "Create a compact, neutral third-person account" in prompt
+        )
         row = self.store.connection.execute(
             "SELECT legacy_metadata_json FROM summaries WHERE summary_level='episode_compaction'"
         ).fetchone()
@@ -413,6 +437,8 @@ class EpisodeCompactionFoundationTests(unittest.TestCase):
 
         self.assertIn("repeated QA/testing commands", extraction_prompt)
         self.assertIn("include the key members in one anchor", extraction_prompt)
+        self.assertIn("a USER question does not establish its", extraction_prompt)
+        self.assertIn("An ASSISTANT guess", summary_prompt)
         self.assertEqual(1, metadata["continuity_anchor_count"])
         self.assertIn("glass observatory", metadata["continuity_anchors"][0]["detail"])
 
@@ -513,6 +539,12 @@ class EpisodeCompactionFoundationTests(unittest.TestCase):
             boundary,
             provider_identity_digest=identity_digest,
             generator_version=str(int(GENERATOR_VERSION) + 1),
+        ))
+        self.assertNotEqual(baseline_id, deterministic_episode_id(
+            self.character_id,
+            boundary,
+            provider_identity_digest=identity_digest,
+            segmentation_version=SEGMENTATION_VERSION + 1,
         ))
 
     def test_distinct_source_ranges_receive_distinct_derived_seeds(self):
@@ -845,6 +877,152 @@ class EpisodeCompactionFoundationTests(unittest.TestCase):
             self.assertEqual("assistant", messages[boundary.end_index_exclusive - 1]["role"])
             self.assertEqual(0, boundary.source_record_count % 2)
 
+    def test_generated_scene_ui_run_is_one_scope_coherent_source_group(self):
+        real_id = self.store.default_truth_scope_id(self.character_id)
+        scope = {"kind": "real_world", "scope_id": real_id}
+        messages = scoped_exchanges(3, scope, prefix="before")
+        messages.extend(generated_scene_record(index, scope) for index in range(3))
+        assistant = message("assistant", "I reacted once to the complete scene update.", 30)
+        assistant["truth_scope"] = dict(scope)
+        messages.append(assistant)
+        messages.extend(scoped_exchanges(2, scope, prefix="after", start_index=20))
+
+        groups = canonical_episode_source_groups(messages, valid_scope_ids={real_id})
+        self.assertEqual(6, len(groups))
+        self.assertEqual("generated_scene_ui_run", groups[3].source_kind)
+        self.assertEqual((6, 10), (
+            groups[3].start_index, groups[3].end_index_exclusive,
+        ))
+        boundaries = deterministic_episode_boundaries(
+            messages, max_exchanges=40, recent_exchanges=0,
+            valid_scope_ids={real_id},
+        )
+        self.assertEqual(1, len(boundaries))
+        self.assertEqual(6, boundaries[0].exchange_count)
+        self.assertEqual(len(messages), boundaries[0].end_index_exclusive)
+
+    def test_arbitrary_consecutive_users_remain_outside_episode_coverage(self):
+        messages = exchanges(3)
+        messages.extend([
+            message("user", "One ordinary user turn.", 20),
+            message("user", "A second ordinary user turn.", 21),
+            message("assistant", "One assistant response.", 22),
+        ])
+        groups = canonical_episode_source_groups(messages)
+        self.assertEqual(3, len(groups))
+        self.assertEqual(6, groups[-1].end_index_exclusive)
+
+    def test_explicit_scope_transition_preserves_both_records_without_mixing(self):
+        real_id = self.store.default_truth_scope_id(self.character_id)
+        scenario_id = self.create_scenario_scope("Transition scenario", sequence=1)
+        user = message("user", "A real-world lead-in.", 1)
+        user["truth_scope"] = {"kind": "real_world", "scope_id": real_id}
+        assistant = message("assistant", "The scenario begins.", 2)
+        assistant["truth_scope"] = {"kind": "scenario", "scope_id": scenario_id}
+
+        groups = canonical_episode_source_groups(
+            [user, assistant], valid_scope_ids={real_id, scenario_id},
+        )
+        self.assertEqual(2, len(groups))
+        self.assertEqual([
+            (0, 1, "real_world", "scope_transition_record"),
+            (1, 2, "scenario", "scope_transition_record"),
+        ], [
+            (value.start_index, value.end_index_exclusive,
+             value.scope.kind, value.source_kind)
+            for value in groups
+        ])
+
+    def test_generated_scene_ui_run_rejects_mixed_scope_and_unbounded_run(self):
+        real_id = self.store.default_truth_scope_id(self.character_id)
+        scenario_id = self.create_scenario_scope("Scenario", sequence=1)
+        real = {"kind": "real_world", "scope_id": real_id}
+        scenario = {"kind": "scenario", "scope_id": scenario_id}
+        mixed = [generated_scene_record(0, real), generated_scene_record(1, scenario)]
+        assistant = message("assistant", "Synthetic response.", 3)
+        assistant["truth_scope"] = dict(real)
+        mixed.append(assistant)
+        self.assertEqual((), canonical_episode_source_groups(
+            mixed, valid_scope_ids={real_id, scenario_id},
+        ))
+
+        oversized = [
+            generated_scene_record(index, real)
+            for index in range(MAX_GENERATED_SCENE_RECORDS_PER_INTERACTION + 1)
+        ]
+        oversized.append(assistant)
+        self.assertEqual((), canonical_episode_source_groups(
+            oversized, valid_scope_ids={real_id},
+        ))
+
+    def test_generic_recollection_wording_cannot_project_episode_source_records(self):
+        messages = [
+            message("user", "What do you remember from that time?", 0),
+            message("assistant", "I remember a specific time long ago.", 1),
+        ]
+        candidate = EpisodeRetrievalCandidate(
+            "episode", "generic summary", 8, "generation",
+            "legacy_untagged", "", 0, 2, 1, 2,
+            generation_purpose=EPISODE_PURPOSE_HISTORICAL,
+            scope_state="unknown_scope",
+        )
+        metadata = {"continuity_anchors": [{
+            "detail": "The assistant remembered a specific time",
+            "key_terms": ["specific time"],
+            "source_record_indices": [1],
+        }]}
+        self.assertEqual((), _historical_episode_source_refinements(
+            messages, candidate, metadata,
+            "What's something oddly specific you remember me telling you a long time ago?",
+        ))
+
+    def test_source_refinement_exposes_unsupported_summary_speaker_attribution(self):
+        messages = [
+            message("user", "game.", 0),
+            message(
+                "assistant",
+                "I previously mentioned the unusual Game Boy cartridge collection.",
+                1,
+            ),
+        ]
+        candidate = EpisodeRetrievalCandidate(
+            "episode", "The user owns a Game Boy collection.", 10, "generation",
+            "legacy_untagged", "", 0, 2, 1, 2,
+            generation_purpose=EPISODE_PURPOSE_HISTORICAL,
+            scope_state="unknown_scope",
+        )
+        metadata = {"continuity_anchors": [{
+            "detail": "The user owns an unusual Game Boy collection",
+            "key_terms": ["Game Boy collection"],
+            "source_record_indices": [1],
+        }]}
+        refinements = _historical_episode_source_refinements(
+            messages, candidate, metadata,
+            "What did you tell me about the Game Boy collection?",
+        )
+        self.assertEqual(1, len(refinements))
+        self.assertEqual("assistant", refinements[0].speaker_role)
+        self.assertEqual(
+            "user_attribution_unsupported", refinements[0].attribution_state,
+        )
+
+    def test_shared_validator_accepts_rebuilt_generated_scene_ui_source_group(self):
+        real_id = self.store.default_truth_scope_id(self.character_id)
+        scope = {"kind": "real_world", "scope_id": real_id}
+        messages = scoped_exchanges(30, scope, prefix="scene-validation")
+        generated = [generated_scene_record(index, scope) for index in range(3)]
+        assistant = message("assistant", "One response to the complete scene update.", 50)
+        assistant["truth_scope"] = dict(scope)
+        messages[12:12] = [*generated, assistant]
+
+        self.cache.rebuild(messages, EpisodeCompactor(_DeterministicLocalProvider()))
+        validation = self.cache.validate_for_context(
+            messages, active_truth_scope=scope,
+        )
+        self.assertTrue(validation.accepted, validation.reason)
+        self.assertEqual(1, len([value for value in validation.lower_records if value.accepted]))
+        self.assertEqual(16, validation.raw_start_index)
+
     def test_scope_boundaries_never_mix_real_world_scenarios_or_legacy(self):
         real_id = self.store.default_truth_scope_id(self.character_id)
         scenario_a_id = self.create_scenario_scope("Scenario A", sequence=1)
@@ -1073,7 +1251,12 @@ class EpisodeCompactionFoundationTests(unittest.TestCase):
     def test_provider_switch_keeps_identical_aifren_selected_context(self):
         messages = exchanges(581)
         self.cache.rebuild(messages, EpisodeCompactor(_EraProvider()))
-        conversation = Conversation(object(), episode_compaction_cache=self.cache)
+        # Compare provider selection at the same application time. A live
+        # second boundary must not look like provider-dependent context.
+        conversation = Conversation(
+            object(), episode_compaction_cache=self.cache,
+            clock=lambda: datetime(2026, 1, 1, 12, tzinfo=timezone.utc),
+        )
         conversation.messages = messages
         local = conversation.build_context(_Memory(), messages[-2]["content"])
         conversation.llm = object()  # Simulate Local -> Online provider replacement.
@@ -1129,9 +1312,16 @@ class EpisodeCompactionFoundationTests(unittest.TestCase):
 
         baseline = self.cache.select_for_context(messages, enable_retrieval=False)
         retrieved = self.cache.select_for_context(messages, enable_retrieval=True)
+        typed = self.cache.retrieve_candidates(
+            messages, messages[-2]["content"],
+        )
 
         self.assertNotIn(row["content"], baseline.context_block)
         self.assertIn(row["content"], retrieved.context_block)
+        self.assertEqual((row["summary_id"],), tuple(
+            candidate.record_id for candidate in typed.candidates
+        ))
+        self.assertEqual("current_valid", typed.validation_state)
         self.assertIn("Older episodes relevant to the current turn", retrieved.context_block)
         self.assertEqual(8, retrieved.selected_episode_count)
         self.assertEqual(1, retrieved.retrieved_episode_count)

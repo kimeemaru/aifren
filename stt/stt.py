@@ -40,10 +40,7 @@ for package in CUDA_PACKAGES:
         dll_directory
     ):
 
-        print(
-            f"Adding CUDA DLL path: "
-            f"{dll_directory}"
-        )
+        print('[AIFren STT] native library path configured.')
 
         # Windows DLL search path
         if hasattr(
@@ -104,11 +101,7 @@ class SpeechToText:
             MODEL_DIR
         ):
 
-            raise FileNotFoundError(
-                "\nLocal STT model not found.\n\n"
-                "Expected model directory:\n"
-                f"{MODEL_DIR}\n"
-            )
+            raise FileNotFoundError("Local STT model is unavailable.")
 
         self._model_lock = threading.Lock()
         self._device = "cuda"

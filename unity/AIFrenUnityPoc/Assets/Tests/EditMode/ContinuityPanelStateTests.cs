@@ -14,7 +14,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
         public void ScopeTextShowsRealWorldAndSafeScenarioLabel()
         {
             Assert.That(ContinuityPanelState.ScopeText(new TruthScopeSnapshot { kind = "real_world" }), Is.EqualTo("Real world"));
-            Assert.That(ContinuityPanelState.ScopeText(new TruthScopeSnapshot { kind = "scenario", label = "Gensokyo" }), Is.EqualTo("RP: Gensokyo"));
+            Assert.That(ContinuityPanelState.ScopeText(new TruthScopeSnapshot { kind = "scenario", label = "Silvervale" }), Is.EqualTo("RP: Silvervale"));
             Assert.That(ContinuityPanelState.ScopeText(new TruthScopeSnapshot { kind = "scenario", label = "bad\nlabel" }), Is.EqualTo("RP: bad label"));
         }
 

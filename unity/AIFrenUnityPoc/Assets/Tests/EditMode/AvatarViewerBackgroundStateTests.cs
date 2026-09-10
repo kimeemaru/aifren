@@ -1,7 +1,9 @@
+using PlayerPrefs = AIFren.UnityPoc.PresentationPreferences;
 using AIFren.UnityPoc.Avatar;
 using System.Collections.Generic;
 using System.Reflection;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 
 namespace AIFren.UnityPoc.Tests.EditMode
@@ -14,6 +16,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
         private bool hadLandscape;
         private int savedPortrait;
         private int savedLandscape;
+        private readonly Dictionary<string, string> customPaths = new Dictionary<string, string>();
 
         [SetUp]
         public void SetUp()
@@ -22,6 +25,12 @@ namespace AIFren.UnityPoc.Tests.EditMode
             hadLandscape = PlayerPrefs.HasKey(LandscapeKey);
             savedPortrait = PlayerPrefs.GetInt(PortraitKey);
             savedLandscape = PlayerPrefs.GetInt(LandscapeKey);
+            customPaths.Clear();
+            foreach (string orientation in new[] { "Portrait", "Landscape" })
+            {
+                string key = "AIFren.AvatarViewerBackground.CustomPath." + orientation;
+                if (PlayerPrefs.HasKey(key)) customPaths[key] = PlayerPrefs.GetString(key);
+            }
             AvatarViewerBackgroundState.DeletePersistedValues();
         }
 
@@ -31,6 +40,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             AvatarViewerBackgroundState.DeletePersistedValues();
             if (hadPortrait) PlayerPrefs.SetInt(PortraitKey, savedPortrait);
             if (hadLandscape) PlayerPrefs.SetInt(LandscapeKey, savedLandscape);
+            foreach (var item in customPaths) PlayerPrefs.SetString(item.Key, item.Value);
             PlayerPrefs.Save();
         }
 
@@ -95,13 +105,40 @@ namespace AIFren.UnityPoc.Tests.EditMode
         }
 
         [Test]
-        public void DirectBackgroundCanBeSelectedBeforeTheLoaderCreatesItsCamera()
+        public void LoaderCreatesAnOpaqueClearSurfaceBeforeAvatarLoading()
         {
             GameObject host = new GameObject("Avatar loader initialization test");
             AvatarLoader loader = host.AddComponent<AvatarLoader>();
+            MethodInfo awake = typeof(AvatarLoader).GetMethod("Awake", BindingFlags.Instance | BindingFlags.NonPublic);
+            awake.Invoke(loader, null);
+            FieldInfo cameraField = typeof(AvatarLoader).GetField("previewCamera", BindingFlags.Instance | BindingFlags.NonPublic);
+            FieldInfo rendererField = typeof(AvatarLoader).GetField("directBackgroundRenderer", BindingFlags.Instance | BindingFlags.NonPublic);
+            Camera camera = (Camera)cameraField.GetValue(loader);
+            AvatarDirectBackgroundRenderer renderer = (AvatarDirectBackgroundRenderer)rendererField.GetValue(loader);
 
-            Assert.DoesNotThrow(() => loader.SetDirectBackground(AvatarViewerBackground.Bedroom, null));
+            Assert.NotNull(camera);
+            Assert.NotNull(renderer);
+            Assert.AreEqual(CameraClearFlags.Depth, camera.clearFlags);
+            Assert.AreEqual(CameraClearFlags.SolidColor, renderer.BackgroundCamera.clearFlags);
+            Assert.IsTrue(renderer.BackgroundCamera.enabled);
             Object.DestroyImmediate(host);
+        }
+
+        [Test]
+        public void RuntimeVrmShadersAreRetainedForStandaloneImports()
+        {
+            UnityEngine.Object[] settingsAssets = AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/GraphicsSettings.asset");
+            Assert.IsNotEmpty(settingsAssets);
+            SerializedProperty shaders = new SerializedObject(settingsAssets[0]).FindProperty("m_AlwaysIncludedShaders");
+            foreach (string shaderName in new[] { "VRM10/MToon10", "UniGLTF/UniUnlit" })
+            {
+                Shader runtimeShader = Shader.Find(shaderName);
+                Assert.NotNull(runtimeShader);
+                bool retained = false;
+                for (int index = 0; index < shaders.arraySize; index++)
+                    retained |= shaders.GetArrayElementAtIndex(index).objectReferenceValue == runtimeShader;
+                Assert.IsTrue(retained, shaderName + " must survive standalone shader stripping.");
+            }
         }
 
         [Test]

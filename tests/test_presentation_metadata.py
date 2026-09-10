@@ -8,6 +8,7 @@ class PresentationMetadataTests(unittest.TestCase):
         prompt = response_contract_prompt()
         self.assertIn("Physical actions and emotes MUST use", prompt)
         self.assertIn("MUST NOT use (parentheses)", prompt)
+        self.assertIn("Never write malformed action markup like (*action*), ( *action* ), or *(action)*", prompt)
         self.assertIn("Parentheses remain spoken prose", prompt)
 
     def test_generated_emoji_is_removed_after_json_escape_decoding(self):

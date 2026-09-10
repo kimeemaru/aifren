@@ -204,6 +204,7 @@ class ActiveStateServiceOrderingTests(unittest.TestCase):
             llm=object(), memory=_Memory(), conversation=conversation, voice=object(),
             character={"name": "Test"}, character_prompt="test", tts=_TTS(),
             response_generator=lambda *_: "Hello.",
+            memory_authority="v1",
         )
         writer = _RecordingStateWriter(conversation)
         service._memory_v2_shadow_writer = writer

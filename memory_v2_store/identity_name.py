@@ -6,6 +6,11 @@ from dataclasses import dataclass
 import re
 
 
+IDENTITY_NAME_CURATOR_NAME = "identity_name_assertion"
+IDENTITY_NAME_CURATOR_VERSION = "1"
+IDENTITY_NAME_POLICY_VERSION = "explicit_v1"
+
+
 _NAME = r"(?P<name>[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’-]{1,39})"
 _ASSERTIONS = (
     ("my_name_is", re.compile(rf"\AMy name is {_NAME}[.!]?\Z")),

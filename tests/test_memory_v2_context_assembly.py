@@ -34,6 +34,10 @@ class ContextAssemblyV2Tests(unittest.TestCase):
         self.writer = MemoryV2ShadowWriter(
             self.root, character_id=self.character_id, display_name="Synthetic", memory_file=self.root / "memories.json",
         )
+        self.repository = MemoryV2Repository(self.writer.store)
+        self.repository.ensure_character(self.character_id, "Synthetic")
+        scope = self.repository.active_truth_scope(self.character_id)
+        self.truth_scope = {"kind": scope.kind, "scope_id": scope.truth_scope_id}
         self.memory = _Memory()
 
     def tearDown(self):
@@ -41,9 +45,12 @@ class ContextAssemblyV2Tests(unittest.TestCase):
         self.temp.cleanup()
 
     def _persist_and_observe(self, text, timestamp, observer):
-        self.conversation.add_user_message(text)
+        self.conversation.add_user_message(text, truth_scope=self.truth_scope)
         index = len(self.conversation.messages) - 1
         self.conversation.messages[index]["timestamp"] = timestamp
+        self.conversation.add_assistant_message(
+            "Synthetic completed response.", truth_scope=self.truth_scope,
+        )
         self.conversation.save()
         return observer(self.conversation.messages[index], conversation_index=index,
                         conversation_file=self.conversation.conversation_file)

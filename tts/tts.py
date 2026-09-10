@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import re
 import threading
@@ -6,18 +7,29 @@ import time
 import wave
 from collections import deque
 from queue import Empty, SimpleQueue
+from urllib import request
 
 import numpy as np
 import sounddevice as sd
 from development_flight_recorder import development_flight_recorder
 
 from config import (
+    AUDIO8_BASE_URL,
+    AUDIO8_MODEL,
+    AUDIO8_REFERENCE_AUDIO,
+    AUDIO8_REFERENCE_TEXT,
+    AUDIO8_RUNTIME_ROOT,
+    AUDIO8_STARTUP_TIMEOUT_SECONDS,
+    AUDIO8_TIMEOUT_SECONDS,
+    AUDIO8_VOICE_PROFILE,
+    AUDIO8_WARMUP_TEXT,
     KOKORO_DEVICE,
     KOKORO_MODEL_DIR,
     KOKORO_SPEED,
     KOKORO_VOICE,
     TTS_PROVIDER,
 )
+from tts.audio8_runtime import Audio8Runtime
 
 
 # ============================================================
@@ -586,8 +598,8 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
             from tts.kokoro_assets import REPOSITORY_ID, require_local_assets
         except ImportError as error:
             raise RuntimeError(
-                "Kokoro is not installed. Run scripts/setup_aifren_runtime_linux.sh "
-                "before selecting it."
+                "Kokoro is not installed. Create an isolated environment with "
+                "requirements-kokoro.txt before selecting it."
             ) from error
 
         self._torch = torch
@@ -597,11 +609,18 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
         self.speed = float(speed)
         if not self.voice or self.speed <= 0:
             raise ValueError("Kokoro voice must be non-empty and speed must be positive.")
-        self.device = (
-            "cuda" if str(device).lower() == "auto" and torch.cuda.is_available()
-            else "cpu" if str(device).lower() == "auto" else str(device)
+        from tts.device_planning import plan_kokoro_device
+        device_plan = plan_kokoro_device(device, torch_module=torch)
+        self.device = device_plan.device
+        self.device_selection_reason = device_plan.reason
+        development_flight_recorder().mark(
+            "kokoro_device_selected", device=self.device,
+            reason=self.device_selection_reason,
+            gpu_total_bytes=device_plan.gpu_total_bytes,
+            managed_model_bytes=device_plan.managed_model_bytes,
+            device_required_bytes=device_plan.required_total_bytes,
         )
-        print(f"Loading Kokoro TTS on {self.device} with voice {self.voice}...")
+        print("Loading Kokoro TTS...")
         config_path, model_path, self.voice_path = require_local_assets(KOKORO_MODEL_DIR, self.voice)
         model = KModel(repo_id=REPOSITORY_ID, config=str(config_path), model=str(model_path))
         model = model.to(self.device).eval()
@@ -628,12 +647,14 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
                 model=model, device="cpu",
             )
             self.device = "cpu"
+            self.device_selection_reason = "runtime_resource_failure_cpu_sticky"
             try:
                 self._torch.cuda.empty_cache()
             except Exception:
                 pass
             development_flight_recorder().mark(
                 "kokoro_runtime_device_fallback", device="cpu",
+                reason=self.device_selection_reason,
                 duration_ms=(time.monotonic() - started_at) * 1000.0,
             )
             return True
@@ -647,14 +668,21 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
         self._continuous_sample_rate = None
         self._continuous_max_chunks = 4
 
-    def _generate_audio(self, text, generation=None):
+    def _generate_audio(self, text, generation=None, *, cancelled=None):
         # Cancellation can retire a turn while a CUDA kernel is still winding
         # down. Serialize at the provider boundary so the replacement turn can
         # never start a second Kokoro inference concurrently.
-        with self._kokoro_synthesis_lock:
-            return self._generate_audio_serial(text, generation)
+        while not self._kokoro_synthesis_lock.acquire(timeout=0.05):
+            if cancelled is not None and cancelled.is_set():
+                return None
+        try:
+            if cancelled is not None and cancelled.is_set():
+                return None
+            return self._generate_audio_serial(text, generation, cancelled=cancelled)
+        finally:
+            self._kokoro_synthesis_lock.release()
 
-    def _generate_audio_serial(self, text, generation=None):
+    def _generate_audio_serial(self, text, generation=None, *, cancelled=None):
         synthesis_started_at = time.monotonic()
         recorder = development_flight_recorder()
         recorder.mark(
@@ -664,25 +692,56 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
         chunks = []
         word_starts = []
         offset_seconds = 0.0
-        for result in self.pipeline(text, voice=str(self.voice_path), speed=self.speed):
-            # Kokoro yields incrementally. A PTT interruption cannot always
-            # preempt work already inside a model kernel, but it must prevent
-            # all later chunks and any stale audio from reaching the player.
-            if generation is not None and (
-                self.stop_event.is_set()
-                or not self._is_current_playback_generation(generation)
-            ):
+        def retired():
+            return ((cancelled is not None and cancelled.is_set()) or
+                    (generation is not None and (self.stop_event.is_set() or
+                     not self._is_current_playback_generation(generation))))
+
+        def discard():
+            if generation is not None:
                 self._retire_synthesis(generation)
-                recorder.mark("tts_stale_result_discarded", playback_id=int(generation or 0))
-                print(f"[AIFren TTS] synthesis cancelled; id={generation}")
+            recorder.mark("tts_stale_result_discarded", playback_id=int(generation or 0))
+            recorder.mark("kokoro_synthesis_end", playback_id=int(generation or 0),
+                          duration_ms=(time.monotonic()-synthesis_started_at)*1000,
+                          cancelled=True, audio_samples=0, active_jobs=0)
+
+        units = (text,)
+        if cancelled is not None:
+            # Already projected/validated speech only. Reuse the existing
+            # sentence/clause policy, with substantial units (not word-sized
+            # playback chunks). Concatenate PCM before normal dispatch so no
+            # new queue starvation gaps, playback IDs or subtitle clocks arise.
+            from tts.chunker import SpeechChunker
+            chunker = SpeechChunker(minimum=80, preferred_maximum=220,
+                                    hard_maximum=260, preserve_whitespace=True)
+            units = chunker.feed(text) + chunker.finish()
+        for index, unit in enumerate(units):
+            if retired():
+                discard()
                 return None
-            audio = result.audio
-            if hasattr(audio, "detach"):
-                audio = audio.detach().cpu().numpy()
-            chunk = np.asarray(audio, dtype=np.float32).reshape(-1)
-            chunks.append(chunk)
-            word_starts.extend(self._result_word_starts(getattr(result, "tokens", None), offset_seconds))
-            offset_seconds += len(chunk) / 24000.0
+            unit_start = time.monotonic()
+            unit_samples = 0
+            recorder.mark("kokoro_synthesis_unit_start", chunk_index=index, characters=len(unit))
+            for result in self.pipeline(unit, voice=str(self.voice_path), speed=self.speed):
+                # An in-flight native call is irreducible here. Never request
+                # its next yield/unit after cancellation, even in prepare mode.
+                if retired():
+                    discard()
+                    return None
+                audio = result.audio
+                if hasattr(audio, "detach"):
+                    audio = audio.detach().cpu().numpy()
+                chunk = np.asarray(audio, dtype=np.float32).reshape(-1)
+                chunks.append(chunk)
+                unit_samples += len(chunk)
+                word_starts.extend(self._result_word_starts(getattr(result, "tokens", None), offset_seconds))
+                offset_seconds += len(chunk) / 24000.0
+            recorder.mark("kokoro_synthesis_unit_end", chunk_index=index,
+                          duration_ms=(time.monotonic()-unit_start)*1000,
+                          audio_samples=unit_samples, sample_rate=24000)
+        if retired():
+            discard()
+            return None
         if not chunks:
             raise ValueError("Kokoro produced no audio.")
         expected_words = re.findall(r"\S+", text or "")
@@ -730,6 +789,10 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
     def prepare_stream_chunk(self, text: str):
         """Synthesize the next chunk without disturbing current playback."""
         return self._generate_audio(str(text))
+
+    def prepare_cancellable_stream_chunk(self, text: str, *, cancelled):
+        """Prepare exact speech with cancellation between bounded native units."""
+        return self._generate_audio(str(text), cancelled=cancelled)
 
     @staticmethod
     def _continuous_chunk(prepared, on_started=None):
@@ -923,7 +986,7 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
                 )
         except Exception as error:
             if not self.stop_event.is_set() and self._is_current_playback_generation(generation):
-                print(f"\nTTS playback error: {error}")
+                print('[AIFren TTS] audio operation failed.')
         finally:
             if stream is not None:
                 try:
@@ -991,13 +1054,264 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
         except Exception as error:
             self._retire_synthesis(generation)
             self.playback_finished.set()
-            print(f"\nKokoro TTS synthesis error: {error}")
+            print('[AIFren TTS] audio operation failed.')
             return False
 
 
+class Audio8TextToSpeech(LocalPlaybackTTS):
+    """Warm external Audio8 service adapter using its local speech endpoint."""
+
+    synthesis_strategy = "manual_chunks"
+
+    def __init__(self, *, base_url=AUDIO8_BASE_URL, model=AUDIO8_MODEL,
+                 reference_audio=AUDIO8_REFERENCE_AUDIO, reference_text=AUDIO8_REFERENCE_TEXT,
+                 runtime_root=AUDIO8_RUNTIME_ROOT, voice_profile=AUDIO8_VOICE_PROFILE,
+                 timeout_seconds=AUDIO8_TIMEOUT_SECONDS,
+                 startup_timeout_seconds=AUDIO8_STARTUP_TIMEOUT_SECONDS,
+                 runtime=None):
+        super().__init__()
+        self.base_url = str(base_url).rstrip("/")
+        self.model = str(model)
+        self.voice = str(voice_profile or "default")
+        self.reference_audio = str(reference_audio or "")
+        self.reference_text = str(reference_text or "")
+        self.timeout_seconds = float(timeout_seconds)
+        if not self.base_url or not self.model:
+            raise ValueError("Audio8 endpoint and model are required")
+        self.runtime = runtime or Audio8Runtime(
+            base_url=self.base_url,
+            model=self.model,
+            runtime_root=runtime_root,
+            voice_profile=voice_profile,
+            reference_audio=self.reference_audio,
+            reference_text=self.reference_text,
+            timeout_seconds=self.timeout_seconds,
+            startup_timeout_seconds=startup_timeout_seconds,
+            warmup_text=AUDIO8_WARMUP_TEXT,
+        )
+
+    def is_available(self) -> bool:
+        """Start/reuse the configured warm service; fail closed into Kokoro."""
+        return bool(self.runtime.ensure_ready())
+
+    def _request_wav(self, text: str) -> bytes:
+        return self.runtime.request_audio(text)
+
+    def prepare_stream_chunk(self, text: str):
+        """Synthesize without touching playback so the next chunk can overlap.
+
+        ``StreamingSpeechQueue`` uses this optional provider capability.  It is
+        deliberately Audio8-specific transport optimization, not a change to
+        canonical assistant-message or Memory V2 semantics.
+        """
+        started = time.monotonic()
+        audio, sample_rate = self.decode_wav_bytes(self._request_wav(str(text)))
+        print(f"[AIFren Timing] Audio8 prepared chunk t={time.monotonic() - started:.3f}s")
+        return audio, sample_rate
+
+    def start_prepared_chunk(self, prepared) -> bool:
+        """Play a previously synthesized chunk in source order."""
+        audio, sample_rate = prepared
+        generation = self._next_playback_generation()
+        self.stop_event.clear()
+        self.playback_finished.clear()
+        return self._start_playback(audio, sample_rate, generation)
+
+    def speak(self, text):
+        if not text:
+            return False
+        self.stop()
+        generation = self._next_playback_generation()
+        self._mark_synthesis_active(generation)
+        self.stop_event.clear()
+        self.playback_finished.clear()
+        started = time.monotonic()
+        try:
+            audio, sample_rate = self.prepare_stream_chunk(str(text))
+            if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
+                return False
+            print(f"[AIFren Timing] Audio8 synthesis/audio ready t={time.monotonic() - started:.3f}s")
+            return self._start_playback(audio, sample_rate, generation)
+        except Exception as error:
+            self._retire_synthesis(generation)
+            self.playback_finished.set()
+            print(f"[AIFren TTS] Audio8 synthesis error: {type(error).__name__}")
+            return False
+
+    def close(self):
+        self.stop()
+        self.runtime.shutdown_owned()
+
+    def deactivate(self):
+        """Release an owned unhealthy service before loading fallback TTS."""
+        self.close()
+
+
+class FallbackTextToSpeech:
+    """Keep one response ordered and instantiate Kokoro only after failure."""
+    def __init__(self, primary, fallback=None, *, fallback_factory=None):
+        self.primary = primary
+        if fallback_factory is None:
+            self._fallback_factory = lambda: fallback
+        else:
+            self._fallback_factory = fallback_factory
+        self._fallback = None
+        self._fallback_lock = threading.Lock()
+        self._active = primary
+        self.voice = getattr(primary, "voice", "default")
+        self.device = getattr(primary, "device", "local")
+        self._playback_started_callback = None
+        self._playback_finished_callback = None
+        self._volume = primary.get_volume() if callable(getattr(primary, "get_volume", None)) else 1.0
+
+    @property
+    def fallback(self):
+        return self._ensure_fallback()
+
+    @property
+    def fallback_loaded(self):
+        return self._fallback is not None
+
+    @property
+    def synthesis_strategy(self):
+        return getattr(self.primary, "synthesis_strategy", "manual_chunks")
+
+    def _ensure_fallback(self):
+        with self._fallback_lock:
+            if self._fallback is not None:
+                return self._fallback
+            deactivate = getattr(self.primary, "deactivate", None)
+            if callable(deactivate):
+                deactivate()
+            fallback = self._fallback_factory()
+            if self._playback_started_callback is not None:
+                fallback.set_playback_started_callback(self._playback_started_callback)
+            if self._playback_finished_callback is not None:
+                fallback.set_playback_finished_callback(self._playback_finished_callback)
+            setter = getattr(fallback, "set_volume", None)
+            if callable(setter):
+                setter(self._volume)
+            self._fallback = fallback
+            return fallback
+
+    @property
+    def playback_finished(self):
+        return getattr(self._active, "playback_finished", None)
+
+    def set_playback_started_callback(self, callback):
+        self._playback_started_callback = callback
+        self.primary.set_playback_started_callback(callback)
+        if self._fallback is not None:
+            self._fallback.set_playback_started_callback(callback)
+
+    def set_playback_finished_callback(self, callback):
+        self._playback_finished_callback = callback
+        self.primary.set_playback_finished_callback(callback)
+        if self._fallback is not None:
+            self._fallback.set_playback_finished_callback(callback)
+
+    def set_volume(self, value):
+        self._volume = value
+        self.primary.set_volume(value)
+        if self._fallback is not None:
+            self._fallback.set_volume(value)
+
+    def get_volume(self):
+        return self.primary.get_volume()
+
+    def stop(self):
+        self.primary.stop()
+        if self._fallback is not None:
+            self._fallback.stop()
+
+    def close(self):
+        close = getattr(self.primary, "close", None)
+        if callable(close):
+            close()
+        else:
+            self.primary.stop()
+        if self._fallback is not None:
+            close = getattr(self._fallback, "close", None)
+            if callable(close):
+                close()
+            else:
+                self._fallback.stop()
+
+    def prepare_stream_chunk(self, text):
+        """Preserve Audio8 overlap while retaining per-chunk Kokoro fallback."""
+        prepare = getattr(self.primary, "prepare_stream_chunk", None)
+        if not callable(prepare):
+            return ("normal", str(text), str(text))
+        try:
+            return ("primary", prepare(str(text)), str(text))
+        except Exception:
+            fallback = self._ensure_fallback()
+            fallback_prepare = getattr(fallback, "prepare_stream_chunk", None)
+            payload = fallback_prepare(str(text)) if callable(fallback_prepare) else str(text)
+            return ("fallback", payload, str(text))
+
+    def start_prepared_chunk(self, prepared):
+        source, payload, original_text = prepared
+        if source == "primary":
+            start = getattr(self.primary, "start_prepared_chunk", None)
+            if callable(start) and start(payload):
+                self._active = self.primary
+                return True
+        if source == "normal":
+            return self.speak(original_text)
+        fallback = self._ensure_fallback()
+        self._active = fallback
+        start = getattr(fallback, "start_prepared_chunk", None)
+        return start(payload) if callable(start) else fallback.speak(original_text)
+
+    def fallback_to_cpu_after_resource_failure(self):
+        """Expose the same runtime failover when Kokoro is the lazy fallback."""
+        fallback = self._ensure_fallback()
+        switch = getattr(fallback, "fallback_to_cpu_after_resource_failure", None)
+        if not callable(switch):
+            return False
+        switched = bool(switch())
+        if switched:
+            self.device = getattr(fallback, "device", "cpu")
+        return switched
+
+    def speak(self, text):
+        started = self.primary.speak(text)
+        if started:
+            self._active = self.primary
+            return True
+        fallback = self._ensure_fallback()
+        self._active = fallback
+        return fallback.speak(text)
+
+
 def create_tts_provider(provider=None, fallback=True):
-    """Create the configured public Kokoro provider."""
+    """Audio8 is primary; Kokoro is the only deterministic fallback."""
     selected = str(provider or TTS_PROVIDER).strip().lower()
+
+    if selected == "audio8":
+        try:
+            primary = Audio8TextToSpeech()
+            if not primary.is_available():
+                raise RuntimeError(getattr(primary.runtime, "failure_reason", "Audio8 runtime is unavailable"))
+            return FallbackTextToSpeech(primary, fallback_factory=KokoroTextToSpeech)
+        except Exception as error:
+            if not fallback:
+                raise
+            message = str(error)
+            if "runtime root" in message:
+                reason = "Audio8 runtime root is not configured"
+            elif "voice profile" in message:
+                reason = "Audio8 voice profile is not configured"
+            else:
+                reason = f"Audio8 unavailable ({type(error).__name__})"
+            print(reason + "; falling back to Kokoro.")
+            fallback_provider = KokoroTextToSpeech()
+            # Status-only diagnostic; no reference paths, prompts, or voice
+            # material is ever sent to Unity or canonical records.
+            fallback_provider.fallback_reason = reason
+            fallback_provider.configured_provider = "audio8"
+            return fallback_provider
 
     if selected == "kokoro":
         try:
@@ -1008,7 +1322,7 @@ def create_tts_provider(provider=None, fallback=True):
             raise RuntimeError(f"Kokoro unavailable: {type(error).__name__}") from error
 
     raise ValueError(
-        f"Unsupported TTS_PROVIDER {selected!r}. Use 'kokoro'."
+        f"Unsupported TTS_PROVIDER {selected!r}. Use 'audio8' or 'kokoro'."
     )
 
 

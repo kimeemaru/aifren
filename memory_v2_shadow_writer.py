@@ -16,18 +16,36 @@ import time
 from typing import Any
 import uuid
 
-from memory_v2_store.retrieval_models import RetrievalQuery
+from benchmarks.memory_v2.models import RetrievalQuery
 from memory_v2_store import (EmbeddingLifecycle, MemoryV2Store,
                              MemoryV2Repository,
                              ActiveStateProposal,
                              MiniLMEmbeddingProvider,
-                             extract_identity_name_assertion,
                              extract_headwear_state_assertion,
                              import_v1_memories, shadow_v1_mutation)
 from memory_v2_store.store import parse_timestamp_us
+from durable_fact_curation import (
+    DURABLE_FACT_CURATOR_NAME,
+    DURABLE_FACT_CURATOR_VERSION,
+    DURABLE_FACT_POLICY_VERSION,
+)
+from memory_v2_canonical_evidence import (
+    CanonicalEvidenceDecision,
+    CanonicalUserEvidence,
+    resolve_canonical_user_evidence,
+)
 from memory_v2_telemetry import record_dual_read
 from memory_v2_adaptive import AdaptiveShadowRetrieval, WorkingRecallCache
 from memory_v2_store.production_import import v1_import_scope
+from memory_v2_store.durable_contract import (
+    DURABLE_ASSERTION_SCOPE,
+    DURABLE_CORE_FACT,
+)
+from memory_v2_store.identity_name import (
+    IDENTITY_NAME_CURATOR_NAME,
+    IDENTITY_NAME_CURATOR_VERSION,
+    IDENTITY_NAME_POLICY_VERSION,
+)
 
 
 DEFAULT_V2_DIRECTORY = "memory_v2"
@@ -47,6 +65,36 @@ def default_v2_path(application_dir: str | Path) -> Path:
 class MemoryV2ShadowWriter:
     """Character-scoped, fail-open shadow writer and reconciliation boundary."""
 
+    def _current_durable_lifecycle_rows(self, subject_key: str):
+        """Return current governed values without applying wall-clock validity.
+
+        Mutation ownership follows the append-only lifecycle, while prompt
+        retrieval separately applies temporal validity. This distinction is
+        required for idempotent observation of canonical evidence whose source clock is ahead
+        of the machine clock: an open future-dated value must still be the
+        predecessor of the next canonical correction.
+        """
+        return self.store.connection.execute(
+            """SELECT c.claim_id, c.content, c.valid_from_us
+                 FROM claims c
+                WHERE c.character_id=? AND c.claim_type=?
+                  AND c.assertion_scope=? AND c.subject_key=?
+                  AND c.truth_scope_id=? AND c.provenance_state='complete'
+                  AND c.valid_to_us IS NULL
+                  AND COALESCE((SELECT status FROM claim_status_events s
+                       WHERE s.character_id=c.character_id AND s.claim_id=c.claim_id
+                       ORDER BY s.status_event_id DESC LIMIT 1), 'active')
+                      NOT IN ('superseded','expired','cancelled','retracted',
+                              'archived','hidden','redacted')
+                ORDER BY COALESCE(c.valid_from_us, c.created_at_us) DESC,
+                         c.created_at_us DESC, c.claim_id
+                LIMIT 2""",
+            (
+                self.character_id, DURABLE_CORE_FACT, DURABLE_ASSERTION_SCOPE,
+                subject_key, self.store.default_truth_scope_id(self.character_id),
+            ),
+        ).fetchall()
+
     def __init__(
         self,
         application_dir: str | Path,
@@ -60,7 +108,13 @@ class MemoryV2ShadowWriter:
         self.character_id = str(character_id)
         self.display_name = str(display_name)
         self.memory_file = Path(memory_file).resolve()
-        self.database_path = Path(database_path).resolve() if database_path else default_v2_path(self.application_dir)
+        if database_path is None:
+            from development_staged_runtime import development_staged_database_path
+            database_path = (
+                development_staged_database_path(self.application_dir, self.character_id)
+                or default_v2_path(self.application_dir)
+            )
+        self.database_path = Path(database_path).resolve()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.store = MemoryV2Store(str(self.database_path))
         self.last_error: str | None = None
@@ -125,6 +179,7 @@ class MemoryV2ShadowWriter:
         *,
         conversation_index: int,
         conversation_file: str | Path,
+        _archive=None,
     ) -> dict[str, Any]:
         """Mirror one already-persisted canonical user name assertion.
 
@@ -133,81 +188,122 @@ class MemoryV2ShadowWriter:
         never changes V1, prompt construction, or generic V2 retrieval.
         """
         try:
-            if not isinstance(message, dict) or message.get("role") != "user":
-                return {"state": "ignored", "reason": "not_user_message"}
-            if isinstance(conversation_index, bool) or not isinstance(conversation_index, int) or conversation_index < 0:
-                return {"state": "ignored", "reason": "invalid_canonical_index"}
-            content = message.get("content")
-            timestamp = message.get("timestamp")
-            assertion = extract_identity_name_assertion(content)
-            if assertion is None:
-                return {"state": "ignored", "reason": "not_explicit_identity_name"}
-            if not isinstance(timestamp, str) or not timestamp.strip():
-                return {"state": "ignored", "reason": "missing_canonical_timestamp"}
-            try:
-                recorded_at_us = parse_timestamp_us(timestamp)
-            except (TypeError, ValueError):
-                return {"state": "ignored", "reason": "invalid_canonical_timestamp"}
-            if recorded_at_us is None:
-                return {"state": "ignored", "reason": "invalid_canonical_timestamp"}
-            if not self._matches_persisted_canonical_message(
+            decision = self._resolve_persisted_user_evidence(
                 message, conversation_file=conversation_file, index=conversation_index,
-            ):
-                return {"state": "ignored", "reason": "canonical_message_not_persisted"}
-
-            source_reference = self._canonical_source_reference(conversation_file, conversation_index)
-            event_id = str(uuid.uuid5(
-                _IDENTITY_NAME_NAMESPACE,
-                f"{self.character_id}:{source_reference}:{timestamp}:{hashlib.sha256(content.encode('utf-8')).hexdigest()}",
-            ))
-            repository = MemoryV2Repository(self.store)
-            repository.ensure_character(self.character_id, self.display_name, legacy_config_key="characters/default")
-            if self.store.active_truth_scope_id(self.character_id) != self.store.default_truth_scope_id(self.character_id):
-                return {"state": "ignored", "reason": "truth_scope_not_real_world"}
-            existing_event = self.store.connection.execute(
-                "SELECT actor_kind, content_text, source_reference FROM events WHERE character_id=? AND event_id=?",
-                (self.character_id, event_id),
-            ).fetchone()
-            if existing_event is None:
-                sequence = self.store.connection.execute(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE character_id=?",
-                    (self.character_id,),
-                ).fetchone()[0]
-                self.store.add_event(
-                    self.character_id, event_id, sequence, event_type="canonical_user_message",
-                    actor_kind="user", recorded_at_us=recorded_at_us, temporal_precision="instant",
-                    content_text=content, source_origin="canonical_conversation",
-                    source_reference=source_reference,
-                )
-            elif (existing_event["actor_kind"] != "user" or existing_event["content_text"] != content
-                  or existing_event["source_reference"] != source_reference):
-                return {"state": "ignored", "reason": "canonical_event_identity_conflict"}
-
-            claim_content = f"The user's name is {assertion.value}."
-            current = repository.lookup_durable_core(self.character_id, "identity.name")
-            if len(current.candidates) > 1:
-                return {"state": "ignored", "reason": "multiple_current_identity_names"}
-            if current.candidates and current.candidates[0].content == claim_content:
-                return {"state": "unchanged", "claim_id": current.candidates[0].claim_id, "event_id": event_id}
-
-            claim_id = str(uuid.uuid5(
-                _IDENTITY_NAME_NAMESPACE, f"durable-name:{self.character_id}:{event_id}"
-            ))
-            self.store.add_durable_claim(
-                self.character_id, claim_id, subject_key="identity.name", content=claim_content,
-                evidence_event_id=event_id, evidence_role="direct_user_statement",
-                evidence_excerpt_start_cp=assertion.excerpt_start_cp,
-                evidence_excerpt_end_cp=assertion.excerpt_end_cp,
-                valid_from_us=recorded_at_us, created_at_us=recorded_at_us,
-                curator_name="identity_name_assertion", curator_version="1",
-                curator_policy_version="explicit_v1",
-                supersedes_claim_id=current.candidates[0].claim_id if current.candidates else None,
+                _archive=_archive,
+            )
+            if not decision.accepted:
+                return {"state": "ignored", "reason": decision.reason}
+            evidence = decision.evidence
+            assert evidence is not None
+            result = self._apply_resolved_identity_name(
+                evidence, conversation_file=conversation_file,
             )
             self.last_error = None
-            return {"state": "superseded" if current.candidates else "created", "claim_id": claim_id, "event_id": event_id}
+            return result
         except Exception as error:
             self.last_error = type(error).__name__
             return {"state": "failed", "reason": self.last_error}
+
+    def _apply_resolved_identity_name(
+        self,
+        evidence: CanonicalUserEvidence,
+        *,
+        conversation_file: str | Path,
+    ) -> dict[str, Any]:
+        """Apply one immutable resolver result without rereading its source."""
+        assertion = evidence.identity_assertion
+        if assertion is None:
+            return {"state": "ignored", "reason": "not_explicit_identity_name"}
+        content = evidence.content
+        timestamp = evidence.timestamp
+        recorded_at_us = evidence.recorded_at_us
+        source_reference = self._canonical_source_reference(
+            conversation_file, evidence.canonical_index,
+        )
+        event_id = str(uuid.uuid5(
+            _IDENTITY_NAME_NAMESPACE,
+            f"{self.character_id}:{source_reference}:{timestamp}:"
+            f"{hashlib.sha256(content.encode('utf-8')).hexdigest()}",
+        ))
+        repository = MemoryV2Repository(self.store)
+        repository.ensure_character(
+            self.character_id, self.display_name, legacy_config_key="characters/default",
+        )
+        if self.store.active_truth_scope_id(self.character_id) != self.store.default_truth_scope_id(self.character_id):
+            return {"state": "ignored", "reason": "truth_scope_not_real_world"}
+        claim_content = f"The user's name is {assertion.value}."
+        expected_claim_id = str(uuid.uuid5(
+            _IDENTITY_NAME_NAMESPACE, f"durable-name:{self.character_id}:{event_id}",
+        ))
+        replay_state, replayed_claim_id = self._canonical_replay_state(
+            evidence,
+            event_id=event_id,
+            source_reference=source_reference,
+            subject_key="identity.name",
+            claim_content=claim_content,
+            expected_claim_id=expected_claim_id,
+            excerpt_start_cp=assertion.excerpt_start_cp,
+            excerpt_end_cp=assertion.excerpt_end_cp,
+            direct_curator=(
+                IDENTITY_NAME_CURATOR_NAME,
+                IDENTITY_NAME_CURATOR_VERSION,
+                IDENTITY_NAME_POLICY_VERSION,
+            ),
+        )
+        if replay_state == "conflict":
+            return {"state": "ignored", "reason": "canonical_event_identity_conflict"}
+        if replay_state == "replayed":
+            return {"state": "unchanged", "claim_id": replayed_claim_id, "event_id": event_id}
+        current = self._current_durable_lifecycle_rows("identity.name")
+        if len(current) > 1:
+            return {"state": "ignored", "reason": "multiple_current_identity_names"}
+        watermark = self.store.durable_subject_watermark_us(
+            self.character_id, "identity.name",
+        )
+        if watermark is not None and recorded_at_us < watermark:
+            return {"state": "ignored", "reason": "timeline_conflict"}
+        if replay_state == "absent":
+            sequence = self.store.connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE character_id=?",
+                (self.character_id,),
+            ).fetchone()[0]
+            self.store.add_event(
+                self.character_id, event_id, sequence, event_type="canonical_user_message",
+                actor_kind="user", recorded_at_us=recorded_at_us,
+                temporal_precision="instant", content_text=content,
+                source_origin="canonical_conversation", source_reference=source_reference,
+                payload=self._canonical_event_payload(evidence),
+            )
+
+        if current and current[0]["content"] == claim_content:
+            self.store.reconfirm_durable_claim(
+                self.character_id, current[0]["claim_id"],
+                evidence_event_id=event_id,
+                evidence_excerpt_start_cp=assertion.excerpt_start_cp,
+                evidence_excerpt_end_cp=assertion.excerpt_end_cp,
+            )
+            return {
+                "state": "unchanged", "claim_id": current[0]["claim_id"],
+                "event_id": event_id,
+            }
+
+        claim_id = expected_claim_id
+        self.store.add_durable_claim(
+            self.character_id, claim_id, subject_key="identity.name", content=claim_content,
+            evidence_event_id=event_id, evidence_role="direct_user_statement",
+            evidence_excerpt_start_cp=assertion.excerpt_start_cp,
+            evidence_excerpt_end_cp=assertion.excerpt_end_cp,
+            valid_from_us=recorded_at_us, created_at_us=recorded_at_us,
+            curator_name=IDENTITY_NAME_CURATOR_NAME,
+            curator_version=IDENTITY_NAME_CURATOR_VERSION,
+            curator_policy_version=IDENTITY_NAME_POLICY_VERSION,
+            supersedes_claim_id=current[0]["claim_id"] if current else None,
+        )
+        return {
+            "state": "superseded" if current else "created",
+            "claim_id": claim_id, "event_id": event_id,
+        }
 
     def observe_governed_companion_action(
         self,
@@ -414,6 +510,7 @@ class MemoryV2ShadowWriter:
         *,
         conversation_index: int,
         conversation_file: str | Path,
+        _archive=None,
     ) -> dict[str, Any]:
         """Mirror one persisted, explicit headwear set/clear assertion only.
 
@@ -441,6 +538,7 @@ class MemoryV2ShadowWriter:
                 return {"state": "ignored", "reason": "invalid_canonical_timestamp"}
             if not self._matches_persisted_canonical_message(
                 message, conversation_file=conversation_file, index=conversation_index,
+                _archive=_archive,
             ):
                 return {"state": "ignored", "reason": "canonical_message_not_persisted"}
 
@@ -504,121 +602,227 @@ class MemoryV2ShadowWriter:
         *,
         conversation_index: int,
         conversation_file: str | Path,
+        _archive=None,
     ) -> dict[str, Any]:
         """Apply one closed-schema durable proposal from persisted user evidence."""
         try:
-            if not isinstance(message, dict) or message.get("role") != "user":
-                return {"state": "ignored", "reason": "not_user_message"}
-            if isinstance(conversation_index, bool) or not isinstance(conversation_index, int) or conversation_index < 0:
-                return {"state": "ignored", "reason": "invalid_canonical_index"}
-            content, timestamp = message.get("content"), message.get("timestamp")
-            if not isinstance(content, str) or not isinstance(timestamp, str) or not timestamp.strip():
-                return {"state": "ignored", "reason": "invalid_canonical_message"}
-            recorded_at_us = parse_timestamp_us(timestamp)
-            if recorded_at_us is None:
-                return {"state": "ignored", "reason": "invalid_canonical_timestamp"}
-            if not self._matches_persisted_canonical_message(
+            decision = self._resolve_persisted_user_evidence(
                 message, conversation_file=conversation_file, index=conversation_index,
-            ):
-                return {"state": "ignored", "reason": "canonical_message_not_persisted"}
-
-            from durable_fact_curation import extract_durable_fact_proposal
-
-            repository = MemoryV2Repository(self.store)
-            repository.ensure_character(self.character_id, self.display_name, legacy_config_key="characters/default")
-            if self.store.active_truth_scope_id(self.character_id) != self.store.default_truth_scope_id(self.character_id):
-                return {"state": "ignored", "reason": "truth_scope_not_real_world"}
-            proposal = extract_durable_fact_proposal(
-                content,
-                previous_user_content=self._previous_user_content(conversation_file, conversation_index),
+                _archive=_archive,
             )
-            if proposal is None:
-                return {"state": "ignored", "reason": "no_clear_durable_fact"}
-            current = repository.lookup_durable_core(self.character_id, proposal.subject_key)
-            if len(current.candidates) > 1:
-                return {"state": "ignored", "reason": "multiple_current_durable_values"}
-            favorite_bridge = None
-            if proposal.stance == "correction" and not current.candidates:
-                if proposal.subject_key != "preference.color":
-                    return {"state": "ignored", "reason": "missing_current_durable_value"}
-                favorite_bridge = self._favorite_color_v1_predecessor()
-                if favorite_bridge is None:
-                    return {"state": "ignored", "reason": "missing_current_durable_value"}
-
-            source_reference = self._canonical_source_reference(conversation_file, conversation_index)
-            event_id = str(uuid.uuid5(
-                _DURABLE_FACT_NAMESPACE,
-                f"{self.character_id}:{source_reference}:{timestamp}:{hashlib.sha256(content.encode('utf-8')).hexdigest()}",
-            ))
-            existing_event = self.store.connection.execute(
-                "SELECT actor_kind, content_text, source_reference FROM events WHERE character_id=? AND event_id=?",
-                (self.character_id, event_id),
-            ).fetchone()
-            if existing_event is None:
-                sequence = self.store.connection.execute(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE character_id=?",
-                    (self.character_id,),
-                ).fetchone()[0]
-                self.store.add_event(
-                    self.character_id, event_id, sequence, event_type="canonical_user_message",
-                    actor_kind="user", recorded_at_us=recorded_at_us, temporal_precision="instant",
-                    content_text=content, source_origin="canonical_conversation",
-                    source_reference=source_reference,
-                )
-            elif (existing_event["actor_kind"] != "user" or existing_event["content_text"] != content
-                  or existing_event["source_reference"] != source_reference):
-                return {"state": "ignored", "reason": "canonical_event_identity_conflict"}
-
-            if current.candidates and current.candidates[0].content == proposal.content:
-                self.store.reconfirm_durable_claim(
-                    self.character_id, current.candidates[0].claim_id,
-                    evidence_event_id=event_id,
-                    evidence_excerpt_start_cp=proposal.excerpt_start_cp,
-                    evidence_excerpt_end_cp=proposal.excerpt_end_cp,
-                )
-                return {"state": "unchanged", "claim_id": current.candidates[0].claim_id, "event_id": event_id}
-
-            claim_id = str(uuid.uuid5(
-                _DURABLE_FACT_NAMESPACE,
-                f"durable:{self.character_id}:{proposal.subject_key}:{event_id}",
-            ))
-            predecessor_id = current.candidates[0].claim_id if current.candidates else None
-            bridged_historical = False
-            with self.store.transaction():
-                if (favorite_bridge is not None
-                        and favorite_bridge["value"].casefold() != proposal.value.casefold()):
-                    predecessor_id = str(uuid.uuid5(
-                        _DURABLE_FACT_NAMESPACE,
-                        f"favorite-color-v1:{self.character_id}:{favorite_bridge['claim_id']}",
-                    ))
-                    self.store.add_legacy_favorite_color_predecessor(
-                        self.character_id, predecessor_id,
-                        content=f"The user's favorite color is {favorite_bridge['value']}.",
-                        legacy_evidence_event_id=favorite_bridge["event_id"],
-                        valid_from_us=favorite_bridge["recorded_at_us"],
-                    )
-                    bridged_historical = True
-                self.store.add_durable_claim(
-                    self.character_id, claim_id, subject_key=proposal.subject_key,
-                    content=proposal.content, evidence_event_id=event_id,
-                    evidence_role="direct_user_statement",
-                    evidence_excerpt_start_cp=proposal.excerpt_start_cp,
-                    evidence_excerpt_end_cp=proposal.excerpt_end_cp,
-                    valid_from_us=recorded_at_us, created_at_us=recorded_at_us,
-                    curator_name="bounded_durable_fact_curator", curator_version="1",
-                    curator_policy_version="closed_schema_v1",
-                    supersedes_claim_id=predecessor_id,
-                )
+            if not decision.accepted:
+                return {"state": "ignored", "reason": decision.reason}
+            evidence = decision.evidence
+            assert evidence is not None
+            result = self._apply_resolved_durable_fact(
+                evidence, conversation_file=conversation_file,
+            )
             self.last_error = None
-            return {
-                "state": "superseded" if predecessor_id is not None else "created",
-                "claim_id": claim_id, "event_id": event_id,
-                "subject_key": proposal.subject_key,
-                "v1_favorite_bridge": bridged_historical,
-            }
+            return result
         except Exception as error:
             self.last_error = type(error).__name__
             return {"state": "failed", "reason": self.last_error}
+
+    def _apply_resolved_durable_fact(
+        self,
+        evidence: CanonicalUserEvidence,
+        *,
+        conversation_file: str | Path,
+    ) -> dict[str, Any]:
+        """Apply current durable semantics to one immutable resolver result."""
+        repository = MemoryV2Repository(self.store)
+        repository.ensure_character(
+            self.character_id, self.display_name, legacy_config_key="characters/default",
+        )
+        if self.store.active_truth_scope_id(self.character_id) != self.store.default_truth_scope_id(self.character_id):
+            return {"state": "ignored", "reason": "truth_scope_not_real_world"}
+        proposal = evidence.durable_proposal
+        if proposal is None:
+            return {"state": "ignored", "reason": "no_clear_durable_fact"}
+        if proposal.stance == "retirement":
+            return self._apply_resolved_durable_retirement(
+                evidence, conversation_file=conversation_file,
+            )
+        content = evidence.content
+        timestamp = evidence.timestamp
+        recorded_at_us = evidence.recorded_at_us
+        current = self._current_durable_lifecycle_rows(proposal.subject_key)
+        if len(current) > 1:
+            return {"state": "ignored", "reason": "multiple_current_durable_values"}
+        favorite_bridge = None
+        if proposal.stance == "correction" and not current:
+            if proposal.subject_key != "preference.color":
+                return {"state": "ignored", "reason": "missing_current_durable_value"}
+            favorite_bridge = self._favorite_color_v1_predecessor()
+            if favorite_bridge is None:
+                return {"state": "ignored", "reason": "missing_current_durable_value"}
+
+        source_reference = self._canonical_source_reference(
+            conversation_file, evidence.canonical_index,
+        )
+        event_id = str(uuid.uuid5(
+            _DURABLE_FACT_NAMESPACE,
+            f"{self.character_id}:{source_reference}:{timestamp}:"
+            f"{hashlib.sha256(content.encode('utf-8')).hexdigest()}",
+        ))
+        expected_claim_id = str(uuid.uuid5(
+            _DURABLE_FACT_NAMESPACE,
+            f"durable:{self.character_id}:{proposal.subject_key}:{event_id}",
+        ))
+        replay_state, replayed_claim_id = self._canonical_replay_state(
+            evidence,
+            event_id=event_id,
+            source_reference=source_reference,
+            subject_key=proposal.subject_key,
+            claim_content=proposal.content,
+            expected_claim_id=expected_claim_id,
+            excerpt_start_cp=proposal.excerpt_start_cp,
+            excerpt_end_cp=proposal.excerpt_end_cp,
+            direct_curator=(
+                DURABLE_FACT_CURATOR_NAME,
+                DURABLE_FACT_CURATOR_VERSION,
+                DURABLE_FACT_POLICY_VERSION,
+            ),
+        )
+        if replay_state == "conflict":
+            return {"state": "ignored", "reason": "canonical_event_identity_conflict"}
+        if replay_state == "replayed":
+            return {"state": "unchanged", "claim_id": replayed_claim_id, "event_id": event_id}
+        watermark = self.store.durable_subject_watermark_us(
+            self.character_id, proposal.subject_key,
+        )
+        if watermark is not None and recorded_at_us < watermark:
+            return {"state": "ignored", "reason": "timeline_conflict"}
+        if replay_state == "absent":
+            sequence = self.store.connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE character_id=?",
+                (self.character_id,),
+            ).fetchone()[0]
+            self.store.add_event(
+                self.character_id, event_id, sequence, event_type="canonical_user_message",
+                actor_kind="user", recorded_at_us=recorded_at_us,
+                temporal_precision="instant", content_text=content,
+                source_origin="canonical_conversation", source_reference=source_reference,
+                payload=self._canonical_event_payload(evidence),
+            )
+
+        if current and current[0]["content"] == proposal.content:
+            self.store.reconfirm_durable_claim(
+                self.character_id, current[0]["claim_id"],
+                evidence_event_id=event_id,
+                evidence_excerpt_start_cp=proposal.excerpt_start_cp,
+                evidence_excerpt_end_cp=proposal.excerpt_end_cp,
+            )
+            return {
+                "state": "unchanged", "claim_id": current[0]["claim_id"],
+                "event_id": event_id,
+            }
+
+        claim_id = expected_claim_id
+        predecessor_id = current[0]["claim_id"] if current else None
+        bridged_historical = False
+        with self.store.transaction():
+            if (favorite_bridge is not None
+                    and favorite_bridge["value"].casefold() != proposal.value.casefold()):
+                predecessor_id = str(uuid.uuid5(
+                    _DURABLE_FACT_NAMESPACE,
+                    f"favorite-color-v1:{self.character_id}:{favorite_bridge['claim_id']}",
+                ))
+                self.store.add_legacy_favorite_color_predecessor(
+                    self.character_id, predecessor_id,
+                    content=f"The user's favorite color is {favorite_bridge['value']}.",
+                    legacy_evidence_event_id=favorite_bridge["event_id"],
+                    valid_from_us=favorite_bridge["recorded_at_us"],
+                )
+                bridged_historical = True
+            self.store.add_durable_claim(
+                self.character_id, claim_id, subject_key=proposal.subject_key,
+                content=proposal.content, evidence_event_id=event_id,
+                evidence_role="direct_user_statement",
+                evidence_excerpt_start_cp=proposal.excerpt_start_cp,
+                evidence_excerpt_end_cp=proposal.excerpt_end_cp,
+                valid_from_us=recorded_at_us, created_at_us=recorded_at_us,
+                curator_name=DURABLE_FACT_CURATOR_NAME,
+                curator_version=DURABLE_FACT_CURATOR_VERSION,
+                curator_policy_version=DURABLE_FACT_POLICY_VERSION,
+                supersedes_claim_id=predecessor_id,
+            )
+        return {
+            "state": "superseded" if predecessor_id is not None else "created",
+            "claim_id": claim_id, "event_id": event_id,
+            "subject_key": proposal.subject_key,
+            "v1_favorite_bridge": bridged_historical,
+        }
+
+    def _apply_resolved_durable_retirement(
+        self,
+        evidence: CanonicalUserEvidence,
+        *,
+        conversation_file: str | Path,
+    ) -> dict[str, Any]:
+        """Expire one exact existing value; never create a negative claim."""
+        proposal = evidence.durable_proposal
+        if proposal is None or proposal.stance != "retirement":
+            return {"state": "ignored", "reason": "not_durable_retirement"}
+        source_reference = self._canonical_source_reference(
+            conversation_file, evidence.canonical_index,
+        )
+        event_id = str(uuid.uuid5(
+            _DURABLE_FACT_NAMESPACE,
+            f"{self.character_id}:{source_reference}:{evidence.timestamp}:"
+            f"{hashlib.sha256(evidence.content.encode('utf-8')).hexdigest()}",
+        ))
+        replay_state, replayed_claim_id = self._canonical_retirement_replay_state(
+            evidence,
+            event_id=event_id,
+            source_reference=source_reference,
+            subject_key=proposal.subject_key,
+            claim_content=proposal.content,
+        )
+        if replay_state == "conflict":
+            return {"state": "ignored", "reason": "canonical_event_identity_conflict"}
+        if replay_state == "replayed":
+            return {
+                "state": "unchanged", "claim_id": replayed_claim_id,
+                "event_id": event_id,
+            }
+
+        watermark = self.store.durable_subject_watermark_us(
+            self.character_id, proposal.subject_key,
+        )
+        if watermark is not None and evidence.recorded_at_us < watermark:
+            return {"state": "ignored", "reason": "timeline_conflict"}
+        current = self._current_durable_lifecycle_rows(proposal.subject_key)
+        if len(current) > 1:
+            return {"state": "ignored", "reason": "multiple_current_durable_values"}
+        if not current:
+            return {"state": "ignored", "reason": "missing_current_durable_value"}
+        if current[0]["content"] != proposal.content:
+            return {"state": "ignored", "reason": "retirement_value_mismatch"}
+        with self.store.transaction():
+            sequence = self.store.connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE character_id=?",
+                (self.character_id,),
+            ).fetchone()[0]
+            self.store.add_event(
+                self.character_id, event_id, sequence,
+                event_type="canonical_user_message", actor_kind="user",
+                recorded_at_us=evidence.recorded_at_us,
+                temporal_precision="instant", content_text=evidence.content,
+                source_origin="canonical_conversation",
+                source_reference=source_reference,
+                payload=self._canonical_event_payload(evidence),
+            )
+            self.store.retire_durable_claim(
+                self.character_id, current[0]["claim_id"],
+                subject_key=proposal.subject_key,
+                expected_content=proposal.content,
+                evidence_event_id=event_id,
+            )
+        return {
+            "state": "retired", "claim_id": current[0]["claim_id"],
+            "event_id": event_id, "subject_key": proposal.subject_key,
+        }
 
     def _favorite_color_v1_predecessor(self) -> dict[str, Any] | None:
         """Return exactly one safe, current, imported V1 favorite-color value."""
@@ -739,6 +943,7 @@ class MemoryV2ShadowWriter:
         *,
         conversation_index: int,
         conversation_file: str | Path,
+        _archive=None,
     ) -> dict[str, Any]:
         """Apply bounded Current Continuity proposals after canonical save.
 
@@ -764,6 +969,7 @@ class MemoryV2ShadowWriter:
                 return {"state": "ignored", "reason": "invalid_canonical_timestamp"}
             if not self._matches_persisted_canonical_message(
                 message, conversation_file=conversation_file, index=conversation_index,
+                _archive=_archive,
             ):
                 return {"state": "ignored", "reason": "canonical_message_not_persisted"}
 
@@ -775,10 +981,12 @@ class MemoryV2ShadowWriter:
             recent_user_turns = self._recent_scoped_user_turns(
                 conversation_file, conversation_index,
                 scope_id=active_scope.truth_scope_id, scope_kind=active_scope.kind,
+                _archive=_archive,
             )
             extraction = extract_current_continuity(
                 repository, self.character_id, content,
                 recent_user_turns=recent_user_turns,
+                allow_loci=bool(getattr(self, "enable_loci", False)),
             )
             if not extraction.has_mutation:
                 return {
@@ -938,6 +1146,47 @@ class MemoryV2ShadowWriter:
                 })
             return result
 
+    def _resolve_persisted_user_evidence(
+        self,
+        message: object,
+        *,
+        conversation_file: str | Path,
+        index: int,
+        _archive=None,
+    ) -> CanonicalEvidenceDecision:
+        """Prove the complete persisted record before semantic curation."""
+        MemoryV2Repository(self.store).ensure_character(
+            self.character_id, self.display_name, legacy_config_key="characters/default",
+        )
+        try:
+            records = (_archive.for_path(conversation_file) if _archive is not None
+                       else json.loads(Path(conversation_file).read_text(encoding="utf-8")))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return CanonicalEvidenceDecision(None, "canonical_conversation_unavailable")
+        if not isinstance(records, list):
+            return CanonicalEvidenceDecision(None, "canonical_conversation_malformed")
+        if (not isinstance(message, dict) or isinstance(index, bool)
+                or not isinstance(index, int) or index < 0):
+            return CanonicalEvidenceDecision(None, "invalid_canonical_index")
+        if index >= len(records):
+            return CanonicalEvidenceDecision(None, "canonical_message_not_persisted")
+        # Dict equality includes authority-bearing truth_scope, origin, and
+        # semantic_admission fields.  Comparing only text/timestamp would let
+        # callers present a stronger record than the archive actually owns.
+        if not isinstance(records[index], dict) or records[index] != message:
+            return CanonicalEvidenceDecision(None, "canonical_message_not_persisted")
+        scope_rows = self.store.connection.execute(
+            "SELECT truth_scope_id FROM truth_scopes WHERE character_id=?",
+            (self.character_id,),
+        ).fetchall()
+        valid_scope_ids = {str(row[0]) for row in scope_rows}
+        return resolve_canonical_user_evidence(
+            records,
+            index,
+            expected_real_world_scope_id=self.store.default_truth_scope_id(self.character_id),
+            valid_scope_ids=valid_scope_ids,
+        )
+
     def _canonical_source_reference(self, conversation_file: str | Path, index: int) -> str:
         source = Path(conversation_file).resolve()
         try:
@@ -947,18 +1196,200 @@ class MemoryV2ShadowWriter:
         return f"{relative.as_posix()}#{index}"
 
     @staticmethod
-    def _previous_user_content(conversation_file: str | Path, index: int) -> str | None:
-        try:
-            records = json.loads(Path(conversation_file).read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        if not isinstance(records, list):
-            return None
-        for record in reversed(records[:index]):
-            if isinstance(record, dict) and record.get("role") == "user":
-                content = record.get("content")
-                return content if isinstance(content, str) and len(content) <= 300 else None
-        return None
+    def _canonical_event_payload(evidence: CanonicalUserEvidence) -> dict[str, object]:
+        return {
+            "canonical_record_id": evidence.canonical_record_id,
+            "canonical_index": evidence.canonical_index,
+            "truth_scope_id": evidence.truth_scope_id,
+        }
+
+    def _canonical_event_state(
+        self,
+        evidence: CanonicalUserEvidence,
+        *,
+        event_id: str,
+        source_reference: str,
+    ) -> str:
+        """Validate one deterministic canonical event without inferring use."""
+        event = self.store.connection.execute(
+            """SELECT sequence, event_type, actor_kind, recorded_at_us,
+                      occurred_from_us, occurred_to_us, temporal_precision,
+                      content_text, payload_json, payload_schema, source_origin,
+                      source_reference, content_sha256, redaction_state,
+                      redacted_at_us
+                 FROM events WHERE character_id=? AND event_id=?""",
+            (self.character_id, event_id),
+        ).fetchone()
+        if event is None:
+            return "absent"
+        expected_payload = json.dumps(self._canonical_event_payload(evidence), sort_keys=True)
+        expected_hash = hashlib.sha256(evidence.content.encode("utf-8")).hexdigest()
+        if (
+            isinstance(event["sequence"], bool)
+            or not isinstance(event["sequence"], int)
+            or event["sequence"] < 1
+            or event["event_type"] != "canonical_user_message"
+            or event["actor_kind"] != "user"
+            or isinstance(event["recorded_at_us"], bool)
+            or not isinstance(event["recorded_at_us"], int)
+            or event["recorded_at_us"] != evidence.recorded_at_us
+            or event["occurred_from_us"] is not None
+            or event["occurred_to_us"] is not None
+            or event["temporal_precision"] != "instant"
+            or event["content_text"] != evidence.content
+            or event["payload_json"] != expected_payload
+            or isinstance(event["payload_schema"], bool)
+            or not isinstance(event["payload_schema"], int)
+            or event["payload_schema"] != 1
+            or event["source_origin"] != "canonical_conversation"
+            or event["source_reference"] != source_reference
+            or event["content_sha256"] != expected_hash
+            or event["redaction_state"] != "active"
+            or event["redacted_at_us"] is not None
+        ):
+            return "conflict"
+        return "present"
+
+    def _canonical_replay_state(
+        self,
+        evidence: CanonicalUserEvidence,
+        *,
+        event_id: str,
+        source_reference: str,
+        subject_key: str,
+        claim_content: str,
+        expected_claim_id: str,
+        excerpt_start_cp: int,
+        excerpt_end_cp: int,
+        direct_curator: tuple[str, str, str],
+    ) -> tuple[str, str | None]:
+        """Validate the full proof before treating repeated observation as done.
+
+        The deterministic event UUID alone is not authority: older writers or
+        malformed staged data may already own that UUID with weaker metadata.
+        A linked claim is accepted only when its governed semantics and exact
+        excerpt agree with the immutable canonical resolver result.
+        """
+        event_state = self._canonical_event_state(
+            evidence, event_id=event_id, source_reference=source_reference,
+        )
+        if event_state == "absent":
+            return "absent", None
+        if event_state != "present":
+            return "conflict", None
+
+        rows = self.store.connection.execute(
+            """SELECT c.claim_id, c.claim_type, c.assertion_scope, c.subject_key,
+                      c.content, c.importance, c.confidence, c.valid_from_us,
+                      c.valid_to_us, c.temporal_precision, c.temporal_expression,
+                      c.provenance_state, c.curator_name, c.curator_version,
+                      c.curator_policy_version, c.truth_scope_id,
+                      ce.evidence_role, ce.excerpt_start_cp, ce.excerpt_end_cp,
+                      ce.excerpt_hash, ce.evidence_strength, ce.curator_confidence
+                 FROM claim_evidence ce JOIN claims c
+                   ON c.character_id=ce.character_id AND c.claim_id=ce.claim_id
+                WHERE ce.character_id=? AND ce.event_id=?""",
+            (self.character_id, event_id),
+        ).fetchall()
+        if not rows:
+            return "valid", None
+        if len(rows) != 1:
+            return "conflict", None
+        row = rows[0]
+        expected_excerpt_hash = hashlib.sha256(
+            evidence.content[excerpt_start_cp:excerpt_end_cp].encode("utf-8"),
+        ).hexdigest()
+        direct = str(row["claim_id"]) == expected_claim_id
+        if (
+            row["claim_type"] != DURABLE_CORE_FACT
+            or row["assertion_scope"] != DURABLE_ASSERTION_SCOPE
+            or row["subject_key"] != subject_key
+            or row["content"] != claim_content
+            or row["provenance_state"] != "complete"
+            or row["truth_scope_id"] != evidence.truth_scope_id
+            or isinstance(row["valid_from_us"], bool)
+            or not isinstance(row["valid_from_us"], int)
+            or row["valid_from_us"] > evidence.recorded_at_us
+            or (row["valid_to_us"] is not None and (
+                isinstance(row["valid_to_us"], bool)
+                or not isinstance(row["valid_to_us"], int)
+                or row["valid_to_us"] <= evidence.recorded_at_us
+            ))
+            or row["evidence_role"] != (
+                "direct_user_statement" if direct else "user_confirmation"
+            )
+            or row["excerpt_start_cp"] != excerpt_start_cp
+            or row["excerpt_end_cp"] != excerpt_end_cp
+            or row["excerpt_hash"] != expected_excerpt_hash
+            or row["evidence_strength"] != 1.0
+            or row["curator_confidence"] is not None
+        ):
+            return "conflict", None
+        if direct and (
+            row["importance"] != 5
+            or row["confidence"] is not None
+            or row["valid_from_us"] != evidence.recorded_at_us
+            or row["temporal_precision"] != "unknown"
+            or row["temporal_expression"] is not None
+            or (
+                row["curator_name"], row["curator_version"],
+                row["curator_policy_version"],
+            ) != direct_curator
+        ):
+            return "conflict", None
+        return "replayed", str(row["claim_id"])
+
+    def _canonical_retirement_replay_state(
+        self,
+        evidence: CanonicalUserEvidence,
+        *,
+        event_id: str,
+        source_reference: str,
+        subject_key: str,
+        claim_content: str,
+    ) -> tuple[str, str | None]:
+        """Validate the exact event-to-lifecycle proof for a retirement."""
+        event_state = self._canonical_event_state(
+            evidence, event_id=event_id, source_reference=source_reference,
+        )
+        if event_state == "absent":
+            return "absent", None
+        if event_state != "present":
+            return "conflict", None
+        rows = self.store.connection.execute(
+            """SELECT c.claim_id, c.claim_type, c.assertion_scope,
+                      c.subject_key, c.content, c.provenance_state,
+                      c.valid_from_us, c.valid_to_us, c.truth_scope_id,
+                      s.status, s.reason, s.actor_kind, s.created_at_us
+                 FROM claim_status_events s JOIN claims c
+                   ON c.character_id=s.character_id AND c.claim_id=s.claim_id
+                WHERE s.character_id=? AND s.source_event_id=?""",
+            (self.character_id, event_id),
+        ).fetchall()
+        evidence_links = self.store.connection.execute(
+            "SELECT COUNT(*) FROM claim_evidence WHERE character_id=? AND event_id=?",
+            (self.character_id, event_id),
+        ).fetchone()[0]
+        if len(rows) != 1 or int(evidence_links) != 0:
+            return "conflict", None
+        row = rows[0]
+        if (
+            row["claim_type"] != DURABLE_CORE_FACT
+            or row["assertion_scope"] != DURABLE_ASSERTION_SCOPE
+            or row["subject_key"] != subject_key
+            or row["content"] != claim_content
+            or row["provenance_state"] != "complete"
+            or row["truth_scope_id"] != evidence.truth_scope_id
+            or row["valid_from_us"] is None
+            or int(row["valid_from_us"]) > evidence.recorded_at_us
+            or row["valid_to_us"] != evidence.recorded_at_us
+            or row["status"] != "expired"
+            or row["reason"] != "durable_user_retirement"
+            or row["actor_kind"] != "user"
+            or row["created_at_us"] != evidence.recorded_at_us
+        ):
+            return "conflict", None
+        return "replayed", str(row["claim_id"])
 
     @staticmethod
     def _recent_scoped_user_turns(
@@ -967,6 +1398,7 @@ class MemoryV2ShadowWriter:
         *,
         scope_id: str,
         scope_kind: str,
+        _archive=None,
     ):
         """Load only a bounded contiguous same-scope canonical user window."""
         from continuity_reference import (
@@ -977,7 +1409,8 @@ class MemoryV2ShadowWriter:
         )
 
         try:
-            records = json.loads(Path(conversation_file).read_text(encoding="utf-8"))
+            records = (_archive.for_path(conversation_file) if _archive is not None
+                       else json.loads(Path(conversation_file).read_text(encoding="utf-8")))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return ()
         if not isinstance(records, list) or not 0 <= index <= len(records):
@@ -1012,11 +1445,12 @@ class MemoryV2ShadowWriter:
         return tuple(reversed(selected))
 
     @staticmethod
-    def _matches_persisted_canonical_message(message: dict[str, Any], *, conversation_file: str | Path, index: int) -> bool:
+    def _matches_persisted_canonical_message(message: dict[str, Any], *, conversation_file: str | Path, index: int, _archive=None) -> bool:
         """Confirm the proposal refers to the exact already-saved V1 record."""
         try:
             source = Path(conversation_file)
-            records = json.loads(source.read_text(encoding="utf-8"))
+            records = (_archive.for_path(conversation_file) if _archive is not None
+                       else json.loads(source.read_text(encoding="utf-8")))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return False
         if not isinstance(records, list) or not 0 <= index < len(records):
@@ -1037,6 +1471,7 @@ class MemoryV2ShadowWriter:
         started = time.perf_counter()
         error_kind = None
         strategy = "hybrid_local"
+        health_diagnostics = {}
         mapped_v1_ids = self._map_v1_ids(v1_ids)
         try:
             recent = tuple(
@@ -1045,12 +1480,16 @@ class MemoryV2ShadowWriter:
             )[-8:]
             if recent and recent[-1] == str(query):
                 recent = recent[:-1]
-            v2_ids, strategy, abstention = AdaptiveShadowRetrieval(
+            retrieval = AdaptiveShadowRetrieval(
                 self.store, self._provider(), self._working_recall,
-            ).retrieve(RetrievalQuery(
+            )
+            v2_ids, strategy, abstention = retrieval.retrieve(RetrievalQuery(
                 self.character_id, str(query), datetime.now(timezone.utc).isoformat(), "ordinary", recent
             ))
             v2_ids = list(v2_ids)
+            health_diagnostics = retrieval.last_health.diagnostics()
+            if retrieval.last_health.incomplete:
+                error_kind = str(health_diagnostics["retrieval_error_code"] or "lookup_failed")
         except Exception as error:
             self.last_error = type(error).__name__
             error_kind = self.last_error
@@ -1070,6 +1509,7 @@ class MemoryV2ShadowWriter:
             "v1_abstained": not bool(v1_ids), "v2_abstained": not bool(v2_ids),
             "v2_abstention_reason": abstention, "v2_latency_ms": latency, "error_kind": error_kind,
             "v2_retrieval_strategy": strategy,
+            **health_diagnostics,
         }
 
     def _provider(self):

@@ -484,7 +484,7 @@ def extract_active_state_proposal(
     current = current_activity.value.casefold() if current_activity is not None else ""
     if current == "sleeping" and re.fullmatch(
         r"(?:good\s+morning(?:[,!]\s*)?)?(?:i(?:'m|\s+am)\s+)?awake(?:\s+now)?|"
-        r"good\s+morning|i\s+can(?:not|'t)\s+sleep",
+        r"good\s+morning|hi|hello|hey(?:\s+there)?|i\s+can(?:not|'t)\s+sleep",
         normalized, re.IGNORECASE,
     ):
         return _activity_clear()
@@ -1390,6 +1390,7 @@ def extract_current_continuity(
     *,
     recent_user_turns: tuple[RecentUserTurn, ...] = (),
     _allow_clause_salvage: bool = True,
+    allow_loci: bool = False,
 ) -> CurrentContinuityExtraction:
     active_scope = repository.active_truth_scope(character_id)
     scenario = extract_scenario_transition(content, active_scope=active_scope)
@@ -1451,6 +1452,7 @@ def extract_current_continuity(
         relations=current_relations,
         profile_available=_character_profile_available(repository, character_id),
         reusable_subject_ids=_reusable_scene_subject_ids(repository, character_id),
+        allow_loci=allow_loci,
     )
     if scene_mutation is not None and not scene_mutation.proposed:
         # A bounded ordered correction may intentionally end at the already
@@ -1526,6 +1528,7 @@ def extract_current_continuity(
                 repository, character_id, clause.text,
                 recent_user_turns=recent_user_turns,
                 _allow_clause_salvage=False,
+                allow_loci=allow_loci,
             )
             # Clause salvage is deterministic-only. A malformed neighboring
             # fragment never enters the broader semantic interpreter.
@@ -1901,6 +1904,7 @@ def admit_current_continuity_context(
         or item.facet in relation_facets
         or item.semantic_family in relation_families
         or bool(_tokens(item.cause) & _tokens(query_text))
+        or bool(_tokens(item.locus or "") & _tokens(query_text))
     )[:12]
     relevant_scene_ids = {
         item.cause_subject_id for item in relevant_relations if item.cause_subject_id is not None
@@ -1935,6 +1939,7 @@ def admit_current_continuity_context(
             item.target if item.target_kind == "actor"
             else scene_labels.get(item.target, "current scene subject")
         ), "region": item.facet, "side": item.side,
+        **({"locus": item.locus} if item.locus is not None else {}),
         "relation": item.predicate, "object": item.cause,
         **({"family": item.semantic_family} if item.semantic_family else {}),
         **({"quantity": item.quantity} if item.quantity else {}),

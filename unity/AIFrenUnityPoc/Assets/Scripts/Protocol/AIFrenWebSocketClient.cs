@@ -19,8 +19,8 @@ namespace AIFren.UnityPoc.Protocol
 
     public sealed class AIFrenWebSocketClient : IDisposable
     {
-        private readonly ConcurrentQueue<ServerMessage> receivedMessages =
-            new ConcurrentQueue<ServerMessage>();
+        private readonly ConcurrentQueue<(ClientWebSocket owner, ServerMessage message)> receivedMessages =
+            new ConcurrentQueue<(ClientWebSocket, ServerMessage)>();
         private ClientWebSocket socket;
         private CancellationTokenSource cancellation;
         private Task receiveTask;
@@ -50,7 +50,7 @@ namespace AIFren.UnityPoc.Protocol
             }
             catch (Exception exception)
             {
-                SetError(exception.Message);
+                SetError("Could not connect to the local backend. Use Reconnect or check backend settings.");
             }
         }
 
@@ -71,6 +71,15 @@ namespace AIFren.UnityPoc.Protocol
         public async Task RequestConsoleLogAsync()
         {
             await SendCommandAsync(new ClientCommand { command = "get_console_log" });
+        }
+
+        public async Task RunDevelopmentPresentationQaAsync(string scenario)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "development_presentation_qa",
+                scenario = scenario ?? string.Empty,
+            });
         }
 
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
@@ -233,6 +242,57 @@ namespace AIFren.UnityPoc.Protocol
             });
         }
 
+        public async Task QueryMemoryViewAsync(string requestId, string characterId,
+            string lane, string query, string statusFilter, string scopeFilter,
+            int limit, int offset)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "memory_view_query",
+                request_id = requestId ?? string.Empty,
+                character_id = characterId ?? string.Empty,
+                memory_lane = lane ?? "v1",
+                query = query ?? string.Empty,
+                status_filter = statusFilter ?? "current",
+                scope_filter = scopeFilter ?? "applicable",
+                limit = limit,
+                offset = offset,
+            });
+        }
+
+        public async Task MutateMemoryViewAsync(string requestId, string commandId,
+            string characterId, string action, string recordId, string content,
+            string category, int importance)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "memory_view_mutate",
+                request_id = requestId ?? string.Empty,
+                command_id = commandId ?? string.Empty,
+                character_id = characterId ?? string.Empty,
+                action = action ?? string.Empty,
+                record_id = recordId ?? string.Empty,
+                content = content ?? string.Empty,
+                category = category ?? string.Empty,
+                importance = importance,
+            });
+        }
+
+        public async Task QueryMemoryViewDetailAsync(string requestId, string characterId,
+            string lane, string recordId, int limit = 8, int offset = 0)
+        {
+            await SendCommandAsync(new ClientCommand
+            {
+                command = "memory_view_detail",
+                request_id = requestId ?? string.Empty,
+                character_id = characterId ?? string.Empty,
+                memory_lane = lane ?? string.Empty,
+                record_id = recordId ?? string.Empty,
+                limit = limit,
+                offset = offset,
+            });
+        }
+
         public async Task SetLocalAutoStartAsync(bool enabled)
         {
             await SendCommandAsync(new ClientCommand { command = "set_local_auto_start", local_auto_start = enabled });
@@ -264,7 +324,13 @@ namespace AIFren.UnityPoc.Protocol
 
         public bool TryDequeue(out ServerMessage message)
         {
-            return receivedMessages.TryDequeue(out message);
+            // A cancelled receive may finish after reconnect. Retain the actual
+            // socket identity on every queued message; equal endpoints are not
+            // ownership. Main-thread presentation never sees retired packets.
+            while (receivedMessages.TryDequeue(out var received))
+                if (ReferenceEquals(received.owner, socket) && socket != null)
+                { message = received.message; return true; }
+            message = null; return false;
         }
 
         public async Task DisconnectAsync()
@@ -354,13 +420,15 @@ namespace AIFren.UnityPoc.Protocol
             }
             catch (Exception exception)
             {
-                SetError(exception.Message);
+                SetError("Could not send to the local backend. Reconnect and try again.");
             }
             finally
             {
                 sendLock.Release();
             }
         }
+
+        internal void EnqueueReceived(ClientWebSocket owner, ServerMessage message) => receivedMessages.Enqueue((owner, message));
 
         private async Task ReceiveLoopAsync(ClientWebSocket activeSocket, CancellationToken token)
         {
@@ -383,11 +451,12 @@ namespace AIFren.UnityPoc.Protocol
 
                             if (result.MessageType == WebSocketMessageType.Close)
                             {
-                                State = ConnectionState.Disconnected;
-                                LastDisconnectReason = string.IsNullOrWhiteSpace(result.CloseStatusDescription)
-                                    ? "Backend closed the local connection."
-                                    : result.CloseStatusDescription;
-                                Debug.LogWarning("[AIFren Transport] " + LastDisconnectReason);
+                                if (ReferenceEquals(activeSocket, socket) && !token.IsCancellationRequested)
+                                {
+                                    State = ConnectionState.Disconnected;
+                                    LastDisconnectReason = "Backend closed the local connection.";
+                                    Debug.LogWarning("[AIFren Transport] " + LastDisconnectReason);
+                                }
                                 return;
                             }
 
@@ -396,7 +465,7 @@ namespace AIFren.UnityPoc.Protocol
                         while (!result.EndOfMessage);
 
                         string json = Encoding.UTF8.GetString(stream.ToArray());
-                        receivedMessages.Enqueue(AIFrenProtocol.ParseServerMessage(json));
+                        EnqueueReceived(activeSocket, AIFrenProtocol.ParseServerMessage(json));
                     }
                 }
             }
@@ -406,7 +475,8 @@ namespace AIFren.UnityPoc.Protocol
             }
             catch (Exception exception)
             {
-                SetError(exception.Message);
+                if (ReferenceEquals(activeSocket, socket) && !token.IsCancellationRequested)
+                    SetError("The local backend connection was interrupted. Use Reconnect.");
             }
         }
 

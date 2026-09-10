@@ -1,3 +1,4 @@
+using PlayerPrefs = AIFren.UnityPoc.PresentationPreferences;
 using AIFren.UnityPoc.Avatar;
 using NUnit.Framework;
 using UnityEngine;

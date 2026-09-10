@@ -1,15 +1,31 @@
 import unittest
 import uuid
 
+from benchmarks.memory_v2.fixtures import build_core_fixture
 from memory_v2_store import MemoryV2Store, RetrievalLimits, SemanticRetrievalV2
-from tests.memory_v2_test_data import build_retrieval_fixture, import_retrieval_fixture
+from memory_v2_store.importer import import_fixture
+from memory_v2_store.retrieval import (
+    _has_asserted_event_mismatch,
+    _has_explicit_attribute_mismatch,
+    _has_possessive_role_mismatch,
+    _tokens,
+)
+
+
+class _FixedSemanticRows(SemanticRetrievalV2):
+    def __init__(self, store, rows):
+        self._rows = list(rows)
+        super().__init__(store)
+
+    def _semantic_rows(self, _query, _text, _truth_scope_id):
+        return list(self._rows)
 
 
 class SemanticRetrievalV2Tests(unittest.TestCase):
     def setUp(self):
-        self.fixture = build_retrieval_fixture()
+        self.fixture = build_core_fixture()
         self.store = MemoryV2Store()
-        self.character_map = import_retrieval_fixture(self.store, self.fixture)
+        self.character_map = import_fixture(self.store, self.fixture)
         self.retriever = SemanticRetrievalV2(self.store)
 
     def tearDown(self):
@@ -37,43 +53,99 @@ class SemanticRetrievalV2Tests(unittest.TestCase):
         self.assertFalse(self.store.fts_is_current())
         self.assertGreater(self.store.ensure_fts(), 0)
         self.assertTrue(self.store.fts_is_current())
-        self.store.connection.execute("UPDATE claims SET content = content || ' drift' WHERE claim_id = 'alpha-n64'")
+        self.store.connection.execute("UPDATE claims SET content = content || ' drift' WHERE claim_id = 'lyra-n64'")
         self.assertFalse(self.store.fts_is_current())
 
     def test_fts_parser_safety_and_exact_identifier_lane(self):
         outcome = self.retrieve("identifier")
-        self.assertEqual(outcome.claim_ids[0], "alpha-n64-serial")
+        self.assertEqual(outcome.claim_ids[0], "lyra-n64-serial")
         safe = self.retrieve("fts-punctuation-safety")
         self.assertIsInstance(safe.claim_ids, tuple)
-        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM claims").fetchone()[0], len(self.fixture.claims))
+        self.assertEqual(self.store.connection.execute("SELECT count(*) FROM claims").fetchone()[0], 24)
 
     def test_unambiguous_alias_and_case_collision_remain_conservative(self):
-        self.assertEqual(self.retrieve("alias").claim_ids[0], "alpha-n64")
+        self.assertEqual(self.retrieve("alias").claim_ids[0], "lyra-n64")
         person = self.retrieve("case-collision-person")
-        self.assertEqual(person.claim_ids, ("alpha-rose-person",))
+        self.assertEqual(person.claim_ids, ("lyra-rose-person",))
 
     def test_character_status_and_historical_filtering(self):
-        self.assertEqual(self.retrieve("beta-location-isolation").claim_ids, ("beta-skyhaven",))
-        self.assertEqual(self.retrieve("current-tea").claim_ids, ("alpha-tea-green",))
-        self.assertEqual(self.retrieve("historical-tea").claim_ids, ("alpha-tea-red",))
-        self.assertEqual(self.retrieve("cancelled-plan").claim_ids, ("alpha-hike-cancelled",))
+        self.assertEqual(self.retrieve("mira-location-isolation").claim_ids, ("mira-skyhaven",))
+        self.assertEqual(self.retrieve("current-tea").claim_ids, ("lyra-tea-green",))
+        self.assertEqual(self.retrieve("historical-tea").claim_ids, ("lyra-tea-red",))
+        self.assertEqual(self.retrieve("cancelled-plan").claim_ids, ("lyra-hike-cancelled",))
 
     def test_abstention_and_irrelevant_high_importance(self):
         unrelated = self.retrieve("unrelated-guitar")
         self.assertEqual(unrelated.claim_ids, ())
         self.assertIsNotNone(unrelated.abstention_reason)
         tea = self.retrieve("irrelevant-high-importance")
-        self.assertIn("alpha-tea-green", tea.claim_ids)
-        self.assertNotIn("alpha-passport-manual", tea.claim_ids)
+        self.assertIn("lyra-tea-green", tea.claim_ids)
+        self.assertNotIn("lyra-passport-manual", tea.claim_ids)
+
+    def test_explicit_attribute_mismatch_abstains(self):
+        character = self.character_map["lyra"]
+        _, template = self.query("alias")
+        outcome = self.retriever.retrieve(type(template)(
+            character, "What color is my Nintendo 64?", template.at, "ordinary", (),
+        ))
+        self.assertEqual((), outcome.claim_ids)
+        trace = next(value for value in outcome.traces if value.claim_id == "lyra-n64")
+        self.assertEqual("explicit_attribute_mismatch", trace.exclusion_reason)
+
+    def test_attribute_relation_agreement_allows_implicit_value_wording(self):
+        query = _tokens("What color collar does Pesto wear?")
+        content = set(_tokens("Pesto wears a violet collar."))
+        self.assertFalse(_has_explicit_attribute_mismatch(query, content))
+        self.assertTrue(_has_explicit_attribute_mismatch(
+            _tokens("What color is my Nintendo 64?"),
+            set(_tokens("The user owns a Nintendo 64 console.")),
+        ))
+
+    def test_asserted_action_and_possessive_role_require_relation_support(self):
+        self.assertTrue(_has_asserted_event_mismatch(
+            "Which telescope did I buy?", "The user discussed a telescope guide.",
+        ))
+        self.assertFalse(_has_asserted_event_mismatch(
+            "Which telescope did I buy?", "The user bought a compact telescope.",
+        ))
+        self.assertFalse(_has_asserted_event_mismatch(
+            "Why did I move from Oslo?", "The user moved from Oslo in spring.",
+        ))
+        self.assertTrue(_has_possessive_role_mismatch(
+            "Who is my dentist?", set(_tokens("The user owns a dental history book.")),
+        ))
+        self.assertFalse(_has_possessive_role_mismatch(
+            "Who was my instructor?", set(_tokens("Jun Aras was the user's instructor.")),
+        ))
+
+    def test_rank_one_compacted_episode_has_narrow_paraphrase_floor(self):
+        character = str(uuid.uuid4())
+        self.store.create_character(character, "Paraphrase synthetic")
+        self.store.add_event(character, "episode-source", 1, content_text="A ferry delayed dessert.")
+        self.store.add_claim(
+            character, "episode", claim_type="shared_episode",
+            assertion_scope="shared_episode",
+            content="A delayed ferry made the user serve lemon cake on the harbor steps.",
+            provenance_state="complete",
+        )
+        self.store.attach_evidence(character, "episode", "episode-source")
+        outcome = _FixedSemanticRows(self.store, (("episode", 0.53),)).retrieve(
+            type(self.query("alias")[1])(
+                character,
+                "Where was dessert finally eaten because the boat was late?",
+                "2032-01-01T00:00:00+00:00",
+            )
+        )
+        self.assertEqual(("episode",), outcome.claim_ids)
 
     def test_visible_and_recent_suppression_with_explicit_repeat_override(self):
         self.assertEqual(self.retrieve("recent-visible-duplicate").claim_ids, ())
         normal_case, normal_query = self.query("explicit-repeat-override")
         normal_query = type(normal_query)(normal_query.character_id, normal_query.current_user_text, normal_query.at, "ordinary", normal_query.recent_user_turns)
-        normal = self.retriever.retrieve(normal_query, recently_used_claim_ids=("alpha-pizza-joke",))
+        normal = self.retriever.retrieve(normal_query, recently_used_claim_ids=("lyra-pizza-joke",))
         self.assertEqual(normal.claim_ids, ())
         explicit = self.retrieve("explicit-repeat-override")
-        self.assertIn("alpha-pizza-joke", explicit.claim_ids)
+        self.assertIn("lyra-pizza-joke", explicit.claim_ids)
 
     def test_hard_caps_dedup_typed_output_and_trace_completeness(self):
         case, query = self.query("channel-dominance")
