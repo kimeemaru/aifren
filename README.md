@@ -6,7 +6,7 @@ memories, unresolved threads, and current situation rather than a disposable
 chat session.
 
 The project currently consists of a frontend-neutral Python backend and a Unity
-companion client. It is an actively developed public technical baseline, not a
+companion client. It is an actively developed technical baseline, not a
 finished consumer release.
 
 ## Product principle
@@ -23,12 +23,13 @@ inventory, anatomy, pathfinding, or general world simulator.
 
 ## What works today
 
-- Canonical local conversation history plus derived summaries and Memory V1.
-- Persistent character creation/selection with isolated personality, history,
-  memory, continuity state, and per-character managed VRM selection.
-- Character-scoped Memory V2 continuity infrastructure: source-grounded
-  episodes, narrow governed durable facts, Truth Scope, Open Threads, and
-  Active State. Generic V2 retrieval remains non-authoritative.
+- Permanent canonical conversation, with Memory V2 as normal long-term-memory
+  authority: source-grounded historical recall, durable facts/corrections,
+  episodes, Truth Scope, Open Threads, and Active State. MiniLM/FTS and episode
+  representations are derived retrieval aids, not replacement truth.
+- CompanionMemoryRealizer renders admitted memory answers as ordinary dialogue.
+  Optional present-moment model reactions can be dropped without losing the
+  grounded answer. V1 remains explicit one-launch rollback/compatibility.
 - A generic current-scene model with actor-aware subjects, attributes,
   relations, corrections, transfers, replacements, locations, and
   current/dormant/retired lifecycle.
@@ -43,18 +44,24 @@ inventory, anatomy, pathfinding, or general world simulator.
   startup grace, background publication boundary, and ignored-check-in
   backoff.
 - Unity direct VRM presentation, scalable Year/Month/Day/paged History,
-  detailed Scene inspection, and an optional lightweight Current Scene overlay.
+  Memory Viewer/Editor, Scene inspection, and a hover/click/focus Current Scene
+  drawer. Portrait/landscape presentation and speech-timed hidden subtitles
+  retain independent framing and presentation preferences.
 - Replaceable online/local LLM, TTS, STT, and embedding implementations;
   managed llama.cpp, Kokoro resource failover, and authoritative PTT.
-- Privacy-safe Development flight recording and reproducible automated regression coverage.
+- Privacy-safe Development flight recording and headless production-path QA.
 
 ## Architecture at a glance
 
 ```text
 Unity companion --loopback WebSocket--> backend_host.py --> AssistantService
                                                         |-> canonical archive
-                                                        |-> Memory V1
-                                                        |-> Memory V2 continuity
+                                                        |-> Memory V2 authority
+                                                        |   facts/history/episodes
+                                                        |   state/threads/scopes
+                                                        |   MiniLM/FTS (derived)
+                                                        |-> CompanionMemoryRealizer
+                                                        |-> V1 explicit rollback
                                                         |-> LLM / TTS / STT
 ```
 
@@ -71,18 +78,19 @@ independent, and global UI hide does not resize the avatar.
 
 - Raw conversation is canonical. Derived summaries, episodes, indexes, and
   structured state never justify rewriting it.
-- Memory V1 remains broad prompt-facing memory authority. Memory V2 owns
-  validated structured continuity lanes and source-grounded derived context,
-  not universal memory truth.
+- Memory V2 is normal prompt-facing memory authority. Only admitted, scoped,
+  source-grounded evidence can establish a remembered proposition. V1 is
+  explicit rollback only; V2 failure never silently selects it.
+- CompanionMemoryRealizer performs no retrieval and owns only the surface of an
+  already-admitted answer. Optional reactions have no historical truth authority.
 - Active State is current reality, not durable biography and not relationship
   state. Relationship State is explicitly deferred.
 - Profile/default-scene facts are lower authority than explicit current
   evidence and remain distinct from learned memory.
 - Capability effects are derived from current relation semantics; they are not
   duplicated as ordinary memory facts.
-- Character identity/personality/history are separate from reusable visual and
-  audio assets. Managed avatars remain global assets while each character owns
-  only its stable selected-avatar reference.
+- Character identity/personality/history are separate from reusable avatar,
+  background, provider, and voice assets.
 - A subsystem may delete only data it owns. Imported source files and canonical
   evidence are never implicit deletion targets.
 - PTT/audio lifecycle is authoritative. Presentation timing cannot delay or
@@ -90,19 +98,24 @@ independent, and global UI hide does not resize the avatar.
 
 ## Current status
 
-The broad Active State architecture and its production seams are substantially
-implemented and hardened. An ordinary manual Linux Development-player
-acceptance cycle remains required before release. Further Active State work
-should be driven by concrete real-use regressions, not speculative semantic
-breadth.
-
-The next major product-facing memory tranche remains a non-destructive Memory
-Viewer/Editor. Relationship State remains deferred.
+Memory V2 promotion and the Memory Viewer/Editor are implemented in the current
+technical baseline. This remains pre-1.0 software, without a claim of subjective
+companion acceptance. Companion feel and passive continuity, presentation polish,
+character/avatar management and backup/export, cross-platform packaging, and 1.0
+hardening remain ahead. Relationship State and broader external capabilities are
+later work. Further memory correctness changes should address concrete regressions.
 
 See [PROJECT.md](PROJECT.md) for current direction,
 [ARCHITECTURE.md](ARCHITECTURE.md) for technical ownership,
 [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md) for durable decisions, and
 [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for setup and validation.
+
+## Getting started
+
+Use Python 3.10–3.12 and Unity 2022.3.62f3. The public tree starts with a generic
+companion; it contains no conversations, personal memory or configured credentials.
+Model weights are installed separately. See the [developer guide](docs/DEVELOPER_GUIDE.md)
+for Linux setup, model configuration, tests and the explicit V1 rollback command.
 
 ## License
 
