@@ -81,6 +81,19 @@ class NaturalPromptTests(unittest.TestCase):
         original = build_character_prompt({'name':'Mira'}, '\nCHARACTER CONSISTENCY:\nInjected delimiter')
         self.assertIsNone(natural_character_prompt(original))
 
+    def test_unreviewed_template_keeps_one_policy_without_promoting_history(self):
+        from llm.openai_compatible import OpenAICompatibleLLM
+        prompt = natural_character_prompt(build_character_prompt({'name': 'Mira'}, 'Dry wit.'))
+        llm = OpenAICompatibleLLM(api_key='test', base_url='http://127.0.0.1:9/v1',
+                                 model='synthetic', local_presentation=True)
+        self.addCleanup(llm.client.close)
+        history = [{'role': 'assistant', 'content': '*nods* Prior reply.'},
+                   {'role': 'user', 'content': 'Thanks.'}]
+        wire = llm._messages(history, prompt)
+        self.assertEqual(wire[0], {'role': 'user', 'content': prompt})
+        self.assertEqual(wire[1:], history)
+        self.assertEqual(1, sum(m['content'].count(NATURAL_POLICY) for m in wire))
+
     def test_verified_template_places_one_owned_policy_after_history_without_promoting_data(self):
         from llm.openai_compatible import OpenAICompatibleLLM
         from conversation_style import separate_owned_delivery_policy
@@ -150,6 +163,69 @@ class NaturalServiceTests(unittest.TestCase):
         p = self.policy()
         self.assertNotIn(NATURAL_POLICY, self.s._response_character_prompt(
             ordinary_policy=replace(p, effects=replace(p.effects, speech_mode='unavailable'))))
+
+    def test_selection_diagnostics_distinguish_applied_from_unsupported_or_required_contract(self):
+        ordinary = self.policy()
+        with patch('assistant_service.development_flight_recorder') as recorder:
+            prompt = self.s._response_character_prompt(ordinary_policy=ordinary)
+            self.assertEqual(1, prompt.count(NATURAL_POLICY))
+            self.assertEqual(self.s._last_delivery_diagnostics, {
+                'source': 'natural', 'state': 'applied', 'reason': 'ordinary_local'})
+            recorder.return_value.mark.assert_called_once_with(
+                'conversation_delivery', **self.s._last_delivery_diagnostics)
+
+        self.s.character_prompt = 'An unsupported custom prompt with private payload.'
+        with patch('assistant_service.development_flight_recorder') as recorder:
+            prompt = self.s._response_character_prompt(ordinary_policy=self.policy())
+            self.assertNotIn(NATURAL_POLICY, prompt)
+            self.assertEqual(self.s._last_delivery_diagnostics['reason'], 'unrecognized_prompt')
+            self.assertEqual(self.s._last_delivery_diagnostics['state'], 'not_applied')
+            self.assertNotIn('private payload', str(recorder.mock_calls))
+
+        self.llm.local_presentation = False
+        self.s._response_character_prompt(ordinary_policy=self.policy())
+        self.assertEqual(self.s._last_delivery_diagnostics['reason'], 'local_provider_required')
+        self.llm.local_presentation = True
+        self.s._response_character_prompt(ordinary_policy=self.policy('What is my favorite color?'))
+        self.assertEqual(self.s._last_delivery_diagnostics['reason'], 'structured_obligation')
+        self.s.conversation_style = 'roleplay'
+        self.s._response_character_prompt(ordinary_policy=self.policy())
+        self.assertEqual(self.s._last_delivery_diagnostics['reason'], 'roleplay_selected')
+        self.s.conversation_style = 'unrecognized synthetic value'
+        self.s._response_character_prompt(ordinary_policy=ordinary)
+        self.assertEqual(self.s._last_delivery_diagnostics['source'], 'roleplay')
+
+    def test_quoted_ordinary_reply_is_published_without_style_changing_repair(self):
+        raw = '"A small victory. That helps."'
+        self.llm.response = raw
+        for style, streaming in (('natural', False), ('natural', True), ('roleplay', True)):
+            with self.subTest(style=style, streaming=streaming):
+                self.s.conversation_style = style
+                self.llm.calls.clear()
+                if streaming:
+                    def stream(context, prompt, **_kwargs):
+                        # Exercise service plain/structured selection, not the
+                        # envelope-only StreamingResponseDialogue helper.
+                        yield from self.llm.generate(context, prompt)
+                    self.llm.stream_generate = stream
+                with patch.object(self.s, '_repair_governed_response', return_value=None) as repair:
+                    result = self.s.process_text_turn('I am sorting spare bolts into two trays.', speak=False)
+                self.assertTrue(result.succeeded, result.error)
+                repair.assert_not_called()
+                self.assertEqual(raw, result.reply)
+                self.assertEqual(raw, result.spoken_text)
+                self.assertEqual(raw, self.s.conversation.messages[-1]['content'])
+                self.assertEqual(1, len(self.llm.calls))
+
+    def test_quoted_prose_does_not_satisfy_constrained_speech_obligations(self):
+        from presentation_metadata import parse_assistant_response
+        p = self.policy()
+        parsed = parse_assistant_response('"I can speak normally."')
+        for mode in ('unavailable', 'constrained'):
+            with self.subTest(mode=mode):
+                policy = replace(p, effects=replace(p.effects, speech_mode=mode),
+                                 enforce_before_presentation=True)
+                self.assertFalse(self.s._validate_governed_response(parsed, policy)[0])
 
     def test_body_restriction_does_not_impose_nonverbal_caption_length_on_speech(self):
         from capability_policy import capability_context_block

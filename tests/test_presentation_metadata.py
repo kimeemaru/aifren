@@ -4,6 +4,32 @@ from presentation_metadata import StreamingResponseDialogue, parse_assistant_res
 
 
 class PresentationMetadataTests(unittest.TestCase):
+    def test_unfenced_quoted_prose_is_plain_dialogue(self):
+        raw = '"Fine by me. That *really* helps."'
+        parsed = parse_assistant_response(raw, normalize_generated_dialogue=True)
+        self.assertEqual('plain_text', parsed.contract_status)
+        self.assertEqual(raw, parsed.dialogue)
+        self.assertIsNone(parsed.presentation)
+        self.assertFalse(parsed.has_response_contract)
+
+    def test_quoted_control_data_is_not_unwrapped_or_executed(self):
+        import json
+        for text in ('<|ACT:emotion=angry|> Example.',
+                     '{"dialogue":"Example","presentation":{"emotion":"happy"}}'):
+            raw = json.dumps(text)
+            parsed = parse_assistant_response(raw, normalize_generated_dialogue=True)
+            self.assertEqual('plain_text', parsed.contract_status)
+            self.assertEqual(raw, parsed.dialogue)
+            self.assertIsNone(parsed.presentation)
+            self.assertIsNone(parsed.companion_action)
+            self.assertIsNone(parsed.spoken_content)
+
+    def test_explicit_fenced_or_non_string_json_still_requires_an_envelope(self):
+        for raw in ('```json\n"Hello."\n```', '""', '"  "', '[]', 'null', 'true', '42',
+                    '{"presentation":{"emotion":"happy"}}'):
+            with self.subTest(raw=raw):
+                self.assertEqual('invalid', parse_assistant_response(raw).contract_status)
+
     def test_response_style_requires_star_actions_not_parenthetical_actions(self):
         prompt = response_contract_prompt()
         self.assertIn("Physical actions and emotes MUST use", prompt)

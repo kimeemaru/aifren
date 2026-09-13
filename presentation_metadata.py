@@ -301,6 +301,15 @@ def parse_assistant_response(
             contract_status="malformed" if raw.lstrip().startswith("{") else "plain_text",
             failure_category="json_parse" if raw.lstrip().startswith("{") else None,
         )
+    if isinstance(envelope, str) and envelope.strip() and candidate == raw.strip():
+        # Unfenced quoted speech is ordinary dialogue, even when it happens
+        # to be a valid JSON string. Keep its quotation/escapes as data; do
+        # not unwrap and recursively execute an inner envelope or ACT marker.
+        # Explicit JSON fences and other non-object JSON remain invalid.
+        dialogue = sanitize_assistant_output_unicode(raw.strip())
+        if normalize_generated_dialogue:
+            dialogue = normalize_generated_dialogue_actions(dialogue)
+        return ParsedAssistantResponse(dialogue=dialogue, contract_status="plain_text")
     if not isinstance(envelope, dict) or not isinstance(envelope.get("dialogue"), str):
         return ParsedAssistantResponse(
             dialogue=raw, contract_status="invalid", failure_category="missing_dialogue",

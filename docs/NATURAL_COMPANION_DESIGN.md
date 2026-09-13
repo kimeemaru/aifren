@@ -83,6 +83,19 @@ retain their existing paths. Unknown custom prompt shapes fail closed to the
 established contract. ACT, when selected, remains optional; Natural mode does not
 activate the earlier lean experiment or remove structured infrastructure.
 
+Development recording distinguishes selection from application with the bounded
+`conversation_delivery` event: `source` is the selected style, `state` reports
+`applied` or `not_applied`, and `reason` distinguishes ordinary local delivery,
+structured obligations, a nonlocal provider, an unrecognized custom prompt, or
+Roleplay selection. It records no personality, request or reply text. A saved
+Natural preference alone is not proof that a governed/constrained reply used it.
+
+Nonempty, unfenced quoted prose remains plain dialogue even when JSON decoding
+recognizes a string. Quotation and escapes stay literal data; an inner envelope or
+ACT example is never executed. This avoids an unnecessary repair inference that
+could replace ordinary wording with narrated prose. Explicit JSON fences and
+invalid envelopes retain their checks, as do capability and memory validators.
+
 The complete selected policy enters the existing Context Governor before final
 budget verification. There is no new context allocation or hidden unbudgeted
 style message. Historical roleplay remains unchanged historical data, with no
@@ -103,7 +116,11 @@ quantization.
 
 Style is guidance, not guaranteed acting. A persona and its historical examples
 can still strongly influence prose. A shorter prompt or correct role does not by
-itself prove a conversational improvement.
+itself prove a conversational improvement. A further bounded wording comparison
+increased narration/questions and introduced unsupported personal detail; that
+candidate was rejected. The retained policy still permits excessive elaboration
+and questions in genuine use. The quoted-prose repair is a specific admission fix,
+not evidence of a general improvement in model acting or factual reliability.
 
 ## Governed memory and present commentary
 

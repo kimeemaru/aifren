@@ -2399,18 +2399,26 @@ class AssistantService:
                 and effects.posture_mode in {None, "sitting", "standing"})
 
     def _response_character_prompt(self, *, ordinary_policy: _ResponsePolicy | None = None) -> str:
-        if (self.conversation_style == "natural"
-                and getattr(self.llm, "local_presentation", False) is True
+        delivery = {"source": "natural" if self.conversation_style == "natural" else "roleplay",
+                    "state": "not_applied",
+                    "reason": "roleplay_selected"}
+        if self.conversation_style == "natural":
+            local = getattr(self.llm, "local_presentation", False) is True
+            eligible = self._ordinary_text_eligible(
+                ordinary_policy, allow_completed_state_update=True)
+            delivery["reason"] = "local_provider_required" if not local else "structured_obligation"
+            if local and eligible:
                 # A completed backend-owned update alone is not a request for
                 # structured model output. Keep every actual machine/memory/
                 # capability obligation in the shared gate; ACT/lean retain
                 # their stricter no-mutation eligibility.
-                and self._ordinary_text_eligible(ordinary_policy,
-                                                allow_completed_state_update=True)):
-            from conversation_style import natural_character_prompt
-            prompt = natural_character_prompt(self.character_prompt, act=self._act_eligible(ordinary_policy))
-            if prompt is not None:
-                return prompt
+                from conversation_style import natural_character_prompt
+                prompt = natural_character_prompt(self.character_prompt, act=self._act_eligible(ordinary_policy))
+                if prompt is not None:
+                    self._record_delivery_selection({**delivery, "state": "applied", "reason": "ordinary_local"})
+                    return prompt
+                delivery["reason"] = "unrecognized_prompt"
+        self._record_delivery_selection(delivery)
         if self._act_eligible(ordinary_policy):
             from act_presentation import act_character_prompt
             return act_character_prompt(self.character_prompt) + "\n\n" + response_expression_context(
@@ -2423,6 +2431,12 @@ class AssistantService:
         return self.character_prompt + "\n\n" + response_expression_context(
             self._current_expression_request(),
         )
+
+    def _record_delivery_selection(self, diagnostics: dict[str, str]) -> None:
+        # Closed application labels only. Selecting a preference is distinct
+        # from applying it; custom/structured paths must not pretend otherwise.
+        self._last_delivery_diagnostics = diagnostics
+        development_flight_recorder().mark("conversation_delivery", **diagnostics)
 
     def _context_prompt_parts(self, ordinary_policy, companion_context):
         from context_governor import ContextPlanItem, governor_enabled
