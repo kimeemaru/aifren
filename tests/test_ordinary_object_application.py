@@ -6,12 +6,12 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from assistant import build_character_prompt
-from conversation_style import NATURAL_POLICY
-from current_continuity import extract_current_continuity
-from model_settings import set_companion_preferences
-from memory_v2_store.active_state_contract import scene_state_subject_key
-from memory_v2_store.store import StoreError
+from aifren.assistant import build_character_prompt
+from aifren.dialogue.conversation_style import NATURAL_POLICY
+from aifren.state.current_continuity import extract_current_continuity
+from aifren.runtime.model_settings import set_companion_preferences
+from aifren.memory_v2_store.active_state_contract import scene_state_subject_key
+from aifren.memory_v2_store.store import StoreError
 import test_v2_runtime_recovery as recovery
 
 

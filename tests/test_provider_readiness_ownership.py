@@ -11,10 +11,10 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from backend_host import AIFrenWebSocketHost
+from aifren.backend_host import AIFrenWebSocketHost
 from benchmarks.active_state.production_session import ProductionSession, response_envelope
-import model_settings
-from local_model_runtime import LocalModelRuntime
+from aifren.runtime import model_settings
+from aifren.runtime.local_model_runtime import LocalModelRuntime
 import test_local_model_runtime as runtime_fixture
 
 
@@ -114,7 +114,7 @@ class ProviderReadinessOwnershipTests(unittest.IsolatedAsyncioTestCase):
             self.created.append(value)
             return value
 
-        factory = patch("llm.llm.create_llm", side_effect=provider)
+        factory = patch('aifren.llm.llm.create_llm', side_effect=provider)
         factory.start()
         self.addCleanup(factory.stop)
         await self.host.start()
@@ -324,7 +324,7 @@ class ProviderReadinessOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_online_inventory_probe_cannot_change_selected_provider_health(self):
         replacement = await self.online()
         before = self.host._model_snapshot()
-        with patch("llm.llm.discover_local_models", side_effect=RuntimeError("fake-secret")):
+        with patch('aifren.llm.llm.discover_local_models', side_effect=RuntimeError("fake-secret")):
             await self.command("discover_local_models", local_endpoint="http://127.0.0.1:8001/v1")
         self.assertIs(replacement, self.service.llm)
         self.assertEqual(before, self.host._model_snapshot())
@@ -449,7 +449,7 @@ class ProviderReadinessOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_current_adapter_install_failure_reports_safe_unavailable_status(self):
         self.runtime.result = "ready"
         task = await self.local_start()
-        with patch("llm.llm.create_llm", side_effect=RuntimeError("fake-secret /synthetic-private-path")):
+        with patch('aifren.llm.llm.create_llm', side_effect=RuntimeError("fake-secret /synthetic-private-path")):
             self.runtime.release.set()
             await asyncio.wait_for(task, 3)
         snapshot = self.host._model_snapshot()

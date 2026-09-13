@@ -9,10 +9,10 @@ import tempfile
 import unittest
 import uuid
 
-from continuity_intent import interpret_continuity_intents
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
-from memory_v2_store.repository import ActiveStateRecord, OpenThreadRecord, TruthScopeRecord
+from aifren.state.continuity_intent import interpret_continuity_intents
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
+from aifren.memory_v2_store.repository import ActiveStateRecord, OpenThreadRecord, TruthScopeRecord
 
 
 def _scope(kind: str, label: str, identifier: str) -> TruthScopeRecord:

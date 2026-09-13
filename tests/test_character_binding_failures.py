@@ -9,9 +9,9 @@ import unittest
 from unittest.mock import Mock, patch
 import uuid
 
-from assistant_service import AssistantEvent
-from backend_host import AIFrenWebSocketHost
-from character_registry import CharacterRegistry
+from aifren.assistant_service import AssistantEvent
+from aifren.backend_host import AIFrenWebSocketHost
+from aifren.character.character_registry import CharacterRegistry
 import test_character_switch_ownership as ownership_fixture
 from test_websocket_transport import FakeService
 
@@ -235,7 +235,7 @@ class CharacterBindingFailureServiceTests(unittest.TestCase):
                 outcomes.append(callbacks["transcription"]("Hello from the retired capture."))
             except Exception as error:
                 outcomes.append(error)
-        with patch.object(self.service, "interaction_policy", side_effect=delayed_policy):
+        with patch.object(self.service, 'interaction_policy', side_effect=delayed_policy):
             worker = threading.Thread(target=old_capture)
             worker.start()
             try:

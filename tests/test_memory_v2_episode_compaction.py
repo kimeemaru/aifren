@@ -7,9 +7,9 @@ import threading
 import unittest
 import uuid
 
-from conversation.conversation import Conversation
-from conversation.truth_scope import parse_canonical_truth_scope
-from memory_v2_episode_compaction import (
+from aifren.conversation.conversation import Conversation
+from aifren.conversation.truth_scope import parse_canonical_truth_scope
+from aifren.continuity.memory_v2_episode_compaction import (
     COMPACTION_VERSION,
     CONTINUITY_ANCHOR_VERSION,
     GENERATOR_VERSION,
@@ -37,7 +37,7 @@ from memory_v2_episode_compaction import (
     _single_retrieval_key_is_entity_like,
     _source_span_directly_supports_performed_activity,
 )
-from memory_v2_store import MemoryV2Store
+from aifren.memory_v2_store import MemoryV2Store
 
 
 def message(role, content, index):

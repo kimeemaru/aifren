@@ -2,8 +2,8 @@ import tempfile
 import unittest
 
 from benchmarks.memory_v2.fixtures import build_core_fixture
-from memory_v2_store import EmbeddingLifecycle, HnswClaimIndex, MemoryV2Store
-from memory_v2_store.importer import import_fixture
+from aifren.memory_v2_store import EmbeddingLifecycle, HnswClaimIndex, MemoryV2Store
+from aifren.memory_v2_store.importer import import_fixture
 from tests.test_memory_v2_embeddings import ToyEmbeddingProvider
 
 

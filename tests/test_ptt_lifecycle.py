@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from stt.voice import VoiceInput
-from voice.ptt import PushToTalk
+from aifren.stt.voice import VoiceInput
+from aifren.voice.ptt import PushToTalk
 
 
 class PushToTalkLifecycleTests(unittest.TestCase):
@@ -47,7 +47,7 @@ class PushToTalkLifecycleTests(unittest.TestCase):
             def stop():
                 return None
 
-        with patch("voice.ptt.development_flight_recorder", return_value=Recorder()):
+        with patch('aifren.voice.ptt.development_flight_recorder', return_value=Recorder()):
             ptt = PushToTalk(
                 Voice(), Tts(), lambda _text: transcribed.set(),
                 on_tts_interrupt=lambda: None, listen_globally=False,
@@ -107,7 +107,7 @@ class PushToTalkLifecycleTests(unittest.TestCase):
         voice = object.__new__(VoiceInput)
         voice.stt = FakeStt()
         voice._ptt_stage_observer = lambda stage, **metadata: stages.append((stage, metadata))
-        with patch("stt.voice.sd.InputStream", FakeInputStream):
+        with patch('aifren.stt.voice.sd.InputStream', FakeInputStream):
             result = voice.record_ptt(lambda: pressed["value"])
 
         self.assertEqual(result, "hello")
@@ -214,10 +214,10 @@ class PushToTalkLifecycleTests(unittest.TestCase):
                 cls.stop_calls += 1
 
         with (
-            patch("voice.ptt.development_flight_recorder", return_value=Recorder()),
-            patch("stt.voice.sd.InputStream", side_effect=input_stream_factory),
-            patch("stt.voice.PTT_MIC_CLOSE_TIMEOUT_SECONDS", 0.02),
-            patch("stt.voice.PTT_MIC_ABORT_TIMEOUT_SECONDS", 0.02),
+            patch('aifren.voice.ptt.development_flight_recorder', return_value=Recorder()),
+            patch('aifren.stt.voice.sd.InputStream', side_effect=input_stream_factory),
+            patch('aifren.stt.voice.PTT_MIC_CLOSE_TIMEOUT_SECONDS', 0.02),
+            patch('aifren.stt.voice.PTT_MIC_ABORT_TIMEOUT_SECONDS', 0.02),
         ):
             ptt = PushToTalk(
                 voice,
@@ -301,9 +301,9 @@ class PushToTalkLifecycleTests(unittest.TestCase):
         voice._ptt_stage_observer = None
         transcriptions = []
         with (
-            patch("stt.voice.sd.InputStream", side_effect=input_stream_factory),
-            patch("stt.voice.PTT_MIC_CLOSE_TIMEOUT_SECONDS", 0.01),
-            patch("stt.voice.PTT_MIC_ABORT_TIMEOUT_SECONDS", 0.01),
+            patch('aifren.stt.voice.sd.InputStream', side_effect=input_stream_factory),
+            patch('aifren.stt.voice.PTT_MIC_CLOSE_TIMEOUT_SECONDS', 0.01),
+            patch('aifren.stt.voice.PTT_MIC_ABORT_TIMEOUT_SECONDS', 0.01),
         ):
             ptt = PushToTalk(
                 voice, object(), transcriptions.append,

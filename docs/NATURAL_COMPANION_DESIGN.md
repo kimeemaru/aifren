@@ -66,7 +66,7 @@ PCM counts and lifecycle callbacks alone do not establish acoustic quality.
 
 ## Delivery preference and template support
 
-`conversation_style.py` replaces only recognized application-owned roleplay and
+`aifren/dialogue/conversation_style.py` replaces only recognized application-owned roleplay and
 output-contract scaffolding. The authored identity/personality substring is
 preserved. Natural conversation asks for a proportionate reply, meaningful action
 prose, and questions only when useful. Its synthetic delivery illustrations are
@@ -101,7 +101,7 @@ budget verification. There is no new context allocation or hidden unbudgeted
 style message. Historical roleplay remains unchanged historical data, with no
 postprocessor deleting questions or actions from accepted responses.
 
-`llm/local_template.py` makes a narrower decision than a model-family assumption.
+`aifren/llm/local_template.py` makes a narrower decision than a model-family assumption.
 It reads the configured GGUF's embedded chat-template metadata without loading
 tensors. Only an explicitly reviewed template fingerprint permits the initial
 application policy to use the template's supported system role. Unknown templates
@@ -139,7 +139,7 @@ reporting cannot preserve the admitted proposition safely.
 
 ## Automatic facial proposals
 
-`automatic_expression.py` is an optional local CPU classifier over final accepted
+`aifren/dialogue/automatic_expression.py` is an optional local CPU classifier over final accepted
 assistant prose. It does not classify the user's feelings or validate dialogue.
 For governed memory, only accepted present commentary is eligible; the factual
 core is excluded. Quoted/reporting material, code, control-like payloads, and
@@ -227,7 +227,7 @@ Install optional CPU expression requirements explicitly in the project environme
 
 ```bash
 .venv-aifren/bin/python -m pip install -r requirements-expressions.txt
-.venv-aifren/bin/python automatic_expression.py --install
+.venv-aifren/bin/python -m aifren.dialogue.automatic_expression --install
 ```
 
 The installer downloads pinned/hash-checked files and converts locally using standard

@@ -3,8 +3,8 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-from assistant_service import AssistantService
-from llm.unavailable import ModelTransportError, UnavailableLLM
+from aifren.assistant_service import AssistantService
+from aifren.llm.unavailable import ModelTransportError, UnavailableLLM
 
 
 class FakeConversation:
@@ -357,7 +357,7 @@ class AssistantServiceTests(unittest.TestCase):
             memory_authority="v1",
         )
 
-        with patch("assistant_service.development_flight_recorder", return_value=recorder):
+        with patch('aifren.assistant_service.development_flight_recorder', return_value=recorder):
             result = service.process_text_turn("Hello", speak=False)
 
         self.assertTrue(result.succeeded)
@@ -1064,7 +1064,7 @@ class AssistantServiceTests(unittest.TestCase):
             ],
         )
 
-    @patch("assistant_service.development_flight_recorder")
+    @patch('aifren.assistant_service.development_flight_recorder')
     def test_ptt_transcription_uses_the_common_text_turn_path(self, recorder_factory):
         events = []
         self.service.subscribe(events.append)

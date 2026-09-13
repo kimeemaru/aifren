@@ -10,8 +10,8 @@ import tempfile
 import unittest
 import uuid
 
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import (
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import (
     MemoryV2Repository,
     OpenThreadProposal,
     OpenThreadProposalOperation,

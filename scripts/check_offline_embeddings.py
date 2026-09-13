@@ -28,7 +28,7 @@ def main():
                           HF_HUB_DISABLE_TELEMETRY='1', CUDA_VISIBLE_DEVICES='',
                           HF_HOME=str(Path(temp) / 'hf'), XDG_CACHE_HOME=str(Path(temp) / 'cache'))
         with ExitStack() as stack:
-            stack.enter_context(patch('memory.embeddings.MODEL_DIR', str(model)))
+            stack.enter_context(patch('aifren.memory.embeddings.MODEL_DIR', str(model)))
             stack.enter_context(patch('socket.socket.connect', side_effect=AssertionError('Network excluded')))
             stack.enter_context(patch('socket.create_connection', side_effect=AssertionError('Network excluded')))
             suite = unittest.defaultTestLoader.loadTestsFromName(

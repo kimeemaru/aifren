@@ -14,7 +14,7 @@ import uuid
 from benchmarks.active_state.production_session import (
     ProductionSession, SyntheticLifecycleTts, response_envelope,
 )
-from conversation.conversation import Conversation
+from aifren.conversation.conversation import Conversation
 from test_cancelled_response_repair import FocusedPtt
 
 
@@ -50,7 +50,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
         self.events = []
         self.service.subscribe(self.events.append)
         self.recorder = Mock(enabled=False)
-        recorder = patch("assistant_service.development_flight_recorder", return_value=self.recorder)
+        recorder = patch('aifren.assistant_service.development_flight_recorder', return_value=self.recorder)
         recorder.start()
         self.addCleanup(recorder.stop)
         self.session.memory.process = Mock()
@@ -216,7 +216,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
 
     def test_partial_write_preserves_state_then_retry_completes_only_event(self):
         before = self.session.conversation_file.read_bytes()
-        with patch("conversation.persistence.json.dump", side_effect=self.partial_write):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=self.partial_write):
             result = self.service.apply_continuity_control(**self.command)
         self.assertEqual("applied_record_incomplete", result["outcome"])
         self.assertEqual("pending", result["canonical_event"]["state"])
@@ -238,7 +238,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
         self.assertTrue(self.service.process_text_turn("Hello again.", speak=False).succeeded)
 
     def test_retry_after_restart_preserves_original_operation_time_and_scope(self):
-        with patch("conversation.persistence.json.dump", side_effect=self.partial_write):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=self.partial_write):
             self.service.apply_continuity_control(**self.command)
         captured = json.loads(self.control_rows()[0]["payload_json"])["scene_event"]["message"]
         self.session.now += timedelta(days=2)
@@ -273,7 +273,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
         self.assertNotIn("reaction", result)
 
     def test_post_replacement_failure_does_not_append_or_react_on_retry_or_restart(self):
-        with patch("conversation.persistence._sync_directory", side_effect=OSError("synthetic-private-path")):
+        with patch('aifren.conversation.persistence._sync_directory', side_effect=OSError("synthetic-private-path")):
             result = self.service.apply_continuity_control(**self.command)
         self.assertEqual("applied_durability_unconfirmed", result["outcome"])
         self.assertTrue(result["canonical_event"]["replacement_committed"])
@@ -304,7 +304,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
         self.assert_no_reaction()
 
     def test_legacy_or_damaged_control_payload_is_not_reconstructed_from_current_state(self):
-        with patch("conversation.persistence.json.dump", side_effect=self.partial_write):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=self.partial_write):
             self.service.apply_continuity_control(**self.command)
         row = self.control_rows()[0]
         payload = json.loads(row["payload_json"])
@@ -329,7 +329,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
         durable.assert_not_called()
         threads.assert_not_called()
         self.session.memory.process.assert_not_called()
-        from memory_v2_historical_evidence import resolve_historical_evidence
+        from aifren.continuity.memory_v2_historical_evidence import resolve_historical_evidence
         record = self.scene_records()[0]
         decision = resolve_historical_evidence(
             self.records(), self.records().index(record),
@@ -343,7 +343,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
             conversation_file=self.session.conversation_file,
         )
         self.assertEqual("ignored", mirrored["state"])
-        from memory_v2_episode_compaction import canonical_episode_source_groups
+        from aifren.continuity.memory_v2_episode_compaction import canonical_episode_source_groups
         groups = canonical_episode_source_groups(
             self.records(), valid_scope_ids={record["truth_scope"]["scope_id"]},
         )
@@ -481,7 +481,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
                     raise TimeoutError("Synthetic replacement gate timed out")
             return replace(source, destination)
 
-        with patch("conversation.persistence.os.replace", side_effect=blocked):
+        with patch('aifren.conversation.persistence.os.replace', side_effect=blocked):
             future = self.start(lambda: self.service.apply_continuity_control(**self.command))
             self.assertTrue(entered.wait(3))
             self.assertEqual([], self.scene_records())
@@ -503,7 +503,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
                 self.partial_write(data, handle, **kwargs)
             return dump(data, handle, **kwargs)
 
-        with patch("conversation.persistence.json.dump", side_effect=second_write_fails):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=second_write_fails):
             result = self.service.apply_continuity_control(**self.command)
         self.assertFalse(result["reaction"]["published"])
         self.assertEqual(1, len(self.scene_records()))
@@ -584,7 +584,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
             with patch.object(self.service, "character_id", second.character_id), \
                     patch.object(self.service, "character", second.service.character), \
                     patch.object(self.service, "_memory_v2_shadow_writer", second.writer), \
-                    patch.object(self.service, "conversation", second.conversation):
+                    patch.object(self.service, 'conversation', second.conversation):
                 return original(*args, **kwargs)
 
         with patch.object(self.service, "process_text_turn", side_effect=switched):
@@ -605,8 +605,8 @@ class SceneEventPersistenceTests(unittest.TestCase):
         self.assertEqual("unavailable", second.effects().vision_mode)
 
     def test_v2_reaction_composes_scene_and_retrospective_guards(self):
-        from assistant_service import AssistantService
-        from memory_v2_authority import DevelopmentV2MemoryAuthority
+        from aifren.assistant_service import AssistantService
+        from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
 
         authority = DevelopmentV2MemoryAuthority(
             self.session.writer.store, self.session.character_id, self.session.conversation.messages,
@@ -636,9 +636,9 @@ class SceneEventPersistenceTests(unittest.TestCase):
         self.assert_terminal("published")
 
     def test_suppressed_reaction_still_records_event(self):
-        from scene_ui_event import scene_ui_clear_event
+        from aifren.state.scene_ui_event import scene_ui_clear_event
 
-        with patch("scene_ui_event.scene_ui_clear_event", side_effect=lambda *args: replace(
+        with patch('aifren.state.scene_ui_event.scene_ui_clear_event', side_effect=lambda *args: replace(
             scene_ui_clear_event(*args), reaction_opportunity=False,
         )):
             result = self.service.apply_continuity_control(**self.command)
@@ -648,7 +648,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
 
     def test_invalid_command_linkage_is_not_promoted_to_historical_user_evidence(self):
         from copy import deepcopy
-        from memory_v2_historical_evidence import resolve_historical_evidence
+        from aifren.continuity.memory_v2_historical_evidence import resolve_historical_evidence
 
         self.service.apply_continuity_control(**self.command)
         original = self.scene_records()[0]
@@ -664,7 +664,7 @@ class SceneEventPersistenceTests(unittest.TestCase):
 
     def test_replacement_failure_reports_pending_record_then_retry_succeeds(self):
         before = self.session.conversation_file.read_bytes()
-        with patch("conversation.persistence.os.replace", side_effect=OSError("synthetic replacement failure")):
+        with patch('aifren.conversation.persistence.os.replace', side_effect=OSError("synthetic replacement failure")):
             result = self.service.apply_continuity_control(**self.command)
         self.assertEqual("replace", result["canonical_event"]["persistence_stage"])
         self.assertEqual(before, self.session.conversation_file.read_bytes())

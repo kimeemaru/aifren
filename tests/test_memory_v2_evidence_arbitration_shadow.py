@@ -1,18 +1,18 @@
 import unittest
 
-from conversation.conversation import ContextManager
-from memory_v2_evidence_arbitration_shadow import (
+from aifren.conversation.conversation import ContextManager
+from aifren.continuity.memory_v2_evidence_arbitration_shadow import (
     arbitrate_historical_callback_evidence,
     arbitrated_counterfactual_context,
 )
-from memory_v2_evidence_arbitration_evaluation import (
+from tools.memory_v2.memory_v2_evidence_arbitration_evaluation import (
     run_arbitrated_interpretation_evaluation,
 )
-from memory_v2_historical_interpretation_evaluation import (
+from tools.memory_v2.memory_v2_historical_interpretation_evaluation import (
     SYNTHETIC_INTERPRETATION_CASES,
 )
-from memory_v2_hybrid_recall import HybridRecallCandidate
-from memory_v2_prompt_admission_shadow import compose_supplemental_historical_prompt
+from aifren.continuity.memory_v2_hybrid_recall import HybridRecallCandidate
+from aifren.continuity.memory_v2_prompt_admission_shadow import compose_supplemental_historical_prompt
 
 
 class EvidenceArbitrationShadowTests(unittest.TestCase):

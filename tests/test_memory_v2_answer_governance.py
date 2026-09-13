@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import dataclass
 
-from memory_v2_answer_governance import (
+from aifren.continuity.memory_v2_answer_governance import (
     MemoryAnswerEvidence,
     bind_memory_answer_source_containment,
     compose_memory_answer_requirement,
@@ -10,9 +10,9 @@ from memory_v2_answer_governance import (
     remove_unsupported_retrospective_sentences,
     validate_memory_answer_response,
 )
-from memory_query_decision import decide_memory_query
-from memory_v2_exact_source_callback_shadow import compose_exact_source_callback_contract
-from memory_v2_prompt_admission_shadow import compose_supplemental_historical_prompt
+from aifren.continuity.memory_query_decision import decide_memory_query
+from aifren.continuity.memory_v2_exact_source_callback_shadow import compose_exact_source_callback_contract
+from aifren.continuity.memory_v2_prompt_admission_shadow import compose_supplemental_historical_prompt
 
 
 @dataclass(frozen=True)

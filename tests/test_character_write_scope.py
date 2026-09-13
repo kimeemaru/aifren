@@ -8,14 +8,14 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from character_operations import CharacterOperationService
-from character_registry import CharacterRegistry, CharacterStorageError
-from character_storage_runtime import (
+from aifren.character.character_operations import CharacterOperationService
+from aifren.character.character_registry import CharacterRegistry, CharacterStorageError
+from aifren.character.character_storage_runtime import (
     CharacterStorageBusy, acquire_runtime_lease, maintenance_lease,
 )
-from conversation import conversation as conversation_module
-from memory import memory as memory_module
-from memory_v2_store import MemoryV2Store
+from aifren.conversation import conversation as conversation_module
+from aifren.memory import memory as memory_module
+from aifren.memory_v2_store import MemoryV2Store
 
 
 class CharacterWriteScopeTests(unittest.TestCase):

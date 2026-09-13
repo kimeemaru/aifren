@@ -7,12 +7,12 @@ import tempfile
 import threading
 import unittest
 
-from assistant import build_character_prompt, load_character
-from assistant_service import AssistantService
-from character_registry import CharacterRegistry
-from conversation.conversation import Conversation
-from memory.memory import EMBEDDING_DIMENSIONS, Memory
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.assistant import build_character_prompt, load_character
+from aifren.assistant_service import AssistantService
+from aifren.character.character_registry import CharacterRegistry
+from aifren.conversation.conversation import Conversation
+from aifren.memory.memory import EMBEDDING_DIMENSIONS, Memory
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
 
 
 class _Embedding:
@@ -87,8 +87,8 @@ class CharacterSwitchOwnershipTests(unittest.TestCase):
             self.root, character_id=character_id, display_name=selected.display_name,
             memory_file=paths["memory"],
         )
-        from memory_v2_store import MemoryV2Repository
-        from memory_v2_authority import DevelopmentV2MemoryAuthority
+        from aifren.memory_v2_store import MemoryV2Repository
+        from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
         from test_memory_v2_embeddings import ToyEmbeddingProvider
         MemoryV2Repository(writer.store).ensure_character(character_id, selected.display_name)
         writer._embedding_provider = ToyEmbeddingProvider()

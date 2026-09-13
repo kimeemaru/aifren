@@ -196,7 +196,7 @@ class OrdinaryTopicCharacterIsolationTests(unittest.TestCase):
         fixture._turn("Let's discuss how a bicycle gear works.")
         original = [dict(item) for item in fixture.service.conversation.messages]
         question = "Back to the hallway mosaic: which tiles did I choose?"
-        with patch("memory_v2_authority.MiniLMEmbeddingProvider", ToyEmbeddingProvider):
+        with patch('aifren.continuity.memory_v2_authority.MiniLMEmbeddingProvider', ToyEmbeddingProvider):
             fixture._switch(fixture.b)
         result = fixture.service.process_text_turn(question, speak=False)
         self.assertTrue(result.succeeded, result.error)

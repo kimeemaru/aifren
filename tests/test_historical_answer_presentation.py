@@ -56,7 +56,7 @@ class HistoricalAnswerPresentationTests(unittest.TestCase):
         self.assertEqual(result.reply, self.conversation.messages[-1]["content"])
 
     def test_typed_actions_are_checked_separately_without_losing_spoken_emphasis(self):
-        from memory_v2_answer_governance import (
+        from aifren.continuity.memory_v2_answer_governance import (
             MemoryAnswerEvidence, compose_memory_answer_requirement, validate_memory_answer_response,
         )
         source = MemoryAnswerEvidence("source", "historical_conversation_only", "user",
@@ -76,7 +76,7 @@ class HistoricalAnswerPresentationTests(unittest.TestCase):
                 self.assertEqual(expected, result.accepted, result)
 
     def test_overlapping_other_speaker_source_cannot_reject_correct_attribution(self):
-        from memory_v2_answer_governance import (
+        from aifren.continuity.memory_v2_answer_governance import (
             MemoryAnswerEvidence, compose_memory_answer_requirement, validate_memory_answer_response,
         )
         user = MemoryAnswerEvidence("user-source", "historical_conversation_only", "user",

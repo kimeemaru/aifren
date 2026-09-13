@@ -10,7 +10,7 @@ import time
 import uuid
 from typing import Any
 
-from memory_v2_store import (
+from aifren.memory_v2_store import (
     OPEN_THREAD_KINDS, OPEN_THREAD_PARTICIPANT_SCOPES, OpenThreadProposal,
     OpenThreadProposalOperation, validate_open_thread_proposal,
 )
@@ -226,8 +226,8 @@ def evaluate(cases: tuple[ThreadScenario, ...], candidates: dict[str, ParsedCand
 
 
 def run_provider_evaluation(*, provider: Any | None = None, batch_size: int = 8, result_path: Path = _RESULT) -> tuple[OpenThreadExtractionReport, dict[str, ParsedCandidate], dict[str, str]]:
-    from config import GEMINI_MODEL
-    from llm.gemini import Gemini
+    from aifren.runtime.config import GEMINI_MODEL
+    from aifren.llm.gemini import Gemini
     cases = load_manifest()
     selected = provider or Gemini()
     candidates: dict[str, ParsedCandidate] = {}

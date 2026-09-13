@@ -1,7 +1,7 @@
 import unittest
 import uuid
 
-from memory_v2_store import (
+from aifren.memory_v2_store import (
     ACTIVE_STATE, ActiveSceneSubjectIntroduction, ActiveSceneSubjectRetirement,
     ActiveStateProposal, ActiveStateProposalUpdate, MemoryV2Repository,
     MemoryV2Store, StoreError,

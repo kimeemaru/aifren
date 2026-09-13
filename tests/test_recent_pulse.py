@@ -7,10 +7,10 @@ import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from companion_context import CompanionContextAssembler, CompanionContextRequest
-from recent_pulse import RecentPulseBuilder
-from memory_v2_episode_compaction import EpisodeCompactionCache, EpisodeCompactor
-from memory_v2_store import OpenThreadProposal, OpenThreadProposalOperation
+from aifren.context.companion_context import CompanionContextAssembler, CompanionContextRequest
+from aifren.context.recent_pulse import RecentPulseBuilder
+from aifren.continuity.memory_v2_episode_compaction import EpisodeCompactionCache, EpisodeCompactor
+from aifren.memory_v2_store import OpenThreadProposal, OpenThreadProposalOperation
 from test_continuity_companion_tranche import _Harness
 from test_memory_v2_episode_compaction import _Provider
 
@@ -152,7 +152,7 @@ class RecentPulseTests(unittest.TestCase):
 
     def test_episode_admission_work_limit_abstains_without_running_validator(self):
         self.episode()
-        with (patch('recent_pulse.MAX_VALIDATION_RECORDS',10),
+        with (patch('aifren.context.recent_pulse.MAX_VALIDATION_RECORDS',10),
               patch.object(EpisodeCompactionCache,'validate_for_context',side_effect=AssertionError('bounded work'))):
             result=self.build()
         self.assertEqual((),result.contributions)

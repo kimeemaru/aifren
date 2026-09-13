@@ -136,7 +136,7 @@ import llama_cpp
 print('llama.cpp GPU offload: unavailable; CPU fallback')
 PY
 fi
-"$runtime" -m tts.kokoro_assets --install \
+"$runtime" -m aifren.tts.kokoro_assets --install \
     --model-dir "$repository_root/models/kokoro-82m" \
     --voice af_heart
 

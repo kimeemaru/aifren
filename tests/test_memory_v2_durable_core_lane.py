@@ -11,7 +11,7 @@ from benchmarks.memory_v2.durable_core_lane import (
 )
 from benchmarks.memory_v2.router_intent import build_router_intent_fixture
 from benchmarks.memory_v2.router_intent_counterfactual import load_generic_holdout
-from benchmarks.memory_v2.models import RetrievalCase
+from aifren.memory_v2_store.models import RetrievalCase
 
 
 class MemoryV2DurableCoreLaneTests(unittest.TestCase):

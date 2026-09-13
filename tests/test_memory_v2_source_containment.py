@@ -1,13 +1,13 @@
 import unittest
 
-from conversation.conversation import ContextManager, Conversation
-from memory_v2_answer_governance import (
+from aifren.conversation.conversation import ContextManager, Conversation
+from aifren.continuity.memory_v2_answer_governance import (
     MemoryAnswerEvidence,
     bind_memory_answer_source_containment,
     compose_memory_answer_requirement,
     validate_memory_answer_response,
 )
-from memory_v2_source_containment import (
+from aifren.continuity.memory_v2_source_containment import (
     RECENT_CONVERSATION_BOUNDARY,
     RECENT_POLICY_MEMORY_CONTAINED,
     RECENT_POLICY_R0,

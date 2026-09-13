@@ -17,12 +17,12 @@ import threading
 from typing import Any, Iterable
 import uuid
 
-from assistant_service import AssistantService, TurnResult
-from backend_host import AIFrenWebSocketHost
-from conversation.conversation import Conversation
-from development_flight_recorder import development_flight_recorder
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
+from aifren.assistant_service import AssistantService, TurnResult
+from aifren.backend_host import AIFrenWebSocketHost
+from aifren.conversation.conversation import Conversation
+from aifren.runtime.development_flight_recorder import development_flight_recorder
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
 
 
 BASE_TIME = datetime(2026, 8, 27, 12, tzinfo=timezone.utc)

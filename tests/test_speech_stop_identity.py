@@ -7,9 +7,9 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from assistant_service import AssistantService
-from tts import tts as audio_owner
-from tts.tts import KokoroTextToSpeech
+from aifren.assistant_service import AssistantService
+from aifren.tts import tts as audio_owner
+from aifren.tts.tts import KokoroTextToSpeech
 from test_responsive_speech import StreamFactory, SyntheticKokoro
 
 

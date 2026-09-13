@@ -14,13 +14,13 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR  # noqa: E402
-from development_flight_recorder import development_flight_recorder  # noqa: E402
-from llm.openai_compatible import OpenAICompatibleLLM  # noqa: E402
-from local_model_runtime import LocalModelRuntime  # noqa: E402
-from model_settings import get_model_settings  # noqa: E402
-from tts.streaming import StreamingSpeechQueue  # noqa: E402
-from tts.tts import KokoroTextToSpeech  # noqa: E402
+from aifren.runtime.config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR  # noqa: E402
+from aifren.runtime.development_flight_recorder import development_flight_recorder  # noqa: E402
+from aifren.llm.openai_compatible import OpenAICompatibleLLM  # noqa: E402
+from aifren.runtime.local_model_runtime import LocalModelRuntime  # noqa: E402
+from aifren.runtime.model_settings import get_model_settings  # noqa: E402
+from aifren.tts.streaming import StreamingSpeechQueue  # noqa: E402
+from aifren.tts.tts import KokoroTextToSpeech  # noqa: E402
 
 
 def _vram_used_mib() -> int | None:

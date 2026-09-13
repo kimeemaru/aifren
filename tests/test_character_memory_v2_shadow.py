@@ -4,13 +4,13 @@ import tempfile
 import threading
 import unittest
 
-from character_registry import CharacterRegistry
-from conversation.conversation import Conversation
-from memory.memory import EMBEDDING_DIMENSIONS, Memory
-from memory_v2_evaluation import run_synthetic_evaluation, shadow_health
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
-from memory_v2_telemetry import retrieval_report
+from aifren.character.character_registry import CharacterRegistry
+from aifren.conversation.conversation import Conversation
+from aifren.memory.memory import EMBEDDING_DIMENSIONS, Memory
+from tools.memory_v2.memory_v2_evaluation import run_synthetic_evaluation, shadow_health
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
+from aifren.continuity.memory_v2_telemetry import retrieval_report
 
 
 class _Embedding:
@@ -237,7 +237,7 @@ class MemoryV2ShadowWriterTests(unittest.TestCase):
             second_memory.add_memory("fact", "The second character remembers basil.", 5)
             repository = MemoryV2Repository(self.writer.store)
             self.assertEqual([], repository.search(self.character.character_id, "basil", limit=5))
-            from memory_v2_store.store import StoreError
+            from aifren.memory_v2_store.store import StoreError
             with self.assertRaises(StoreError): repository.search(second.character_id, "aurora", limit=5)
             self.assertEqual(1, len(repository.search(self.character.character_id, "aurora", limit=5)))
             second_repository=MemoryV2Repository(second_writer.store)

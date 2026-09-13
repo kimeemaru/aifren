@@ -1,6 +1,6 @@
 import unittest
 
-from memory_v2_historical_interpretation_evaluation import (
+from tools.memory_v2.memory_v2_historical_interpretation_evaluation import (
     SYNTHETIC_INTERPRETATION_CASES,
     run_matched_interpretation_evaluation,
     validate_historical_interpretation,

@@ -1,6 +1,6 @@
 import unittest
 
-from memory_v2_recall_challenge_evaluation import (
+from tools.memory_v2.memory_v2_recall_challenge_evaluation import (
     CHALLENGE_VERSION,
     build_challenge_fixture,
 )

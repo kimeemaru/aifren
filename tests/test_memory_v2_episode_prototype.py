@@ -1,7 +1,7 @@
 import re
 import unittest
 
-from memory_v2_episode_prototype import (
+from tools.memory_v2.memory_v2_episode_prototype import (
     EpisodePrototype, MultiRepresentationEpisodeIndex, SourceSpanPrototype,
     derive_episode_representations, route_episode_query,
 )

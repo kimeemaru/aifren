@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from scene_ui_event import scene_ui_clear_event, scene_ui_response_requirement
+from aifren.state.scene_ui_event import scene_ui_clear_event, scene_ui_response_requirement
 
 
 class SceneUiEventTests(unittest.TestCase):

@@ -9,12 +9,12 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from assistant_service import AssistantService
-from config import AUDIO8_WARMUP_TEXT, TTS_CHUNK_MIN_CHARS
-from tts import tts
-from tts.chunker import SpeechChunker
-from tts.streaming import StreamingSpeechQueue, TtsSynthesisResourceManager
-from tts.audio8_runtime import Audio8Runtime
+from aifren.assistant_service import AssistantService
+from aifren.runtime.config import AUDIO8_WARMUP_TEXT, TTS_CHUNK_MIN_CHARS
+from aifren.tts import tts
+from aifren.tts.chunker import SpeechChunker
+from aifren.tts.streaming import StreamingSpeechQueue, TtsSynthesisResourceManager
+from aifren.tts.audio8_runtime import Audio8Runtime
 
 
 class _HttpResponse:
@@ -675,9 +675,9 @@ class PlaybackTests(unittest.TestCase):
 
     def test_kokoro_declares_conservative_complete_sentence_strategy(self):
         provider = object.__new__(tts.KokoroTextToSpeech)
-        with patch("model_settings.kokoro_early_speech_status", return_value={"effective": True}):
+        with patch('aifren.runtime.model_settings.kokoro_early_speech_status', return_value={"effective": True}):
             self.assertEqual("complete_sentences", provider.synthesis_strategy)
-        with patch("model_settings.kokoro_early_speech_status", return_value={"effective": False}):
+        with patch('aifren.runtime.model_settings.kokoro_early_speech_status', return_value={"effective": False}):
             self.assertEqual("whole_response", provider.synthesis_strategy)
         self.assertEqual("manual_chunks", tts.Audio8TextToSpeech.synthesis_strategy)
 

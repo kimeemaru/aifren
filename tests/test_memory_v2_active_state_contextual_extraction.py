@@ -13,7 +13,7 @@ from benchmarks.memory_v2.active_state_contextual_extraction import (
     parse_provider_output_isolated,
     provider_input,
 )
-from memory_v2_store import MemoryV2Repository, MemoryV2Store
+from aifren.memory_v2_store import MemoryV2Repository, MemoryV2Store
 
 
 class ContextualActiveStateExtractionBenchmarkTests(unittest.TestCase):

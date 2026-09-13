@@ -9,9 +9,9 @@ from pathlib import Path
 import tempfile
 import uuid
 
-from current_continuity import admit_current_continuity_context
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
+from aifren.state.current_continuity import admit_current_continuity_context
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
 
 
 MANIFEST = Path(__file__).with_name("manifest.json")

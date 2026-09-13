@@ -3,9 +3,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from memory_v2_shadow import MemoryV2ShadowComparator, build_shadow_query, rebuild_shadow
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_shadow import MemoryV2ShadowComparator, build_shadow_query, rebuild_shadow
 
 
 class ToyProvider:

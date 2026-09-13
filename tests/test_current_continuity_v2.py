@@ -9,26 +9,26 @@ import tempfile
 import unittest
 import uuid
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from conversation.conversation import ContextManager
-from conversation.temporal_context import build_temporal_context_block, derive_temporal_context_facts
-from conversation.truth_scope import (
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.conversation.conversation import ContextManager
+from aifren.conversation.temporal_context import build_temporal_context_block, derive_temporal_context_facts
+from aifren.conversation.truth_scope import (
     INVALID_SCOPE,
     LEGACY_UNTAGGED_SCOPE,
     active_scope_from_provenance,
     filter_scope_compatible_history,
     parse_canonical_truth_scope,
 )
-from current_continuity import (
+from aifren.state.current_continuity import (
     admit_current_continuity_context,
     extract_active_state_proposal,
     extract_open_thread_proposal,
     extract_scenario_transition,
     game_event_is_contextual,
 )
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
 
 
 class _ServiceMemory:

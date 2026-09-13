@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-import assistant
-from assistant_service import AssistantService
-from character_registry import CharacterRegistry, CharacterStorageError
-from character_storage_runtime import acquire_runtime_lease, maintenance_lease
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren import assistant
+from aifren.assistant_service import AssistantService
+from aifren.character.character_registry import CharacterRegistry, CharacterStorageError
+from aifren.character.character_storage_runtime import acquire_runtime_lease, maintenance_lease
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
 import test_character_switch_ownership as switching
 
 
@@ -30,7 +30,7 @@ class CharacterLeaseCleanupTests(unittest.TestCase):
             self.leases.append(lease)
             return lease
 
-        capture_patch = patch("character_storage_runtime.acquire_runtime_lease", side_effect=capture)
+        capture_patch = patch('aifren.character.character_storage_runtime.acquire_runtime_lease', side_effect=capture)
         capture_patch.start()
         self.addCleanup(capture_patch.stop)
         self.addCleanup(lambda: [lease.close() for lease in self.leases])
@@ -42,14 +42,14 @@ class CharacterLeaseCleanupTests(unittest.TestCase):
     @contextmanager
     def service_fixture(self):
         case = switching.CharacterSwitchOwnershipTests()
-        from memory_v2_authority import DevelopmentV2MemoryAuthority
+        from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
         from test_memory_v2_embeddings import ToyEmbeddingProvider
 
         def authority(*args, **kwargs):
             kwargs.setdefault("embedding_provider", ToyEmbeddingProvider())
             return DevelopmentV2MemoryAuthority(*args, **kwargs)
 
-        with patch("memory_v2_authority.DevelopmentV2MemoryAuthority", side_effect=authority):
+        with patch('aifren.continuity.memory_v2_authority.DevelopmentV2MemoryAuthority', side_effect=authority):
             case.setUp()
             try:
                 yield case
@@ -70,7 +70,7 @@ class CharacterLeaseCleanupTests(unittest.TestCase):
 
     def test_writer_post_store_setup_failure_closes_store_and_lease(self):
         paths = self.registry.runtime_paths(self.character.character_id)
-        with patch("memory_v2_shadow_writer.WorkingRecallCache", side_effect=RuntimeError("Synthetic cache failure")):
+        with patch('aifren.continuity.memory_v2_shadow_writer.WorkingRecallCache', side_effect=RuntimeError("Synthetic cache failure")):
             with self.assertRaises(RuntimeError):
                 MemoryV2ShadowWriter(self.root, character_id=self.character.character_id,
                                     display_name=self.character.display_name, memory_file=paths["memory"])
@@ -129,13 +129,13 @@ class CharacterLeaseCleanupTests(unittest.TestCase):
                                {"_character_id": self.character.character_id, "name": "Synthetic"},
                                "Synthetic only.", object(), None)
                 patches.enter_context(patch.object(assistant, "initialize", return_value=initialized))
-                patches.enter_context(patch("config.configured_memory_authority", return_value="v2"))
+                patches.enter_context(patch('aifren.runtime.config.configured_memory_authority', return_value="v2"))
                 if failure == "writer":
-                    patches.enter_context(patch("memory_v2_shadow_writer.MemoryV2ShadowWriter",
+                    patches.enter_context(patch('aifren.continuity.memory_v2_shadow_writer.MemoryV2ShadowWriter',
                                                 side_effect=RuntimeError("Synthetic writer setup failure")))
                 else:
                     authority = Mock(side_effect=RuntimeError("Synthetic authority failure")) if failure == "authority" else Mock(return_value=SimpleNamespace(close=Mock()))
-                    patches.enter_context(patch("memory_v2_authority.DevelopmentV2MemoryAuthority", authority))
+                    patches.enter_context(patch('aifren.continuity.memory_v2_authority.DevelopmentV2MemoryAuthority', authority))
                 service_type = AssistantService
                 if failure == "service":
                     class FailedService(AssistantService):
@@ -149,7 +149,7 @@ class CharacterLeaseCleanupTests(unittest.TestCase):
 
     def test_failed_candidate_cleanup_still_releases_both_candidate_leases(self):
         with self.service_fixture() as case:
-            with patch("memory.memory.Memory.subscribe_mutations", return_value=Mock(side_effect=RuntimeError("Synthetic unsubscribe failure"))):
+            with patch('aifren.memory.memory.Memory.subscribe_mutations', return_value=Mock(side_effect=RuntimeError("Synthetic unsubscribe failure"))):
                 with self.assertRaises(RuntimeError):
                     case.service.switch_character_state(
                         character_id=case.b.character_id, display_name=case.b.display_name,

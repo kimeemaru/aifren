@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import re
 
-from memory_v2_store.retrieval import _infer_intent, _tokens
+from aifren.memory_v2_store.retrieval import _infer_intent, _tokens
 
 from .router_intent import RouterIntentSuite
 

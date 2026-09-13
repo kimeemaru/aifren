@@ -8,8 +8,8 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from character_registry import CharacterRegistry, CharacterStorageError
-from memory_v2_store.store import MemoryV2Store
+from aifren.character.character_registry import CharacterRegistry, CharacterStorageError
+from aifren.memory_v2_store.store import MemoryV2Store
 
 
 class CharacterStorageReadinessTests(unittest.TestCase):
@@ -93,7 +93,7 @@ class CharacterStorageReadinessTests(unittest.TestCase):
         for valid in (True, False):
             if not valid:
                 self.change_database("UPDATE database_meta SET value='wrong' WHERE key='timeline_generation'")
-            with patch("character_registry.sqlite3.connect", side_effect=tracked):
+            with patch('aifren.character.character_registry.sqlite3.connect', side_effect=tracked):
                 if valid:
                     self.ready()
                 else:
@@ -114,8 +114,8 @@ class CharacterStorageReadinessTests(unittest.TestCase):
                 connection.set_trace_callback(queries.append)
             return connection
 
-        with patch("character_registry.sqlite3.connect", side_effect=tracked), patch(
-            "memory_v2_store.character_copy.selected_character_inventory",
+        with patch('aifren.character.character_registry.sqlite3.connect', side_effect=tracked), patch(
+            'aifren.memory_v2_store.character_copy.selected_character_inventory',
             side_effect=AssertionError("readiness must not inventory the archive"),
         ):
             self.ready()

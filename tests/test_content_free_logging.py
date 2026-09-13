@@ -10,8 +10,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from development_flight_recorder import ProcessOutputCapture
-from memory.memory import Memory
+from aifren.runtime.development_flight_recorder import ProcessOutputCapture
+from aifren.memory.memory import Memory
 from test_character_memory_v2_shadow import _Embedding
 from test_windows_packaging import LAUNCHER as FRIEND
 from test_linux_backend_launcher import LAUNCHER as LINUX
@@ -72,7 +72,7 @@ class ContentFreeLoggingTests(unittest.TestCase):
                 with self.subTest(development=development):
                     capture = ProcessOutputCapture(development=development, directory=Path(directory))
                     stream = io.BytesIO(b"SYNTHETIC_SECRET" * 10000)
-                    with patch("development_flight_recorder.os.open", side_effect=OSError("PRIVATE")):
+                    with patch('aifren.runtime.development_flight_recorder.os.open', side_effect=OSError("PRIVATE")):
                         capture.drain(stream)
                     self.assertEqual(160000, capture.byte_count)
                     self.assertTrue(stream.closed)

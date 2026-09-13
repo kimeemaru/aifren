@@ -4,7 +4,7 @@ import unittest
 from dataclasses import replace
 
 import test_memory_v2_ordering as ordering_tests
-from memory_v2_answer_governance import (
+from aifren.continuity.memory_v2_answer_governance import (
     MemoryAnswerEvidence, compose_memory_answer_requirement,
     validate_memory_answer_response,
 )

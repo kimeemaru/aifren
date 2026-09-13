@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import uuid
 
-from memory_v2_store import (
+from aifren.memory_v2_store import (
     MAX_CURRENT_OPEN_THREADS,
     MemoryV2Repository,
     MemoryV2Store,
@@ -13,7 +13,7 @@ from memory_v2_store import (
     render_open_thread_context,
     validate_open_thread_proposal,
 )
-from memory_v2_store.store import StoreError
+from aifren.memory_v2_store.store import StoreError
 
 
 class OpenThreadV2Tests(unittest.TestCase):

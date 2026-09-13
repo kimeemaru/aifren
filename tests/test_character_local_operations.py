@@ -7,11 +7,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import uuid
-from character_registry import CharacterRegistry, Character, CharacterStorageError, CharacterRegistryError
-from character_operations import CharacterOperationService
-from memory_v2_store.character_copy import selected_character_inventory
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from character_storage_runtime import acquire_runtime_lease
+from aifren.character.character_registry import CharacterRegistry, Character, CharacterStorageError, CharacterRegistryError
+from aifren.character.character_operations import CharacterOperationService
+from aifren.memory_v2_store.character_copy import selected_character_inventory
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.character.character_storage_runtime import acquire_runtime_lease
 import test_stopped_character_folder_wipe as wipe
 
 class CharacterLocalOperationTests(unittest.TestCase):
@@ -134,7 +134,7 @@ class CharacterLocalOperationTests(unittest.TestCase):
         self.assertEqual(before,canary.read_bytes());self.assertEqual(other,self.inventory(self.b))
 
     def test_old_copy_change_after_migration_blocks_cleanup(self):
-        from memory_v2_store import MemoryV2Store
+        from aifren.memory_v2_store import MemoryV2Store
         self.perform(self.a,'migrate')
         store=MemoryV2Store(str(self.fixture.database))
         try:
@@ -199,7 +199,7 @@ class CharacterCreationSafetyTests(unittest.TestCase):
     def test_create_collision_or_failure_never_deletes_an_existing_directory(self):
         identity=uuid.uuid4();path=self.root/'characters'/('collision--'+str(identity));path.mkdir()
         (path/'canary').write_text('owned elsewhere')
-        with patch('character_registry.uuid.uuid4',return_value=identity):
+        with patch('aifren.character.character_registry.uuid.uuid4',return_value=identity):
             with self.assertRaises(FileExistsError):self.r.create('collision')
         self.assertEqual('owned elsewhere',(path/'canary').read_text())
         self.assertFalse(any(c.character_id==str(identity) for c in self.r.list_characters()))
@@ -218,7 +218,7 @@ class CharacterLocalDamagedStorageTests(unittest.TestCase):
         self.r.assert_storage_ready(a.character_id)
         self.assertEqual([],json.loads(p['conversation'].read_text()))
     def test_seed_cannot_revive_an_empty_registry_after_last_delete(self):
-        from runtime_layout import initialize_data_root
+        from aifren.runtime.runtime_layout import initialize_data_root
         a=self.r.create('Only friend',personality='Synthetic.')
         self.r._data['characters']=[asdict(a)];self.r._data['active_character_id']=a.character_id;self.r._save()
         self.perform(a.character_id,'delete')

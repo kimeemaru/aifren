@@ -4,8 +4,8 @@ import tempfile
 import unittest
 import uuid
 
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import (
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import (
     ACTIVE_STATE, ACTIVE_STATE_REGISTRY, ActiveStateProposal, ActiveStateProposalUpdate,
     ActiveStateSlot, MemoryV2Repository, MemoryV2Store, StoreError,
     build_active_state_registry, render_active_state_context, typed_active_state,

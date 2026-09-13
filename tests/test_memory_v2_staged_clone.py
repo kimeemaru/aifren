@@ -7,19 +7,19 @@ import unittest
 from unittest import mock
 import uuid
 
-from character_registry import CharacterRegistry
-from development_staged_runtime import development_staged_environment
-from memory_v2_historical_evidence import (
+from aifren.character.character_registry import CharacterRegistry
+from aifren.runtime.development_staged_runtime import development_staged_environment
+from aifren.continuity.memory_v2_historical_evidence import (
     STAGED_DISPOSABLE_MARKER,
     validate_staged_disposable_target,
 )
-from memory_v2_shadow_writer import default_v2_path
-from memory_v2_staged_clone import (
+from aifren.continuity.memory_v2_shadow_writer import default_v2_path
+from aifren.continuity.memory_v2_staged_clone import (
     StagedCloneError,
     create_memory_v2_staged_clone,
 )
-from memory_v2_store.production_import import v1_import_scope
-from memory_v2_store.store import MemoryV2Store
+from aifren.memory_v2_store.production_import import v1_import_scope
+from aifren.memory_v2_store.store import MemoryV2Store
 
 
 class MemoryV2StagedCloneTests(unittest.TestCase):
@@ -442,14 +442,14 @@ class MemoryV2StagedCloneTests(unittest.TestCase):
             )
         self.assertFalse(self.target.exists())
 
-        with mock.patch("memory_v2_staged_clone.MAX_SELECTED_ROWS", 0):
+        with mock.patch('aifren.continuity.memory_v2_staged_clone.MAX_SELECTED_ROWS', 0):
             with self.assertRaisesRegex(StagedCloneError, "row bound"):
                 create_memory_v2_staged_clone(self.source, self.target, self.selected_id)
         self.assertFalse((self.target / STAGED_DISPOSABLE_MARKER).exists())
 
     def test_final_validation_failure_removes_marker(self):
         with mock.patch(
-            "memory_v2_staged_clone.validate_staged_disposable_target",
+            'aifren.continuity.memory_v2_staged_clone.validate_staged_disposable_target',
             side_effect=StagedCloneError("synthetic final validation failure"),
         ):
             with self.assertRaisesRegex(StagedCloneError, "synthetic final"):

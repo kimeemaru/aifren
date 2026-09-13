@@ -8,14 +8,14 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from assistant import build_character_prompt
-from assistant_service import AssistantService
-from companion_context import TransientImpulsePayload
-from conversation.conversation import Conversation
-from conversation.persistence import ConversationPersistenceError
-from memory_v2_authority import DevelopmentV2MemoryAuthority
-from presentation_metadata import parse_assistant_response
-from transient_impulses import TransientImpulse, TransientImpulseStore
+from aifren.assistant import build_character_prompt
+from aifren.assistant_service import AssistantService
+from aifren.context.companion_context import TransientImpulsePayload
+from aifren.conversation.conversation import Conversation
+from aifren.conversation.persistence import ConversationPersistenceError
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.dialogue.presentation_metadata import parse_assistant_response
+from aifren.context.transient_impulses import TransientImpulse, TransientImpulseStore
 from test_assistant_service_v2_authority import _LLM, _TTS
 from test_continuity_companion_tranche import _Harness
 from test_memory_routing_partial_evidence import HealthyRecall
@@ -63,11 +63,11 @@ class ImpulseServiceTests(unittest.TestCase):
 
     @patch.dict('os.environ', {'AIFREN_CONTEXT_GOVERNOR':'1'})
     def test_budget_excluded_impulse_releases_without_consuming(self):
-        from context_governor import plan_context
+        from aifren.context.context_governor import plan_context
         def without_optional(**kwargs):
             kwargs['items']=[i for i in kwargs['items'] if i.owner!='companion_context']
             return plan_context(**kwargs)
-        with patch('conversation.governed_context.plan_context',side_effect=without_optional):
+        with patch('aifren.conversation.governed_context.plan_context',side_effect=without_optional):
             result=self.turn()
         self.assertTrue(result.succeeded,result.error)
         self.assertEqual(0,self.store.diagnostics()['consumed_count'])
@@ -129,12 +129,12 @@ class ImpulseServiceTests(unittest.TestCase):
         self.assertTrue(all('COMPANION ATTENTION' not in call[1] for call in self.llm.calls[1:]))
 
     def test_failed_assistant_save_releases_without_hiding_payload_in_archive(self):
-        from conversation.conversation import save_json
+        from aifren.conversation.conversation import save_json
         def fail_assistant(path,data,**kwargs):
             if kwargs.get('record_kind')=='conversation' and data and data[-1]['role']=='assistant':
                 raise ConversationPersistenceError(record_kind='conversation',stage='write')
             return save_json(path,data,**kwargs)
-        with patch('conversation.conversation.save_json',side_effect=fail_assistant):result=self.turn()
+        with patch('aifren.conversation.conversation.save_json',side_effect=fail_assistant):result=self.turn()
         self.assertFalse(result.succeeded)
         self.assertEqual(1,self.store.diagnostics()['pending_count'])
         self.assertFalse(any(m['role']=='assistant' for m in self.c.messages))

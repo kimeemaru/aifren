@@ -7,16 +7,16 @@ import unittest
 from datetime import datetime, timezone
 
 from benchmarks.active_state.harness import SyntheticSession
-from active_scene import extract_active_scene_mutation
-from capability_policy import capability_context_block, validate_capability_response
-from companion_action import (
+from aifren.state.active_scene import extract_active_scene_mutation
+from aifren.state.capability_policy import capability_context_block, validate_capability_response
+from aifren.state.companion_action import (
     action_narration_valid,
     companion_action_relevant,
     unauthorized_action_narrated,
     validate_companion_action_decision,
 )
-from presentation_metadata import parse_assistant_response
-from response_requirements import derive_response_requirement
+from aifren.dialogue.presentation_metadata import parse_assistant_response
+from aifren.dialogue.response_requirements import derive_response_requirement
 
 
 class ActiveSceneBreadthTests(unittest.TestCase):

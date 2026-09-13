@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from llm.maintenance import configured_maintenance_provider
+from aifren.llm.maintenance import configured_maintenance_provider
 
 
 class _Runtime:

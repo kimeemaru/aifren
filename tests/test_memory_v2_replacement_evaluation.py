@@ -1,11 +1,11 @@
 import unittest
 from dataclasses import dataclass
 
-from memory_v2_replacement_evaluation import (
+from tools.memory_v2.memory_v2_replacement_evaluation import (
     ReplacementEvaluationCase,
     run_v1_v2_replacement_evaluation,
 )
-from memory_v2_replacement_shadow import compose_v2_replacement_context
+from aifren.continuity.memory_v2_replacement_shadow import compose_v2_replacement_context
 
 
 @dataclass(frozen=True)

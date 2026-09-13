@@ -7,9 +7,9 @@ import tempfile
 import unittest
 import uuid
 
-from durable_fact_curation import extract_durable_fact_proposal
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
+from aifren.continuity.durable_fact_curation import extract_durable_fact_proposal
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
 
 
 REVIEWER_UNSAFE_VALUE_ASSERTIONS = (

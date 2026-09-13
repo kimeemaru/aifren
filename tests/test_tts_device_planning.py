@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import tempfile
 import unittest
 
-from tts.device_planning import plan_kokoro_device
+from aifren.tts.device_planning import plan_kokoro_device
 
 
 class _Cuda:

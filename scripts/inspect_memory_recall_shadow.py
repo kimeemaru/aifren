@@ -14,9 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from character_registry import CharacterRegistry  # noqa: E402
-from memory_v2_historical_evidence import validate_staged_disposable_target  # noqa: E402
-from memory_v2_shadow_writer import default_v2_path  # noqa: E402
+from aifren.character.character_registry import CharacterRegistry  # noqa: E402
+from aifren.continuity.memory_v2_historical_evidence import validate_staged_disposable_target  # noqa: E402
+from aifren.continuity.memory_v2_shadow_writer import default_v2_path  # noqa: E402
 
 
 def _latest_bundle() -> Path:

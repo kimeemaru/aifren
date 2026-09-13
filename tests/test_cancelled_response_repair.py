@@ -9,8 +9,8 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
 from test_assistant_service import FakePushToTalk, FakeTTS
 from test_assistant_service_v2_authority import _Authority, _Memory
 
@@ -131,7 +131,7 @@ class CancelledResponseRepairTests(unittest.TestCase):
         self.events = []
         self.service.subscribe(self.events.append)
         self.recorder = Mock(enabled=False)
-        recorder = patch("assistant_service.development_flight_recorder", return_value=self.recorder)
+        recorder = patch('aifren.assistant_service.development_flight_recorder', return_value=self.recorder)
         recorder.start()
         self.addCleanup(recorder.stop)
         self.workers = []
@@ -321,7 +321,7 @@ class CancelledResponseRepairTests(unittest.TestCase):
             return original_replace(source, destination)
 
         self.provider.release_repair.set()
-        with patch("conversation.persistence.os.replace", side_effect=replace):
+        with patch('aifren.conversation.persistence.os.replace', side_effect=replace):
             task = self.start_repair(speak=False)
             self.interrupt_during_commit(task, reached, release)
 
@@ -344,7 +344,7 @@ class CancelledResponseRepairTests(unittest.TestCase):
     def test_successful_repair_with_failed_persistence_retains_failure_contract(self):
         from test_conversation_persistence import ConversationPersistenceTests
         self.provider.release_repair.set()
-        with patch("conversation.persistence.json.dump", side_effect=ConversationPersistenceTests.partial_write):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=ConversationPersistenceTests.partial_write):
             result = self.service.process_text_turn("What do you think I like to do?")
         self.assertFalse(result.succeeded)
         self.assert_terminal(1, "persistence_error")
@@ -384,8 +384,8 @@ class CancelledResponseRepairTests(unittest.TestCase):
         self.assertTrue(self.service.process_text_turn("Hello again.").succeeded)
 
     def configure_v1_continuity(self):
-        from memory_v2_shadow_writer import MemoryV2ShadowWriter
-        from memory_v2_store import MemoryV2Repository
+        from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+        from aifren.memory_v2_store import MemoryV2Repository
         from test_conversation_persistence import Memory
         from test_memory_v2_embeddings import ToyEmbeddingProvider
 

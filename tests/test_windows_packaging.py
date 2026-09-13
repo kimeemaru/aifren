@@ -36,7 +36,7 @@ class WindowsPackagingTests(unittest.TestCase):
         (player / "AIFrenPoc_Data").mkdir()
         (player / "UnityPlayer.dll").write_bytes(b"unity")
 
-        (repository / "backend_host.py").write_text("# backend\n", encoding="utf-8")
+        (repository / 'backend_host.py').write_text("# backend\n", encoding="utf-8")
         scripts = repository / "scripts"
         scripts.mkdir()
         for name in ("launch_friend.py", "check_backend_protocol.py"):
@@ -44,7 +44,8 @@ class WindowsPackagingTests(unittest.TestCase):
         (scripts / "launch_friend_windows.cmd").write_text(
             "@echo off\r\necho launcher\r\n", encoding="utf-8"
         )
-        (repository / "runtime_layout.py").write_text("# layout\n", encoding="utf-8")
+        (repository / 'aifren/runtime').mkdir(parents=True)
+        (repository / 'aifren/runtime/runtime_layout.py').write_text("# layout\n", encoding="utf-8")
 
         models = repository / "models"
         (models / "kokoro-82m").mkdir(parents=True)
@@ -82,7 +83,7 @@ class WindowsPackagingTests(unittest.TestCase):
             self.assertTrue((output / "AIFrenPoc_Data").is_dir())
             self.assertTrue((output / "runtime" / "python" / "Scripts" / "python.exe").is_file())
             app = output / "runtime" / "app"
-            self.assertTrue((app / "backend_host.py").is_file())
+            self.assertTrue((app / 'backend_host.py').is_file())
             self.assertTrue((app / "models" / "kokoro-82m" / "config.json").is_file())
             self.assertTrue((app / "models" / "llama" / "test.gguf").is_file())
             self.assertFalse((app / "characters" / "private-fixture").exists())
@@ -187,7 +188,7 @@ class WindowsPackagingTests(unittest.TestCase):
             popen.assert_not_called()
 
     def test_windows_local_model_launch_uses_creation_flags_not_posix_sessions(self) -> None:
-        source = (ROOT / "local_model_runtime.py").read_text(encoding="utf-8")
+        source = (ROOT / 'aifren/runtime/local_model_runtime.py').read_text(encoding="utf-8")
         self.assertIn('self._process_platform == "nt"', source)
         self.assertIn('process_options["creationflags"]', source)
         self.assertIn('process_options["start_new_session"]', source)

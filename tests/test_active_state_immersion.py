@@ -3,38 +3,38 @@ from datetime import datetime, timezone
 import unittest
 import uuid
 
-from assistant_service import AssistantService
+from aifren.assistant_service import AssistantService
 from benchmarks.active_state.harness import BASE_TIME, SyntheticSession
-from capability_policy import (
+from aifren.state.capability_policy import (
     normalize_constrained_caption,
     preview_capability_effects,
     validate_capability_response,
 )
-from character_scene_profile import (
+from aifren.character.character_scene_profile import (
     cache_character_scene_profile,
     derive_character_scene_profile,
     effective_profile_worn_items,
 )
-from companion_action import (
+from aifren.state.companion_action import (
     action_narration_valid,
     unauthorized_action_narrated,
     validate_companion_action_decision,
 )
-from conversation.conversation import Conversation
-from interaction_policy import (
+from aifren.conversation.conversation import Conversation
+from aifren.state.interaction_policy import (
     InteractionPolicyDecision,
     SleepReactionSignature,
     render_sleep_reaction,
     sleep_reaction_prompt,
 )
-from presentation_metadata import parse_assistant_response, response_contract_prompt
-from response_requirements import (
+from aifren.dialogue.presentation_metadata import parse_assistant_response, response_contract_prompt
+from aifren.dialogue.response_requirements import (
     derive_mutation_response_requirement,
     derive_response_requirement,
     validate_response_requirement,
 )
-from memory_v2_store.repository import ActiveSceneRelationRecord
-from memory_v2_store.scene_relation_contract import (
+from aifren.memory_v2_store.repository import ActiveSceneRelationRecord
+from aifren.memory_v2_store.scene_relation_contract import (
     SceneRelationProposal,
     compose_capability_effects,
 )

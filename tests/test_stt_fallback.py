@@ -3,7 +3,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from stt.stt import SpeechToText
+from aifren.stt.stt import SpeechToText
 
 
 class SpeechToTextFallbackTests(unittest.TestCase):
@@ -11,12 +11,12 @@ class SpeechToTextFallbackTests(unittest.TestCase):
         # The decoder is mocked below; model presence is synthetic and local.
         directory = tempfile.TemporaryDirectory(prefix="synthetic-stt-model-")
         self.addCleanup(directory.cleanup)
-        model_path = patch("stt.stt.MODEL_DIR", directory.name)
+        model_path = patch('aifren.stt.stt.MODEL_DIR', directory.name)
         model_path.start()
         self.addCleanup(model_path.stop)
 
     def test_missing_model_stays_an_explicit_error_without_download(self):
-        with patch("stt.stt.MODEL_DIR", "/synthetic-missing-stt-model"), patch("stt.stt.WhisperModel") as model:
+        with patch('aifren.stt.stt.MODEL_DIR', "/synthetic-missing-stt-model"), patch('aifren.stt.stt.WhisperModel') as model:
             with self.assertRaises(FileNotFoundError): SpeechToText()
             model.assert_not_called()
 
@@ -44,8 +44,8 @@ class SpeechToTextFallbackTests(unittest.TestCase):
                     raise RuntimeError("CUDA failed with error out of memory")
                 return SpeechToTextFallbackTests._segments(" recovered ")
 
-        with patch("stt.stt.WhisperModel", FakeModel), patch(
-            "stt.stt.development_flight_recorder", return_value=Recorder(),
+        with patch('aifren.stt.stt.WhisperModel', FakeModel), patch(
+            'aifren.stt.stt.development_flight_recorder', return_value=Recorder(),
         ):
             stt = SpeechToText()
             self.assertEqual("recovered", stt.transcribe("same.wav"))
@@ -81,7 +81,7 @@ class SpeechToTextFallbackTests(unittest.TestCase):
                     )
                 return SpeechToTextFallbackTests._segments("okay")
 
-        with patch("stt.stt.WhisperModel", FakeModel):
+        with patch('aifren.stt.stt.WhisperModel', FakeModel):
             stt = SpeechToText()
             self.assertEqual("okay", stt.transcribe("capture.wav"))
         self.assertEqual([("cuda", "float16"), ("cpu", "int8")], models)
@@ -97,7 +97,7 @@ class SpeechToTextFallbackTests(unittest.TestCase):
                 calls.append(("transcribe", path))
                 raise RuntimeError("decoder failed")
 
-        with patch("stt.stt.WhisperModel", FakeModel):
+        with patch('aifren.stt.stt.WhisperModel', FakeModel):
             stt = SpeechToText()
             with self.assertRaisesRegex(RuntimeError, "decoder failed"):
                 stt.transcribe("capture.wav")
@@ -120,7 +120,7 @@ class SpeechToTextFallbackTests(unittest.TestCase):
                     raise RuntimeError("CUDA failed with error out of memory")
                 raise RuntimeError("CPU decoder failed")
 
-        with patch("stt.stt.WhisperModel", FakeModel):
+        with patch('aifren.stt.stt.WhisperModel', FakeModel):
             stt = SpeechToText()
             with self.assertRaisesRegex(RuntimeError, "CPU decoder failed"):
                 stt.transcribe("capture.wav")
@@ -139,7 +139,7 @@ class SpeechToTextFallbackTests(unittest.TestCase):
             def transcribe(self, _path, **_kwargs):
                 raise RuntimeError("CUDA failed with error out of memory")
 
-        with patch("stt.stt.WhisperModel", FakeModel):
+        with patch('aifren.stt.stt.WhisperModel', FakeModel):
             stt = SpeechToText()
             with self.assertRaisesRegex(RuntimeError, "CPU init failed"):
                 stt.transcribe("capture.wav")

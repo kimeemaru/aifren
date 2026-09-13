@@ -6,8 +6,8 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
-from backend_host import AIFrenWebSocketHost
-from character_registry import CharacterRegistry
+from aifren.backend_host import AIFrenWebSocketHost
+from aifren.character.character_registry import CharacterRegistry
 from test_websocket_transport import FakeService
 
 class CharacterBindingTransportTests(unittest.IsolatedAsyncioTestCase):

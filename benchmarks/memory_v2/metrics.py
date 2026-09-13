@@ -2,7 +2,7 @@
 
 import math
 
-from .models import ClaimProposal, ConsolidationReport, RetrievalOutcome, RetrievalReport
+from aifren.memory_v2_store.models import ClaimProposal, ConsolidationReport, RetrievalOutcome, RetrievalReport
 
 
 def _safe_divide(numerator, denominator):

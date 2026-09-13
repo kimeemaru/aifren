@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from memory_v2_store.retrieval import _infer_intent, _tokens
+from aifren.memory_v2_store.retrieval import _infer_intent, _tokens
 
-from .models import BenchmarkFixture, GoldClaim, RetrievalCase, SyntheticEvent
+from aifren.memory_v2_store.models import BenchmarkFixture, GoldClaim, RetrievalCase, SyntheticEvent
 
 
 ROUTER_SUITE_VERSION = "memory-v2-router-intent-v1"

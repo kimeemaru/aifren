@@ -8,18 +8,18 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from character_registry import CharacterRegistry
-from development_staged_runtime import (
+from aifren.character.character_registry import CharacterRegistry
+from aifren.runtime.development_staged_runtime import (
     DevelopmentStagedRuntimeError, _runtime_history_attested, development_staged_environment,
 )
-from memory_v2_historical_evidence import (
+from aifren.continuity.memory_v2_historical_evidence import (
     HistoricalEvidenceError, HistoricalEvidenceIndexer, STAGED_DATABASE_DIRECTORY,
     STAGED_DISPOSABLE_MARKER, open_staged_historical_evidence_writer,
     staged_disposable_marker_payload, validate_staged_disposable_target,
 )
-from memory_v2_shadow_writer import MemoryV2ShadowWriter, default_v2_path
-from memory_v2_staged_clone import StagedCloneError, create_memory_v2_staged_clone
-from memory_v2_store.store import MemoryV2Store
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter, default_v2_path
+from aifren.continuity.memory_v2_staged_clone import StagedCloneError, create_memory_v2_staged_clone
+from aifren.memory_v2_store.store import MemoryV2Store
 
 
 class StagedLocalCloneTests(unittest.TestCase):
@@ -91,7 +91,7 @@ class StagedLocalCloneTests(unittest.TestCase):
             self.assertEqual("complete", result.state)
         finally:
             writer.close()
-        with patch("development_staged_runtime._runtime_history_attested", wraps=_runtime_history_attested) as check:
+        with patch('aifren.runtime.development_staged_runtime._runtime_history_attested', wraps=_runtime_history_attested) as check:
             with development_staged_environment(self.target, self.cid, require_rebuilt_history=False):
                 pass
         self.assertEqual(Path(self.namespace), check.call_args.kwargs["relative_path"])

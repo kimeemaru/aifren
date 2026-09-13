@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 
-PTT_PATH = Path(__file__).resolve().parents[1] / "voice" / "ptt.py"
+PTT_PATH = Path(__file__).resolve().parents[1] / "aifren" / "voice" / "ptt.py"
 
 
 def load_ptt_module(button_type):

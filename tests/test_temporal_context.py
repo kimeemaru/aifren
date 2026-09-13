@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from zoneinfo import ZoneInfo
 
-from conversation.conversation import ContextManager, Conversation
-from conversation.temporal_context import (
+from aifren.conversation.conversation import ContextManager, Conversation
+from aifren.conversation.temporal_context import (
     build_temporal_context_block,
     derive_temporal_context_facts,
 )

@@ -1,7 +1,7 @@
 import re
 import unittest
 
-from memory_v2_source_span_experiment import (
+from tools.memory_v2.memory_v2_source_span_experiment import (
     FROZEN_MICROPHONE_PROBES,
     MPNetEmbeddingProvider,
     run_source_span_experiment,

@@ -17,9 +17,9 @@ import time
 from typing import Any
 import uuid
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
 
 
 _MANIFEST = Path(__file__).with_name("identity_name_provider_eval_manifest.json")
@@ -245,8 +245,8 @@ def _run_correction_case(provider: Any, case: ProviderCase) -> ProviderTrace:
 
 
 def run_provider_evaluation() -> ProviderReport:
-    from config import GEMINI_MODEL
-    from llm.gemini import Gemini
+    from aifren.runtime.config import GEMINI_MODEL
+    from aifren.llm.gemini import Gemini
 
     provider = Gemini()
     traces = tuple(

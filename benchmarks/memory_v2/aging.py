@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from .models import BenchmarkFixture, GoldClaim, RetrievalCase, SyntheticEvent
+from aifren.memory_v2_store.models import BenchmarkFixture, GoldClaim, RetrievalCase, SyntheticEvent
 
 
 MANIFEST_VERSION = "memory-v2-aging-v1"

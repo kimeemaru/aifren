@@ -20,7 +20,7 @@ from tkinter import filedialog, scrolledtext
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from development_flight_recorder import ProcessOutputCapture
+from aifren.runtime.development_flight_recorder import ProcessOutputCapture
 
 
 def build_launch_arguments(launch_script: Path, action: str, development: bool, *, reset_console: bool = False, reset_ui: bool = False) -> list[str]:

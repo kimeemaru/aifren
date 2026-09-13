@@ -6,10 +6,10 @@ These cases intentionally contain no local AIFren history or memory text.
 import unittest
 
 from benchmarks.memory_v2.fixtures import build_core_fixture
-from benchmarks.memory_v2.models import RetrievalQuery
-from memory_v2_store import EmbeddingLifecycle, MemoryV2Store, SemanticRetrievalV2
-from memory_v2_store.retrieval import _has_specific_medical_conflict, _tokens
-from memory_v2_store.importer import import_fixture
+from aifren.memory_v2_store.models import RetrievalQuery
+from aifren.memory_v2_store import EmbeddingLifecycle, MemoryV2Store, SemanticRetrievalV2
+from aifren.memory_v2_store.retrieval import _has_specific_medical_conflict, _tokens
+from aifren.memory_v2_store.importer import import_fixture
 
 
 class _Vectors:

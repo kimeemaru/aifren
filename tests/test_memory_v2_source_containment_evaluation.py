@@ -1,10 +1,10 @@
 import unittest
 
-from memory_v2_answer_governance import MemoryAnswerEvidence
-from memory_v2_replacement_evaluation import ReplacementEvaluationCase
-from memory_v2_replacement_shadow import V2ReplacementContext
-from memory_v2_source_containment import RECENT_POLICY_R0, RECENT_POLICY_R1
-from memory_v2_source_containment_evaluation import (
+from aifren.continuity.memory_v2_answer_governance import MemoryAnswerEvidence
+from tools.memory_v2.memory_v2_replacement_evaluation import ReplacementEvaluationCase
+from aifren.continuity.memory_v2_replacement_shadow import V2ReplacementContext
+from aifren.continuity.memory_v2_source_containment import RECENT_POLICY_R0, RECENT_POLICY_R1
+from tools.memory_v2.memory_v2_source_containment_evaluation import (
     compose_contained_memory_context,
     run_source_containment_evaluation,
 )
@@ -26,7 +26,7 @@ class _Provider:
 
 
 def _design():
-    from memory_v2_answer_governance import compose_memory_answer_requirement
+    from aifren.continuity.memory_v2_answer_governance import compose_memory_answer_requirement
 
     requirement = compose_memory_answer_requirement(
         "Do you remember when I booped you?",

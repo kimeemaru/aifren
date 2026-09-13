@@ -1,5 +1,12 @@
 # Developer guide
 
+## Source navigation
+
+Application implementation is in [`aifren`](../aifren); the
+[source map](SOURCE_LAYOUT.md) lists owners, moves and supported commands.
+The root backend/console/TTS-smoke files are thin compatibility commands.
+Use explicit package imports in source, tests, patches and subprocess snippets.
+
 ## Setup and normal Linux workflow
 
 Use Python 3.10–3.12 and Unity **2022.3.62f3**. The project pins UniVRM and Unity
@@ -63,7 +70,7 @@ Normal startup uses bounded existing observation/index/episode owners; no privat
 prepared seed is needed. Catch-up is idempotent/resumable and preserves current
 facts, Viewer corrections, state, threads and scopes. Do not replace live SQLite
 with a derived cache or reconstruct original administrative evidence from summary
-text. See [the store guide](../memory_v2_store/README.md).
+text. See [the store guide](../aifren/memory_v2_store/README.md).
 
 CompanionMemoryRealizer consumes only an admitted answer. Keep retrieval and truth
 validation outside it. Its optional present reaction cannot alter the grounded
@@ -191,7 +198,10 @@ AIFREN_DATA_ROOT=/path/to/existing-application-data
 
 Paths are examples, not required directories. This does not migrate or clone data.
 The selected interpreter supplies dependencies; backend/scripts and Unity inputs
-remain in the active checkout. Do not resolve a venv Python symlink to the system
+remain in the active checkout. The existing runtime-layout owner resolves the
+source default independently of CWD and external resources/data. An absolute
+`backend_host.py` command works from outside the checkout without initializing
+a different application root. Do not resolve a venv Python symlink to the system
 interpreter. Avoid PYTHONPATH entries pointing at another application implementation.
 Reinstall the existing developer desktop entry from the new checkout to retarget
 both actions together. Keep machine-specific configuration outside commits.

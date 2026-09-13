@@ -1,6 +1,6 @@
 import unittest
 
-from presentation_metadata import StreamingResponseDialogue, parse_assistant_response, response_contract_prompt
+from aifren.dialogue.presentation_metadata import StreamingResponseDialogue, parse_assistant_response, response_contract_prompt
 
 
 class PresentationMetadataTests(unittest.TestCase):

@@ -5,8 +5,8 @@ import threading
 from unittest.mock import patch
 
 import test_memory_v2_ordering as ordering_tests
-from presentation_metadata import parse_assistant_response
-from memory_v2_answer_governance import (
+from aifren.dialogue.presentation_metadata import parse_assistant_response
+from aifren.continuity.memory_v2_answer_governance import (
     MemoryAnswerEvidence, compose_memory_answer_requirement, validate_memory_answer_response,
 )
 

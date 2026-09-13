@@ -1,11 +1,11 @@
 import unittest
 
-from memory_v2_answer_governance_evaluation import (
+from tools.memory_v2.memory_v2_answer_governance_evaluation import (
     run_memory_answer_governance_evaluation,
     run_recent_context_budget_evaluation,
 )
-from memory_v2_replacement_evaluation import ReplacementEvaluationCase
-from memory_v2_replacement_shadow import compose_v2_replacement_context
+from tools.memory_v2.memory_v2_replacement_evaluation import ReplacementEvaluationCase
+from aifren.continuity.memory_v2_replacement_shadow import compose_v2_replacement_context
 
 
 class _Provider:

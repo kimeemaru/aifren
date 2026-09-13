@@ -27,7 +27,7 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 .venv-aifren\Scripts\python.exe -m pip install --upgrade "llama-cpp-python[server]==0.3.35" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 if errorlevel 1 exit /b 1
-.venv-aifren\Scripts\python.exe -m tts.kokoro_assets --install --model-dir models\kokoro-82m --voice af_heart
+.venv-aifren\Scripts\python.exe -m aifren.tts.kokoro_assets --install --model-dir models\kokoro-82m --voice af_heart
 if errorlevel 1 exit /b 1
 .venv-aifren\Scripts\python.exe -c "import en_core_web_sm" >nul 2>&1
 if errorlevel 1 (

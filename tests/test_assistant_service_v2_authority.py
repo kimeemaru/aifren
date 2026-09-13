@@ -5,16 +5,16 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from assistant_service import AssistantService, _ResponsePolicy
-from conversation.conversation import Conversation
-from memory_v2_answer_governance import (
+from aifren.assistant_service import AssistantService, _ResponsePolicy
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_answer_governance import (
     MemoryAnswerEvidence,
     compose_memory_answer_requirement,
 )
-from durable_fact_curation import topic_subject_key
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
-from presentation_metadata import parse_assistant_response
+from aifren.continuity.durable_fact_curation import topic_subject_key
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
+from aifren.dialogue.presentation_metadata import parse_assistant_response
 
 
 class _Memory:

@@ -3,10 +3,10 @@ import tempfile
 import unittest
 import uuid
 
-from assistant import generate_response
-from config import RECENT_CONTEXT_MAX_CHARS, RECENT_CONTEXT_MAX_MESSAGES
-from conversation.conversation import ContextManager, Conversation
-from llm.openai_compatible import OpenAICompatibleLLM
+from aifren.assistant import generate_response
+from aifren.runtime.config import RECENT_CONTEXT_MAX_CHARS, RECENT_CONTEXT_MAX_MESSAGES
+from aifren.conversation.conversation import ContextManager, Conversation
+from aifren.llm.openai_compatible import OpenAICompatibleLLM
 
 
 class FakeMemory:

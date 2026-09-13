@@ -14,11 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from character_registry import CharacterRegistry
-from llm.maintenance import configured_maintenance_provider
-from memory_v2_episode_compaction import EpisodeCompactor
-from memory_v2_historical_evidence import open_staged_historical_evidence_writer
-from memory_v2_historical_episodes import HistoricalEpisodeRebuilder
+from aifren.character.character_registry import CharacterRegistry
+from aifren.llm.maintenance import configured_maintenance_provider
+from aifren.continuity.memory_v2_episode_compaction import EpisodeCompactor
+from aifren.continuity.memory_v2_historical_evidence import open_staged_historical_evidence_writer
+from aifren.continuity.memory_v2_historical_episodes import HistoricalEpisodeRebuilder
 
 
 def main() -> None:

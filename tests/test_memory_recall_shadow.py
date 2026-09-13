@@ -7,18 +7,18 @@ import threading
 import unittest
 import uuid
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from development_flight_recorder import DevelopmentFlightRecorder
-from memory_recall_shadow import RealTurnMemoryShadow
-from memory_v2_hybrid_recall import (
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.runtime.development_flight_recorder import DevelopmentFlightRecorder
+from aifren.continuity.memory_recall_shadow import RealTurnMemoryShadow
+from aifren.continuity.memory_v2_hybrid_recall import (
     HistoricalRecallAnchor, HybridMemoryV2Recall, HybridRecallCandidate,
     HybridRecallResult, RecallEvidence,
 )
-from memory_v2_store import MemoryV2Store, SemanticRetrievalV2
-from benchmarks.memory_v2.models import RetrievalHealth, RetrievalLaneHealth, RetrievalQuery
-from memory_v2_store.durable_prompt import TypedDurableFact
-from memory_v2_store.production_import import v1_import_scope
+from aifren.memory_v2_store import MemoryV2Store, SemanticRetrievalV2
+from aifren.memory_v2_store.models import RetrievalHealth, RetrievalLaneHealth, RetrievalQuery
+from aifren.memory_v2_store.durable_prompt import TypedDurableFact
+from aifren.memory_v2_store.production_import import v1_import_scope
 from scripts.inspect_memory_recall_shadow import build_report
 
 
@@ -475,7 +475,7 @@ class MemoryRecallShadowInspectionTests(unittest.TestCase):
             (root / "memories.json").write_text(json.dumps([
                 {"id": 1, "category": "fact", "content": "V1 synthetic detail"},
             ]), encoding="utf-8")
-            from character_registry import CharacterRegistry
+            from aifren.character.character_registry import CharacterRegistry
             character = CharacterRegistry(root).active()
             database = root / "memory_v2/memory_v2.sqlite3"
             database.parent.mkdir()
@@ -519,7 +519,7 @@ class MemoryRecallShadowInspectionTests(unittest.TestCase):
             (root / "memories.json").write_text(json.dumps([
                 {"id": 1, "category": "fact", "content": "Synthetic memory"},
             ]), encoding="utf-8")
-            from character_registry import CharacterRegistry
+            from aifren.character.character_registry import CharacterRegistry
             character = CharacterRegistry(root).active()
             database = root / "memory_v2/memory_v2.sqlite3"
             database.parent.mkdir()

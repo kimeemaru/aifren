@@ -7,12 +7,12 @@ import threading
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from memory.memory import Memory, generate_memory_keywords
-from memory_v2_store import MemoryV2Store
-from memory_v2_store.retrieval import SemanticRetrievalV2
-from memory_v2_store.embeddings import EmbeddingLifecycle, MiniLMEmbeddingProvider
-from memory_v2_store.importer import import_fixture
-from memory_v2_store.store import parse_timestamp_us
+from aifren.memory.memory import Memory, generate_memory_keywords
+from aifren.memory_v2_store import MemoryV2Store
+from aifren.memory_v2_store.retrieval import SemanticRetrievalV2
+from aifren.memory_v2_store.embeddings import EmbeddingLifecycle, MiniLMEmbeddingProvider
+from aifren.memory_v2_store.importer import import_fixture
+from aifren.memory_v2_store.store import parse_timestamp_us
 
 
 class GoldReferenceAdapter:
@@ -163,7 +163,7 @@ class SemanticRetrievalV2Adapter:
             return self.retriever.retrieve(query, **arguments)
         # No production clock seam exists.  Patch only this benchmark call,
         # then automatically restore the production module's real-time clock.
-        with patch("memory_v2_store.retrieval.utc_now_us", return_value=parse_timestamp_us(case.at)):
+        with patch('aifren.memory_v2_store.retrieval.utc_now_us', return_value=parse_timestamp_us(case.at)):
             return self.retriever.retrieve(query, **arguments)
 
     def retrieve(self, fixture, case, limit=5):

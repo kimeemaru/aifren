@@ -21,7 +21,7 @@ APPLICATION_ROOT = Path(__file__).resolve().parents[1]
 if str(APPLICATION_ROOT) not in sys.path:
     sys.path.insert(0, str(APPLICATION_ROOT))
 
-from runtime_layout import absolute_path, packaged_user_data_root  # noqa: E402
+from aifren.runtime.runtime_layout import absolute_path, packaged_user_data_root  # noqa: E402
 
 
 READY_TIMEOUT_SECONDS = 60.0
@@ -46,7 +46,7 @@ class FriendPackageLayout:
             resource_root=resources,
             seed_data_root=resources / "seed_data",
             player=root / ("AIFrenPoc.x86_64" if (root / "AIFrenPoc.x86_64").is_file() else "AIFrenPoc.exe"),
-            backend=resources / "backend_host.py",
+            backend=resources / 'backend_host.py',
             checker=resources / "scripts" / "check_backend_protocol.py",
         )
 

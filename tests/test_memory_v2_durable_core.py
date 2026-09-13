@@ -1,7 +1,7 @@
 import unittest
 import uuid
 
-from memory_v2_store import DURABLE_CORE_FACT, MemoryV2Repository, MemoryV2Store, StoreError
+from aifren.memory_v2_store import DURABLE_CORE_FACT, MemoryV2Repository, MemoryV2Store, StoreError
 
 
 class DurableCoreStoreTests(unittest.TestCase):

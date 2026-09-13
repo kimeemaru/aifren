@@ -4,8 +4,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from tts import tts as audio_owner
-from tts.streaming import (
+from aifren.tts import tts as audio_owner
+from aifren.tts.streaming import (
     CommittedSpeechUnitPolicy, StreamingSpeechQueue, TtsSynthesisResourceManager,
 )
 from test_responsive_speech import SyntheticKokoro
@@ -73,7 +73,7 @@ class CommittedSynthesisCancellationTests(unittest.TestCase):
             def mark(_self, event, **data):
                 self.events.append((event, data))
 
-        recorder_patch = patch.object(audio_owner, "development_flight_recorder", return_value=Recorder())
+        recorder_patch = patch.object(audio_owner, 'development_flight_recorder', return_value=Recorder())
         recorder_patch.start()
         self.addCleanup(recorder_patch.stop)
 

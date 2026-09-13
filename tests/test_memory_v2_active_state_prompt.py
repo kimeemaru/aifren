@@ -4,19 +4,19 @@ import tempfile
 import unittest
 import uuid
 
-from assistant_service import AssistantService
-from config import RECENT_CONTEXT_MAX_MESSAGES
-from conversation.conversation import Conversation
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository, MemoryV2Store
-from memory_v2_store.active_state_prompt import (
+from aifren.assistant_service import AssistantService
+from aifren.runtime.config import RECENT_CONTEXT_MAX_MESSAGES
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository, MemoryV2Store
+from aifren.memory_v2_store.active_state_prompt import (
     MAX_ACTIVE_STATE_CONTEXT_CHARS,
     MAX_ACTIVE_STATE_CONTEXT_RECORDS,
     TypedActiveState,
     admit_active_headwear_context,
     render_active_state_context,
 )
-from memory_v2_store.store import utc_now_us
+from aifren.memory_v2_store.store import utc_now_us
 
 
 class _Memory:
@@ -274,7 +274,7 @@ class ActiveStatePromptEligibilityTests(unittest.TestCase):
         self.store.close()
 
     def test_incomplete_and_assistant_only_active_rows_cannot_be_admitted(self):
-        from memory_v2_store import ACTIVE_STATE
+        from aifren.memory_v2_store import ACTIVE_STATE
 
         with self.store.transaction():
             for state_id, provenance, event_id in (

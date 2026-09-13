@@ -18,7 +18,7 @@ import re
 import time
 from typing import Any, Iterable
 
-from memory_v2_store import (
+from aifren.memory_v2_store import (
     ACTIVE_STATE_ACTORS,
     ACTIVE_STATE_ACTOR_ATTRIBUTES,
     ACTIVE_STATE_REGISTRY,
@@ -362,7 +362,7 @@ def _native_schema_provider_response(
     This remains benchmark-local because the production Gemini wrapper exposes
     only conversational ``generate`` today.
     """
-    from config import GEMINI_MODEL
+    from aifren.runtime.config import GEMINI_MODEL
 
     started = time.perf_counter()
     completion = provider.client.chat.completions.create(
@@ -613,8 +613,8 @@ def run_provider_evaluation_details(
     boundary remains provider output -> candidate -> ActiveStateProposal ->
     deterministic validation; this function never writes authoritative state.
     """
-    from config import GEMINI_MODEL
-    from llm.gemini import Gemini
+    from aifren.runtime.config import GEMINI_MODEL
+    from aifren.llm.gemini import Gemini
 
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or not 1 <= batch_size <= 10:
         raise ValueError("benchmark batch size must be between one and ten")

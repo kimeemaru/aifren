@@ -3,8 +3,8 @@ import tempfile
 import unittest
 import uuid
 
-from benchmarks.memory_v2.models import RetrievalHealth, RetrievalLaneHealth, RetrievalQuery
-from memory_v2_episode_compaction import (
+from aifren.memory_v2_store.models import RetrievalHealth, RetrievalLaneHealth, RetrievalQuery
+from aifren.continuity.memory_v2_episode_compaction import (
     EPISODE_PURPOSE_HISTORICAL,
     EPISODE_SOURCE_HISTORICAL,
     EpisodeCacheValidationResult,
@@ -14,8 +14,8 @@ from memory_v2_episode_compaction import (
     EpisodeSourceRefinement,
     canonical_record_id,
 )
-from memory_v2_hybrid_recall import HistoricalRecallAnchor, HybridMemoryV2Recall
-from memory_v2_store import MemoryV2Store, SemanticRetrievalV2
+from aifren.continuity.memory_v2_hybrid_recall import HistoricalRecallAnchor, HybridMemoryV2Recall
+from aifren.memory_v2_store import MemoryV2Store, SemanticRetrievalV2
 
 
 class _ValidatedCallbackEpisodeCache:

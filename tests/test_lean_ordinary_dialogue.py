@@ -7,13 +7,13 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from assistant import build_character_prompt
-from assistant_service import AssistantService, _ResponsePolicy
-from conversation.conversation import Conversation
-from memory_query_decision import decide_memory_query
-from memory_v2_authority import DevelopmentV2MemoryAuthority
-from presentation_metadata import lean_ordinary_character_prompt, response_contract_prompt
-from response_requirements import ResponseRequirement, RequiredFact
+from aifren.assistant import build_character_prompt
+from aifren.assistant_service import AssistantService, _ResponsePolicy
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_query_decision import decide_memory_query
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.dialogue.presentation_metadata import lean_ordinary_character_prompt, response_contract_prompt
+from aifren.dialogue.response_requirements import ResponseRequirement, RequiredFact
 from test_assistant_service_v2_authority import _LLM, _TTS
 from test_continuity_companion_tranche import _Harness
 from test_memory_routing_partial_evidence import HealthyRecall
@@ -119,7 +119,7 @@ class LeanOrdinaryDialogueTests(unittest.TestCase):
         self.assertFalse(self.s._lean_ordinary_eligible(object()))
 
     def test_explicit_local_opt_in_only_and_adapter_default_stays_disabled(self):
-        from llm.openai_compatible import OpenAICompatibleLLM
+        from aifren.llm.openai_compatible import OpenAICompatibleLLM
         provider = OpenAICompatibleLLM(api_key='', base_url='http://127.0.0.1:1/v1', model='synthetic')
         self.assertFalse(provider.local_ordinary_dialogue)
         self.addCleanup(provider.client.close)
@@ -132,18 +132,18 @@ class LeanOrdinaryDialogueTests(unittest.TestCase):
         self.assertFalse(self.s._lean_ordinary_eligible(p))
 
     def test_actual_local_and_online_factories_leave_experiment_disabled(self):
-        from llm.llm import create_llm
+        from aifren.llm.llm import create_llm
         settings = dict(mode='local', local_api_key='', local_endpoint='http://127.0.0.1:1/v1',
             local_model='synthetic', online_provider='openai_compatible', api_key='synthetic-test-key',
             online_base_url='http://127.0.0.1:1/v1', online_model='synthetic')
         for mode in ('local', 'online'):
-            with self.subTest(mode=mode), patch('llm.llm.get_model_settings', return_value={**settings, 'mode':mode}):
+            with self.subTest(mode=mode), patch('aifren.llm.llm.get_model_settings', return_value={**settings, 'mode':mode}):
                 provider = create_llm()
                 self.addCleanup(provider.client.close)
                 self.assertFalse(provider.local_ordinary_dialogue)
 
     def test_disabled_request_is_byte_identical_to_original_prompt_owner(self):
-        from presentation_metadata import response_expression_context
+        from aifren.dialogue.presentation_metadata import response_expression_context
         p = self.policy(); self.llm.local_ordinary_dialogue = False
         expected = self.s.character_prompt + '\n\n' + response_expression_context(None)
         self.assertEqual(expected, self.s._response_character_prompt(ordinary_policy=p))

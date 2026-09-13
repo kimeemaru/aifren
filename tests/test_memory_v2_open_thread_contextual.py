@@ -7,9 +7,9 @@ import uuid
 from benchmarks.memory_v2.open_thread_contextual_extraction import (
     load_manifest, parse_provider_output, provider_input, run_provider_evaluation,
 )
-from assistant_service import AssistantService
-from memory_v2_open_thread_shadow import (JsonlOpenThreadShadowTraceStore, OpenThreadContextualShadowObserver)
-from memory_v2_store import MemoryV2Store, OpenThreadProposal, OpenThreadProposalOperation
+from aifren.assistant_service import AssistantService
+from aifren.continuity.memory_v2_open_thread_shadow import (JsonlOpenThreadShadowTraceStore, OpenThreadContextualShadowObserver)
+from aifren.memory_v2_store import MemoryV2Store, OpenThreadProposal, OpenThreadProposalOperation
 
 
 class _Extractor:

@@ -15,12 +15,12 @@ import unittest
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
-from assistant_service import AssistantService
-from benchmarks.memory_v2.models import RetrievalHealth, RetrievalLaneHealth, RetrievalQuery
-from conversation.conversation import Conversation
-from memory_v2_authority import DevelopmentV2MemoryAuthority
-from memory_v2_episode_compaction import canonical_record_id
-from memory_v2_store import EmbeddingLifecycle
+from aifren.assistant_service import AssistantService
+from aifren.memory_v2_store.models import RetrievalHealth, RetrievalLaneHealth, RetrievalQuery
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.continuity.memory_v2_episode_compaction import canonical_record_id
+from aifren.memory_v2_store import EmbeddingLifecycle
 from test_assistant_service_v2_authority import _LLM, _Memory, _TTS
 from test_continuity_companion_tranche import _Harness
 from test_memory_v2_historical_evidence import _ConceptEmbedding
@@ -72,7 +72,7 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
         self.events, self.turns = [], []
         self.service.subscribe(self.events.append)
         self.recorder = Mock(enabled=False)
-        recorder = patch("assistant_service.development_flight_recorder", return_value=self.recorder)
+        recorder = patch('aifren.assistant_service.development_flight_recorder', return_value=self.recorder)
         recorder.start()
         self.addCleanup(recorder.stop)
         original = self.authority.prepare
@@ -139,7 +139,7 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
         self.conversation.save()
         # Healthy synthetic fixtures now use the same source identity/time/
         # projection contract as staged and append-aware production indexing.
-        from memory_v2_historical_evidence import resolve_historical_evidence, persist_historical_occurrence
+        from aifren.continuity.memory_v2_historical_evidence import resolve_historical_evidence, persist_historical_occurrence
         evidence = resolve_historical_evidence(self.conversation.messages, index, valid_scope_ids=set()).evidence
         self.assertIsNotNone(evidence)
         if speaker == "user":
@@ -240,7 +240,7 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
     def test_ann_failure_with_successful_bounded_cosine_fallback_fulfills_contract(self):
         self.source("I spent the afternoon refactoring my Python project.")
         self.llm.response = 'I remember you saying, “I spent the afternoon refactoring my Python project.”'
-        with patch("memory_v2_store.ann.HnswClaimIndex.query", side_effect=RuntimeError("synthetic ANN unavailable")):
+        with patch('aifren.memory_v2_store.ann.HnswClaimIndex.query', side_effect=RuntimeError("synthetic ANN unavailable")):
             grounded = self.service.process_text_turn("Do you recall software coding?")
             self.assertTrue(grounded.succeeded, grounded.error)
             self.assertIn("Python", grounded.reply)
@@ -254,7 +254,7 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
         self.assertEqual("recovered", self.service._last_memory_authority_diagnostics["retrieval_health"])
 
     def test_ann_failure_without_bounded_fallback_is_unavailable(self):
-        with patch("memory_v2_store.ann.HnswClaimIndex.query", side_effect=RuntimeError("synthetic")), \
+        with patch('aifren.memory_v2_store.ann.HnswClaimIndex.query', side_effect=RuntimeError("synthetic")), \
                 patch.object(self.h.writer.store, "ann_embedding_count", return_value=2001), \
                 patch.object(self.h.writer.store, "semantic_candidates", side_effect=AssertionError("unbounded fallback")) as fallback:
             self.unavailable("Do you recall software coding?")
@@ -262,7 +262,7 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
         self.assertEqual("fallback_bound", self.service._last_memory_authority_diagnostics["retrieval_error_code"])
 
     def test_failed_cosine_fallback_cannot_look_like_healthy_empty_result(self):
-        with patch("memory_v2_store.ann.HnswClaimIndex.query", side_effect=RuntimeError("synthetic")), \
+        with patch('aifren.memory_v2_store.ann.HnswClaimIndex.query', side_effect=RuntimeError("synthetic")), \
                 patch.object(self.h.writer.store, "semantic_candidates", side_effect=RuntimeError("synthetic")):
             self.unavailable("Do you recall software coding?")
         self.assertEqual("cosine_failed", self.service._last_memory_authority_diagnostics["retrieval_error_code"])
@@ -347,7 +347,7 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
         self.assertEqual("unreported", self.service._last_memory_authority_diagnostics["retrieval_error_code"])
 
     def test_current_owner_read_failure_cannot_certify_absence(self):
-        with patch("memory_v2_store.repository.MemoryV2Repository.list_current_durable_core", side_effect=RuntimeError("synthetic private failure")):
+        with patch('aifren.memory_v2_store.repository.MemoryV2Repository.list_current_durable_core', side_effect=RuntimeError("synthetic private failure")):
             self.unavailable("What is my favorite color?")
         self.assertTrue(self.service.process_text_turn("What is my favorite color?").succeeded)
         self.assertTrue(self.turns[-1].authoritative_no_evidence)
@@ -362,7 +362,7 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
         healthy_history = self.service.process_text_turn(historical_query)
         self.assertTrue(healthy_history.succeeded, healthy_history.error)
         self.assertIn("green", healthy_history.reply)
-        with patch("memory_v2_store.repository.MemoryV2Repository.list_current_durable_core", side_effect=RuntimeError("synthetic")):
+        with patch('aifren.memory_v2_store.repository.MemoryV2Repository.list_current_durable_core', side_effect=RuntimeError("synthetic")):
             self.unavailable("What is my favorite color?")
             # The unavailable current owner does not invalidate exact history.
             history = self.service.process_text_turn(historical_query)
@@ -408,7 +408,7 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
         self.terminal("published")
 
     def test_existing_invalid_episode_generation_is_unavailable_then_recovers(self):
-        from memory_v2_episode_compaction import EpisodeCacheValidationResult
+        from aifren.continuity.memory_v2_episode_compaction import EpisodeCacheValidationResult
 
         cache = self.authority.recall.episode_cache
         validation = cache.validate_for_context(self.conversation.messages, allow_historical_recall=True)
@@ -422,8 +422,8 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
         self.assertTrue(self.turns[-1].authoritative_no_evidence)
 
     def test_real_shadow_worker_records_incomplete_execution_without_quality_or_private_content(self):
-        from development_flight_recorder import DevelopmentFlightRecorder
-        from memory_recall_shadow import RealTurnMemoryShadow
+        from aifren.runtime.development_flight_recorder import DevelopmentFlightRecorder
+        from aifren.continuity.memory_recall_shadow import RealTurnMemoryShadow
 
         self.source("I spent the afternoon refactoring my Python project.")
         recorder = DevelopmentFlightRecorder(sample_hz=1)
@@ -456,8 +456,8 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
             recorder.stop()
 
     def test_legacy_shadow_failure_is_not_cached_or_counted_as_quality(self):
-        from memory_v2_shadow_writer import MemoryV2ShadowWriter
-        from memory_v2_telemetry import retrieval_report
+        from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+        from aifren.continuity.memory_v2_telemetry import retrieval_report
 
         writer = self.h.writer
         writer._embedding_provider = self.embedding
@@ -552,7 +552,7 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
 
     def test_transport_error_completes_turn_and_next_healthy_lookup_recovers(self):
         import websockets
-        from backend_host import AIFrenWebSocketHost, LOOPBACK_HOST
+        from aifren.backend_host import AIFrenWebSocketHost, LOOPBACK_HOST
 
         async def check():
             runtime = SimpleNamespace(stop=Mock(), snapshot=Mock(return_value={

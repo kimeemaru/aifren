@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-import automatic_expression as expression
+import aifren.dialogue.automatic_expression as expression
 
 
 class ExpressionInputTests(unittest.TestCase):
@@ -323,8 +323,8 @@ class ExpressionResourceLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             environment = dict(os.environ, AIFREN_RESOURCE_ROOT=directory)
             result = subprocess.run([sys.executable, '-c',
-                'import automatic_expression as a,json; print(json.dumps([str(a.DEFAULT_MODEL_DIR),a.__file__]))'],
+                'import aifren.dialogue.automatic_expression as a,json; print(json.dumps([str(a.DEFAULT_MODEL_DIR),a.__file__]))'],
                 cwd=root, env=environment, text=True, capture_output=True, check=True)
             model, module = json.loads(result.stdout)
             self.assertEqual(str(Path(directory)/'models/expression/cardiff-emotion-415620c4'), model)
-            self.assertEqual(root/'automatic_expression.py', Path(module))
+            self.assertEqual(root/'aifren/dialogue/automatic_expression.py', Path(module))

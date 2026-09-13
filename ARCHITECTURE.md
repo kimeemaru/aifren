@@ -98,8 +98,8 @@ must not be weakened to hide it.
 
 ## Responsive context planning
 
-`assistant.build_response_request` is shared by complete/streaming requests.
-`conversation/governed_context.py` and `context_governor.py` coordinate existing
+`aifren.assistant.build_response_request` is shared by complete/streaming requests.
+`aifren/conversation/governed_context.py` and `aifren/context/context_governor.py` coordinate existing
 owners; they do not retrieve, mutate memory or infer new truth.
 
 Required character/current-user authority, scope, temporal facts, applicable state,
@@ -172,6 +172,12 @@ character/asset/orientation, restored after the matching avatar-ready event; dra
 and global UI hide never resize the avatar.
 
 ## Source, runtime and validation boundaries
+
+Implementation owners live in the `aifren` package; see the
+[source map](docs/SOURCE_LAYOUT.md). Root `backend_host.py` and `assistant.py`
+are command wrappers, not alternate implementations. Existing coherent provider,
+conversation and store packages retain their internal ownership.
+
 
 Application code comes from this checkout. `AIFREN_RESOURCE_ROOT` selects existing
 model/static resources; `AIFREN_DATA_ROOT` selects mutable application data. Local

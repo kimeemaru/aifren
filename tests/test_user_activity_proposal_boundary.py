@@ -4,8 +4,8 @@ import json
 import unittest
 from unittest.mock import patch
 
-from current_continuity import extract_active_state_proposal
-from memory_v2_store.active_state_contract import validate_active_state_proposal
+from aifren.state.current_continuity import extract_active_state_proposal
+from aifren.memory_v2_store.active_state_contract import validate_active_state_proposal
 import test_v2_runtime_recovery as recovery
 
 

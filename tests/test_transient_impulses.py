@@ -7,8 +7,8 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 
-from companion_context import CompanionContextAssembler, CompanionContextRequest, TransientImpulsePayload
-from transient_impulses import TransientImpulse, TransientImpulseStore
+from aifren.context.companion_context import CompanionContextAssembler, CompanionContextRequest, TransientImpulsePayload
+from aifren.context.transient_impulses import TransientImpulse, TransientImpulseStore
 
 
 class ImpulseTests(unittest.TestCase):

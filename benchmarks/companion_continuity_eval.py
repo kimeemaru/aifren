@@ -15,16 +15,16 @@ from pathlib import Path
 import re
 from typing import Callable
 
-from config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR
-from conversation.conversation import ContextManager
-from current_continuity import _render_typed_active_context, render_truth_scope_context
-from llm.llm import QWEN35_NON_THINKING_GENERAL
-from llm.openai_compatible import OpenAICompatibleLLM
-from local_model_runtime import LocalModelRuntime
-from memory_v2_store.durable_prompt import TypedDurableFact, render_durable_context
-from memory_v2_store.repository import ActiveStateRecord, TruthScopeRecord
-from model_settings import get_model_settings
-from proactive_companion import ProactiveReason, render_proactive_reason
+from aifren.runtime.config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR
+from aifren.conversation.conversation import ContextManager
+from aifren.state.current_continuity import _render_typed_active_context, render_truth_scope_context
+from aifren.llm.llm import QWEN35_NON_THINKING_GENERAL
+from aifren.llm.openai_compatible import OpenAICompatibleLLM
+from aifren.runtime.local_model_runtime import LocalModelRuntime
+from aifren.memory_v2_store.durable_prompt import TypedDurableFact, render_durable_context
+from aifren.memory_v2_store.repository import ActiveStateRecord, TruthScopeRecord
+from aifren.runtime.model_settings import get_model_settings
+from aifren.context.proactive_companion import ProactiveReason, render_proactive_reason
 
 
 ROOT = Path(__file__).resolve().parents[1]

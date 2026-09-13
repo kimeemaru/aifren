@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from assistant_service import AssistantService
-from character_registry import CharacterRegistry
+from aifren.assistant_service import AssistantService
+from aifren.character.character_registry import CharacterRegistry
 from test_assistant_service_v2_authority import _LLM, _TTS
 from test_character_memory_v2_shadow import _Embedding
 from test_memory_v2_embeddings import ToyEmbeddingProvider
@@ -24,13 +24,13 @@ class PublicFreshStartTests(unittest.TestCase):
                 stack.callback(os.chdir, previous)
                 stack.enter_context(patch.dict(os.environ, {'AIFREN_MEMORY_AUTHORITY':'v2',
                     'AIFREN_ENABLE_DEVELOPMENT_QA':'', 'AIFREN_DEVELOPMENT_STAGED_DATA_ROOT':''}))
-                stack.enter_context(patch('assistant.create_llm', return_value=_LLM()))
-                stack.enter_context(patch('assistant.VoiceInput', return_value=object()))
-                stack.enter_context(patch('assistant.TextToSpeech', return_value=_TTS()))
-                stack.enter_context(patch('memory.memory.EmbeddingModel', _Embedding))
-                for module in ('memory_v2_store', 'memory_v2_authority'):
+                stack.enter_context(patch('aifren.assistant.create_llm', return_value=_LLM()))
+                stack.enter_context(patch('aifren.assistant.VoiceInput', return_value=object()))
+                stack.enter_context(patch('aifren.assistant.TextToSpeech', return_value=_TTS()))
+                stack.enter_context(patch('aifren.memory.memory.EmbeddingModel', _Embedding))
+                for module in ('aifren.memory_v2_store', 'aifren.continuity.memory_v2_authority'):
                     stack.enter_context(patch(module+'.MiniLMEmbeddingProvider', return_value=ToyEmbeddingProvider()))
-                spies = [stack.enter_context(patch('memory.memory.Memory.'+method,
+                spies = [stack.enter_context(patch('aifren.memory.memory.Memory.'+method,
                          side_effect=AssertionError('V1 must remain inactive'))) for method in
                          ('get_relevant_memories','process','save','generate_missing_embeddings','generate_missing_metadata')]
                 records = [{'role':'user','content':'My favorite color is green.',
@@ -62,8 +62,8 @@ class PublicFreshStartTests(unittest.TestCase):
                 for spy in spies: spy.assert_not_called()
 
     def test_missing_legacy_profile_stays_visible_without_recreating_or_overwriting_data(self):
-        from backend_host import AIFrenWebSocketHost
-        from character_registry import CharacterStorageError
+        from aifren.backend_host import AIFrenWebSocketHost
+        from aifren.character.character_registry import CharacterStorageError
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); canonical=root/'conversation.json'
             canonical.write_text('[{"role":"user","content":"Synthetic retained record."}]')

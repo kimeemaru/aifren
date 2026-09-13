@@ -8,8 +8,8 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
 from test_assistant_service import FakeTTS
 from test_cancelled_response_repair import FocusedPtt
 from test_continuity_companion_tranche import _Harness
@@ -111,7 +111,7 @@ class _ProactiveFixture(unittest.TestCase):
         )
         authority = None
         if self.memory_authority == "v2":
-            from memory_v2_authority import DevelopmentV2MemoryAuthority
+            from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
             from test_assistant_service_v2_authority import _Memory
             self.memory = _Memory()
             authority = DevelopmentV2MemoryAuthority(
@@ -129,8 +129,8 @@ class _ProactiveFixture(unittest.TestCase):
         self.service.subscribe(self.events.append)
         self.recorder = Mock(enabled=False)
         for target, value in (
-            ("model_settings.proactive_behavior_status", {"enabled": True, "interval_seconds": 30}),
-            ("assistant_service.development_flight_recorder", self.recorder),
+            ("aifren.runtime.model_settings.proactive_behavior_status", {"enabled": True, "interval_seconds": 30}),
+            ("aifren.assistant_service.development_flight_recorder", self.recorder),
         ):
             mocked = patch(target, return_value=value)
             mocked.start()
@@ -208,7 +208,7 @@ class _ProactiveFixture(unittest.TestCase):
         self.assertEqual(1, self.h.writer.store.connection.execute("SELECT COUNT(*) FROM proactive_attempts").fetchone()[0])
 
     def unavailable_speech(self):
-        from memory_v2_store import SceneRelationProposal
+        from aifren.memory_v2_store import SceneRelationProposal
         text = "A sealed gag covers the companion's mouth."
         store, cid = self.h.writer.store, self.h.character_id
         sequence = store.connection.execute("SELECT MAX(sequence)+1 FROM events").fetchone()[0]
@@ -422,7 +422,7 @@ class ProactiveGovernanceTests(_ProactiveFixture):
                     raise TimeoutError("Synthetic replacement gate timed out")
             return original(source, destination)
 
-        with patch("conversation.persistence.os.replace", side_effect=replace):
+        with patch('aifren.conversation.persistence.os.replace', side_effect=replace):
             task = self.start(lambda: self.proactive(speak=False))
             self.assertTrue(reached.wait(3))
             press = self.start(self.service.push_to_talk_press, name="interrupt-at-commit")
@@ -435,7 +435,7 @@ class ProactiveGovernanceTests(_ProactiveFixture):
 
     def test_postreplace_persistence_failure_retains_saved_proactive_message(self):
         before_count = len(self.conversation.messages)
-        with patch("conversation.persistence._sync_directory", side_effect=OSError("synthetic failure")):
+        with patch('aifren.conversation.persistence._sync_directory', side_effect=OSError("synthetic failure")):
             result = self.proactive()
         self.assertFalse(result.succeeded)
         self.assertFalse(any(e.type in {"turn_started", "assistant_response", "turn_cancelled"} for e in self.events))

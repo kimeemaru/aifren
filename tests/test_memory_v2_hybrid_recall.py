@@ -1,10 +1,10 @@
 import unittest
 import uuid
 
-from benchmarks.memory_v2.models import RetrievalOutcome, RetrievalQuery
-from memory_v2_episode_compaction import EpisodeCompactionCache, EpisodeCompactor
-from memory_v2_hybrid_recall import HybridMemoryV2Recall
-from memory_v2_store import MemoryV2Store
+from aifren.memory_v2_store.models import RetrievalOutcome, RetrievalQuery
+from aifren.continuity.memory_v2_episode_compaction import EpisodeCompactionCache, EpisodeCompactor
+from aifren.continuity.memory_v2_hybrid_recall import HybridMemoryV2Recall
+from aifren.memory_v2_store import MemoryV2Store
 
 
 class _Semantic:

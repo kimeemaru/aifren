@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 import unittest
 
-from memory_query_decision import decide_memory_query
-from memory_v2_evidence_sufficiency import (
+from aifren.continuity.memory_query_decision import decide_memory_query
+from aifren.continuity.memory_v2_evidence_sufficiency import (
     admit_memory_evidence,
     candidate_answers_memory_query,
 )

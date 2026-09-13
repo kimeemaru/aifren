@@ -4,7 +4,7 @@ import threading
 
 import test_v2_incremental_learning as learning_tests
 from test_memory_v2_historical_episodes import _DeterministicHistoricalCompactor
-from memory_v2_episode_compaction import canonical_record_id
+from aifren.continuity.memory_v2_episode_compaction import canonical_record_id
 
 
 class EpisodeRangeProgressionTests(unittest.TestCase):
@@ -112,7 +112,7 @@ class EpisodeRangeProgressionTests(unittest.TestCase):
                     self.assertIn("beside the lake", result.reply)
 
     def test_multiple_gaps_and_incomplete_pair_never_enter_compactor(self):
-        from memory_v2_episode_compaction import historical_episode_source_groups
+        from aifren.continuity.memory_v2_episode_compaction import historical_episode_source_groups
         gap = self.prepare_gap()
         scope = self.service.truth_scope_provenance()
         malformed = len(self.conversation.messages)

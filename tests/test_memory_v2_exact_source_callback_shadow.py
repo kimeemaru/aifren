@@ -1,19 +1,19 @@
 import copy
 import unittest
 
-from memory_v2_exact_source_callback_shadow import (
+from aifren.continuity.memory_v2_exact_source_callback_shadow import (
     MAX_CALLBACK_RECENT_CHARACTERS,
     MAX_CALLBACK_RECENT_MESSAGES,
     compose_exact_source_callback_contract,
     source_grounded_callback_context,
     validate_exact_source_callback_response,
 )
-from memory_v2_historical_interpretation_evaluation import (
+from tools.memory_v2.memory_v2_historical_interpretation_evaluation import (
     SYNTHETIC_INTERPRETATION_CASES,
     interpretation_candidate,
 )
-from memory_v2_hybrid_recall import HybridRecallCandidate
-from memory_v2_prompt_admission_shadow import (
+from aifren.continuity.memory_v2_hybrid_recall import HybridRecallCandidate
+from aifren.continuity.memory_v2_prompt_admission_shadow import (
     compose_supplemental_historical_prompt,
 )
 

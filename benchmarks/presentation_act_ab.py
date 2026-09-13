@@ -81,7 +81,7 @@ CASES = (
 
 def probe_act(raw: str) -> dict:
     """Score complete generated output only; never executes a presentation."""
-    from presentation_metadata import EMOTIONS, GESTURES
+    from aifren.dialogue.presentation_metadata import EMOTIONS, GESTURES
     value = raw.lstrip()
     if not value.startswith("<|ACT:"):
         return {"status": "nonprefix" if "<|ACT:" in value else "omitted", "dialogue": raw, "fields": {}}
@@ -156,10 +156,10 @@ def summarize(rows: list[dict]) -> dict:
 
 
 def prompts(case: Case) -> tuple[list[dict], dict[str, str]]:
-    from assistant import build_character_prompt
-    from capability_policy import capability_context_block
-    from memory_v2_store.scene_relation_contract import CapabilityEffects
-    from presentation_metadata import response_contract_prompt, response_expression_context, ResponsePresentationMetadata
+    from aifren.assistant import build_character_prompt
+    from aifren.state.capability_policy import capability_context_block
+    from aifren.memory_v2_store.scene_relation_contract import CapabilityEffects
+    from aifren.dialogue.presentation_metadata import response_contract_prompt, response_expression_context, ResponsePresentationMetadata
     base = build_character_prompt({"name": "Mira"}, PERSONALITY)
     previous = ResponsePresentationMetadata(emotion=case.previous_emotion, intensity=0.55) if case.previous_emotion else None
     context = response_expression_context(previous)
@@ -172,13 +172,13 @@ def prompts(case: Case) -> tuple[list[dict], dict[str, str]]:
 
 
 def run(output: Path):
-    from config import LOCAL_LLM_MODEL_DIR, LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_CONTEXT_CHAR_BUDGET
-    from model_settings import get_model_settings
-    from llm.llm import _local_sampling_configuration
-    from llm.openai_compatible import OpenAICompatibleLLM
-    from llm.output_canonicalization import canonicalize_model_output
-    from local_model_runtime import LocalModelRuntime
-    from presentation_metadata import parse_assistant_response
+    from aifren.runtime.config import LOCAL_LLM_MODEL_DIR, LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_CONTEXT_CHAR_BUDGET
+    from aifren.runtime.model_settings import get_model_settings
+    from aifren.llm.llm import _local_sampling_configuration
+    from aifren.llm.openai_compatible import OpenAICompatibleLLM
+    from aifren.llm.output_canonicalization import canonicalize_model_output
+    from aifren.runtime.local_model_runtime import LocalModelRuntime
+    from aifren.dialogue.presentation_metadata import parse_assistant_response
     settings = get_model_settings()
     if settings["mode"] != "local": raise RuntimeError("Select the local provider before this explicit experiment.")
     output.mkdir(mode=0o700, parents=True, exist_ok=False)

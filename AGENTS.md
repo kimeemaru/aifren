@@ -8,7 +8,7 @@ Read [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](ARCHITECTURE.md) and
 - Memory V2 is normal prompt-facing long-term-memory authority. V1 is explicit one-launch compatibility only, with zero normal V2 prompt/learned-memory/summary access. V2 errors never silently select V1.
 - Derived episodes, embeddings, FTS/ANN and caches are rebuildable, never replacement truth. Preserve exact source, speaker, scope, polarity and current/historical admission.
 - CompanionMemoryRealizer owns only the surface of an admitted answer, never retrieval or memory. Optional present reactions have no historical authority; dropping one retains the grounded core without repair.
-- AssistantService owns turns, canonical persistence, memory, TTS/PTT and backend events. backend_host.py adapts the loopback transport; Unity owns production UI only.
+- AssistantService owns turns, canonical persistence, memory, TTS/PTT and backend events. aifren/backend_host.py adapts the loopback transport; Unity owns production UI only.
 - Keep LLM, TTS, STT and embedding implementations replaceable. Managed llama.cpp launches explicitly use `--logits_all false`; never stop an external process by port alone.
 - Character identity/personality/history are separate from visual assets and voice. Direct VRM is normal; RenderTexture is rollback/debug-only. UI visibility never changes avatar framing.
 - A subsystem deletes only owned canonical paths. Reject traversal, symlink escapes and kind confusion; imported external originals are never implicit deletion targets.
@@ -52,3 +52,18 @@ before every public push. Do not maintain another application implementation tha
 requires periodic export. Historical internal archives are not runtime dependencies.
 Never invent private fixtures or require unavailable machine-local assets. Runtime
 data, logs, model files, preferences and private QA evidence do not belong in Git.
+
+## Source navigation
+
+Start with [the source map](docs/SOURCE_LAYOUT.md), then read the affected owner:
+`aifren/assistant_service.py` (turns), `aifren/backend_host.py` (transport),
+`aifren/character/` (identity/storage/management), `aifren/dialogue/` (presentation),
+`aifren/state/` (current state/capabilities), `aifren/continuity/` (V2 integration),
+and `aifren/context/` (request planning). Providers and stores keep their existing
+package names under `aifren`. Developer evaluations belong in `tools`/`benchmarks`;
+application modules must not import those tools.
+
+Use explicit `aifren` imports. `aifren.runtime.runtime_layout` owns source/resource/
+data roots; moving source never authorizes moving data or changing canonical keys.
+Keep the thin root command wrappers for supported launchers. Run package utilities
+with `python -m` from the checkout; do not add per-module CWD/path discovery.

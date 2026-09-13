@@ -6,18 +6,18 @@ import tempfile
 import unittest
 import uuid
 
-from benchmarks.memory_v2.models import EmbeddingIdentity, RetrievalQuery
-from character_registry import CharacterRegistry
-from memory_v2_historical_evidence import (
+from aifren.memory_v2_store.models import EmbeddingIdentity, RetrievalQuery
+from aifren.character.character_registry import CharacterRegistry
+from aifren.continuity.memory_v2_historical_evidence import (
     HistoricalEvidenceError,
     HistoricalEvidenceIndexer,
     canonical_record_id,
     open_staged_historical_evidence_writer,
 )
-from memory_v2_hybrid_recall import HybridMemoryV2Recall
-from memory_v2_shadow_writer import default_v2_path
-from memory_v2_staged_clone import create_memory_v2_staged_clone
-from memory_v2_store import EmbeddingLifecycle, MemoryV2Store, SemanticRetrievalV2, StoreError
+from aifren.continuity.memory_v2_hybrid_recall import HybridMemoryV2Recall
+from aifren.continuity.memory_v2_shadow_writer import default_v2_path
+from aifren.continuity.memory_v2_staged_clone import create_memory_v2_staged_clone
+from aifren.memory_v2_store import EmbeddingLifecycle, MemoryV2Store, SemanticRetrievalV2, StoreError
 
 
 class _ConceptEmbedding:

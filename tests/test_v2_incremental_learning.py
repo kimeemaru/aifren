@@ -12,7 +12,7 @@ class V2IncrementalLearningTests(unittest.TestCase):
     reopen = recovery_tests.V2RuntimeRecoveryTests.reopen
 
     def install_rollover(self, provider):
-        from memory_v2_episode_compaction import EpisodeCompactionCache, EpisodeCompactor, EpisodeCompactionRollover
+        from aifren.continuity.memory_v2_episode_compaction import EpisodeCompactionCache, EpisodeCompactor, EpisodeCompactionRollover
         cache = EpisodeCompactionCache(self.h.writer.store, self.h.character_id)
         conversation = self.conversation
         rollover = EpisodeCompactionRollover(cache, lambda: EpisodeCompactor(provider),
@@ -73,7 +73,7 @@ class V2IncrementalLearningTests(unittest.TestCase):
     def test_derived_maintenance_fault_does_not_retire_service_or_force_rebuild(self):
         self.assertTrue(self.service.process_text_turn("We visited the lighthouse.", speak=False).succeeded)
         with patch.object(self.h.writer.store, "rebuild_fts", side_effect=AssertionError("full rebuild")), \
-                patch("memory_v2_runtime_observation.CanonicalObservationRecovery.maintain_embeddings",
+                patch('aifren.continuity.memory_v2_runtime_observation.CanonicalObservationRecovery.maintain_embeddings',
                       side_effect=RuntimeError("synthetic maintenance interruption")):
             self.service.maintain_canonical_observers()
             self.assertTrue(self.service.process_text_turn("Hello.", speak=False).succeeded)
@@ -83,11 +83,11 @@ class V2IncrementalLearningTests(unittest.TestCase):
             "Do you remember the lighthouse?", speak=False).reply)
 
     def test_append_index_failure_is_unavailable_and_retains_originals_until_retry(self):
-        with patch("memory_v2_runtime_observation.CanonicalObservationRecovery._observe",
+        with patch('aifren.continuity.memory_v2_runtime_observation.CanonicalObservationRecovery._observe',
                    side_effect=RuntimeError("synthetic crash after canonical save")):
             self.assertTrue(self.service.process_text_turn("We visited the lighthouse.", speak=False).succeeded)
         count = len(self.conversation.messages)
-        with patch("memory_v2_historical_evidence.persist_historical_occurrence",
+        with patch('aifren.continuity.memory_v2_historical_evidence.persist_historical_occurrence',
                    side_effect=RuntimeError("synthetic indexing failure")):
             result = self.service.process_text_turn("Do you remember the lighthouse?", speak=False)
         self.assertFalse(result.succeeded)
@@ -101,7 +101,7 @@ class V2IncrementalLearningTests(unittest.TestCase):
 
     def test_idle_episode_pages_are_bounded_valid_and_append_aware(self):
         from test_memory_v2_historical_episodes import _DeterministicHistoricalCompactor
-        from memory_v2_episode_compaction import EPISODE_PURPOSE_HISTORICAL
+        from aifren.continuity.memory_v2_episode_compaction import EPISODE_PURPOSE_HISTORICAL
         class Provider(_DeterministicHistoricalCompactor):
             episode_calls = 0
             def generate(inner, history, prompt, **kwargs):

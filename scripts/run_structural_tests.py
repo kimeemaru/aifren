@@ -40,8 +40,8 @@ def main():
                       XDG_CACHE_HOME=str(output / 'cache'))
     from test_character_memory_v2_shadow import _Embedding
     from test_memory_v2_embeddings import ToyEmbeddingProvider
-    from development_flight_recorder import DevelopmentFlightRecorder
-    from local_model_runtime import LocalModelRuntime
+    from aifren.runtime.development_flight_recorder import DevelopmentFlightRecorder
+    from aifren.runtime.local_model_runtime import LocalModelRuntime
 
     class SyntheticEmbeddingModel:
         def __init__(self):
@@ -59,8 +59,8 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((ROOT / relative).read_bytes())
     with ExitStack() as stack:
-        stack.enter_context(patch('memory.memory.EmbeddingModel', _Embedding))
-        stack.enter_context(patch('memory.embeddings.EmbeddingModel', SyntheticEmbeddingModel))
+        stack.enter_context(patch('aifren.memory.memory.EmbeddingModel', _Embedding))
+        stack.enter_context(patch('aifren.memory.embeddings.EmbeddingModel', SyntheticEmbeddingModel))
         stack.enter_context(patch.object(DevelopmentFlightRecorder, '_gpu_sample', return_value={}))
         stack.enter_context(patch.object(LocalModelRuntime, '_probe_gpu_offload', return_value=False))
         with (output / 'test-output.txt').open('w') as stdout, \

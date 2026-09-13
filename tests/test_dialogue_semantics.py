@@ -1,6 +1,6 @@
 import unittest
 
-from dialogue_semantics import (
+from aifren.dialogue.dialogue_semantics import (
     DialogueSpanKind,
     SemanticSentenceAccumulator,
     SemanticSpeechGrouper,

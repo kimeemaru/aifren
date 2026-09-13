@@ -19,13 +19,13 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from assistant import build_character_prompt
+from aifren.assistant import build_character_prompt
 from benchmarks.active_state.production_session import ProductionSession, response_envelope
-from config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR
-from development_flight_recorder import development_flight_recorder
-from llm.openai_compatible import OpenAICompatibleLLM
-from local_model_runtime import LocalModelRuntime
-from model_settings import get_model_settings
+from aifren.runtime.config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR
+from aifren.runtime.development_flight_recorder import development_flight_recorder
+from aifren.llm.openai_compatible import OpenAICompatibleLLM
+from aifren.runtime.local_model_runtime import LocalModelRuntime
+from aifren.runtime.model_settings import get_model_settings
 
 
 @dataclass(frozen=True)

@@ -12,9 +12,9 @@ from unittest.mock import patch
 import numpy as np
 from benchmarks.active_state.production_session import ProductionSession, response_envelope
 from test_cancelled_response_repair import FocusedPtt
-from tts.tts import KokoroTextToSpeech
-from tts.streaming import StreamingSpeechQueue, TtsSynthesisResourceManager
-from dialogue_semantics import spoken_text
+from aifren.tts.tts import KokoroTextToSpeech
+from aifren.tts.streaming import StreamingSpeechQueue, TtsSynthesisResourceManager
+from aifren.dialogue.dialogue_semantics import spoken_text
 
 LONG = ' '.join(['We can enjoy the quiet garden, with its bright flowers and peaceful paths.'] * 12)
 
@@ -221,7 +221,7 @@ class CancellableSynthesisTests(unittest.TestCase):
             return "I can still enjoy a quiet conversation."
         self.session.provider.generate_bounded=repair
         self.session.script.queue([response_envelope('I can see your red shirt clearly.')])
-        with patch('model_settings.kokoro_early_speech_status',return_value={'effective':True}):
+        with patch('aifren.runtime.model_settings.kokoro_early_speech_status',return_value={'effective':True}):
             future=self.start(lambda:self.service.process_text_turn('How are you?',speak=True))
             try:
                 self.assertTrue(repair_entered.wait(2))
@@ -245,7 +245,7 @@ class CancellableSynthesisTests(unittest.TestCase):
             yield 'A clear second sentence.'
         self.service._response_generator=None
         self.session.provider.stream_generate=stream
-        with patch('model_settings.kokoro_early_speech_status',return_value={'effective':False}):
+        with patch('aifren.runtime.model_settings.kokoro_early_speech_status',return_value={'effective':False}):
             turn=self.start(lambda:self.service.process_text_turn('Hello.',speak=True))
             try:
                 self.assertTrue(waiting.wait(2))
@@ -309,7 +309,7 @@ class CancellableSynthesisTests(unittest.TestCase):
         self.assertEqual(len(self.tts.units)*24000,len(audio))
 
     def test_continuous_queue_plays_all_prepared_units_once_in_order(self):
-        from tts import tts as owner
+        from aifren.tts import tts as owner
         captured,started,finished=[],[],[]
         self.tts.set_playback_started_callback(lambda duration,envelope,words,pid:started.append(pid))
         self.tts.set_playback_finished_callback(finished.append)

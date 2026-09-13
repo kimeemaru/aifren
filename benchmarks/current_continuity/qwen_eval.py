@@ -16,13 +16,13 @@ from pathlib import Path
 import re
 from typing import Callable
 
-from config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR
-from conversation.conversation import ContextManager
-from current_continuity import render_truth_scope_context
-from llm.llm import create_llm
-from local_model_runtime import LocalModelRuntime
-from memory_v2_store.repository import TruthScopeRecord
-from model_settings import get_model_settings
+from aifren.runtime.config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR
+from aifren.conversation.conversation import ContextManager
+from aifren.state.current_continuity import render_truth_scope_context
+from aifren.llm.llm import create_llm
+from aifren.runtime.local_model_runtime import LocalModelRuntime
+from aifren.memory_v2_store.repository import TruthScopeRecord
+from aifren.runtime.model_settings import get_model_settings
 
 
 ROOT = Path(__file__).resolve().parents[2]

@@ -8,7 +8,7 @@ import uuid
 from benchmarks.memory_v2.adapters import MemoryV2StructuralAdapter
 from benchmarks.memory_v2.fixtures import build_core_fixture, structural_baseline_cases
 from benchmarks.memory_v2.harness import run_retrieval_benchmark
-from memory_v2_store import MemoryV2Store, StoreError
+from aifren.memory_v2_store import MemoryV2Store, StoreError
 
 
 class MemoryV2StoreTests(unittest.TestCase):

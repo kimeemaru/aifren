@@ -3,7 +3,7 @@ import json
 import unittest
 
 from benchmarks.presentation_act_ab import ACT_PROMPT, CASES, Case, probe_act, prompts, summarize
-from presentation_metadata import parse_assistant_response, response_contract_prompt
+from aifren.dialogue.presentation_metadata import parse_assistant_response, response_contract_prompt
 
 
 class ActExperimentTests(unittest.TestCase):

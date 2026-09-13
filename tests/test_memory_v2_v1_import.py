@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from memory_v2_store.v1_import import V1ImportError, import_v1_shadow, verify_v1_shadow
+from aifren.memory_v2_store.v1_import import V1ImportError, import_v1_shadow, verify_v1_shadow
 
 
 class V1ShadowImportTests(unittest.TestCase):

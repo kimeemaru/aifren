@@ -14,13 +14,13 @@ import unittest
 from benchmarks.active_state.harness import BASE_TIME, SyntheticSession
 from benchmarks.active_state.breadth_corpus import planned_case_count
 from benchmarks.active_state.adversarial import run_capability_combinations
-from companion_action import validate_companion_action_decision
-from memory_v2_store.store import (
+from aifren.state.companion_action import validate_companion_action_decision
+from aifren.memory_v2_store.store import (
     DISTINCT_DORMANT_RETIRE_AFTER_US,
     GENERIC_DORMANT_RETIRE_AFTER_US,
 )
-from response_requirements import derive_response_requirement, validate_response_requirement
-from presentation_metadata import parse_assistant_response
+from aifren.dialogue.response_requirements import derive_response_requirement, validate_response_requirement
+from aifren.dialogue.presentation_metadata import parse_assistant_response
 
 
 class ActiveStateAdversarialTests(unittest.TestCase):

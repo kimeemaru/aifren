@@ -60,7 +60,7 @@ class LinuxPackageSelectionTests(unittest.TestCase):
         subprocess.run(["bash", "-n", str(self.output / "run-aifren.sh")], check=True)
 
     def test_symlink_source_file_or_parent_rejected_before_copy(self):
-        for relative in ("backend_host.py", "conversation"):
+        for relative in ("backend_host.py", "aifren"):
             with self.subTest(relative=relative):
                 original = self.source / relative
                 saved = self.root / ("saved-" + relative)
@@ -83,7 +83,7 @@ class LinuxPackageSelectionTests(unittest.TestCase):
                 self.assertFalse(self.output.exists())
         path = self.staging / self.inputs[0]["path"]
         path.unlink()
-        path.symlink_to(self.source / "backend_host.py")
+        path.symlink_to(self.source / 'aifren/backend_host.py')
         with self.assertRaisesRegex(ValueError, "symlink"):
             self.compose()
         path.unlink()

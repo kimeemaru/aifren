@@ -1146,7 +1146,7 @@ class ActiveStateProductionSessionTests(unittest.TestCase):
         )
         now = BASE_TIME + timedelta(hours=8)
         before = len(self.session.artifacts)
-        with patch("model_settings.proactive_behavior_status", return_value={
+        with patch('aifren.runtime.model_settings.proactive_behavior_status', return_value={
             "enabled": True, "interval_seconds": 30,
         }):
             failed = self.session.proactive(now=now, draft="")
@@ -1161,7 +1161,7 @@ class ActiveStateProductionSessionTests(unittest.TestCase):
         self.session.now = now + timedelta(minutes=1)
         self.session.turn("The parcel is still delayed.", response_envelope("Understood."))
         before = len(self.session.artifacts)
-        with patch("model_settings.proactive_behavior_status", return_value={
+        with patch('aifren.runtime.model_settings.proactive_behavior_status', return_value={
             "enabled": True, "interval_seconds": 30,
         }):
             accepted = self.session.proactive(

@@ -180,8 +180,8 @@ class ActiveStateLociTests(unittest.TestCase):
         self.assertEqual(["silver ring"], [row.cause for row in self.relations()])
 
     def test_locus_requires_exact_evidence(self):
-        from memory_v2_store.scene_relation_contract import SceneRelationProposal
-        from memory_v2_store.store import StoreError
+        from aifren.memory_v2_store.scene_relation_contract import SceneRelationProposal
+        from aifren.memory_v2_store.store import StoreError
         self.turn("I put a ribbon on your hand.")
         row = self.relations()[0]
         event = self.h.writer.store.connection.execute(

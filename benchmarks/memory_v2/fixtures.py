@@ -3,7 +3,7 @@
 from dataclasses import replace
 from datetime import datetime, timedelta
 
-from .models import BenchmarkFixture, GoldClaim, RetrievalCase, SyntheticEvent
+from aifren.memory_v2_store.models import BenchmarkFixture, GoldClaim, RetrievalCase, SyntheticEvent
 
 
 CORE_FIXTURE_VERSION = "memory-v2-core-v2"

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import uuid
 
-from memory_v2_store import (
+from aifren.memory_v2_store import (
     MemoryV2Repository,
     MemoryV2Store,
     SHARED_EPISODE,

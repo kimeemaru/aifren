@@ -4,8 +4,8 @@ from dataclasses import replace
 import unittest
 from unittest.mock import patch
 
-from assistant import build_character_prompt
-from conversation_style import NATURAL_POLICY
+from aifren.assistant import build_character_prompt
+from aifren.dialogue.conversation_style import NATURAL_POLICY
 import test_v2_runtime_recovery as recovery
 
 

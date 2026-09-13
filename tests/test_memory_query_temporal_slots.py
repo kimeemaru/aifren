@@ -1,7 +1,7 @@
 """Temporal operators are not the head noun of a favorite-property slot."""
 import unittest
 
-from memory_query_decision import decide_memory_query
+from aifren.continuity.memory_query_decision import decide_memory_query
 
 
 class TemporalPreferenceSlotTests(unittest.TestCase):

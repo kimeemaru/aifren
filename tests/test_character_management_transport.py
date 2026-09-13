@@ -6,10 +6,10 @@ from contextlib import ExitStack
 from pathlib import Path
 import unittest
 from unittest.mock import patch
-from backend_host import AIFrenWebSocketHost
-from character_unavailable import CharacterUnavailableService
-from character_operations import CharacterOperationService
-from character_registry import CharacterStorageError
+from aifren.backend_host import AIFrenWebSocketHost
+from aifren.character.character_unavailable import CharacterUnavailableService
+from aifren.character.character_operations import CharacterOperationService
+from aifren.character.character_registry import CharacterStorageError
 from test_character_switch_ownership import CharacterSwitchOwnershipTests
 
 class CharacterManagementTransportTests(unittest.IsolatedAsyncioTestCase):

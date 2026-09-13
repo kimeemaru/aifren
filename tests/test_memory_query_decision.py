@@ -2,9 +2,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from memory_query_decision import MemoryQueryDecision, decide_memory_query
-from memory_v2_authority import DevelopmentV2MemoryAuthority
-import memory_v2_authority
+from aifren.continuity.memory_query_decision import MemoryQueryDecision, decide_memory_query
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.continuity import memory_v2_authority
 
 
 class MemoryQueryDecisionTests(unittest.TestCase):

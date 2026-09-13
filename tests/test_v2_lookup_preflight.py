@@ -4,7 +4,7 @@ import threading
 from unittest.mock import patch
 
 import test_v2_runtime_recovery as recovery_tests
-from memory_query_decision import decide_memory_query
+from aifren.continuity.memory_query_decision import decide_memory_query
 
 
 class V2LookupPreflightTests(unittest.TestCase):
@@ -94,7 +94,7 @@ class V2LookupPreflightTests(unittest.TestCase):
         self.assertEqual(before_calls, len(self.llm.calls))
 
     def test_backlog_gets_only_one_existing_bounded_page_per_lookup(self):
-        from memory_v2_runtime_observation import PAGE_RECORDS
+        from aifren.continuity.memory_v2_runtime_observation import PAGE_RECORDS
         scope = self.service.truth_scope_provenance()
         for index in range(PAGE_RECORDS + 3):
             self.conversation.add_user_message(f"Synthetic ordinary greeting {index}.", truth_scope=scope)

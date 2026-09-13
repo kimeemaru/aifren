@@ -20,13 +20,13 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from assistant import build_character_prompt
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from memory_v2_authority import DevelopmentV2MemoryAuthority
-from memory_v2_shadow_writer import MemoryV2ShadowWriter, default_v2_path
-from memory_v2_store import MemoryV2Repository, MemoryV2Store
-from memory_v2_store.production_import import import_v1_memories, v1_import_scope
+from aifren.assistant import build_character_prompt
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter, default_v2_path
+from aifren.memory_v2_store import MemoryV2Repository, MemoryV2Store
+from aifren.memory_v2_store.production_import import import_v1_memories, v1_import_scope
 from test_assistant_service_v2_authority import _LLM, _Memory, _TTS
 from test_memory_v2_embeddings import ToyEmbeddingProvider
 
@@ -85,7 +85,7 @@ class StoppedCharacterFolderWipeTests(unittest.TestCase):
         # This import is a deliberate preparation step above. Neither normal
         # service startup nor any following V2 turn may invoke it implicitly.
         for patcher in (
-            patch("memory_v2_shadow_writer.import_v1_memories",
+            patch('aifren.continuity.memory_v2_shadow_writer.import_v1_memories',
                   side_effect=AssertionError("Normal V2 must not import V1")),
             patch.object(MemoryV2ShadowWriter, "reconcile",
                          side_effect=AssertionError("Normal V2 must not reconcile V1")),

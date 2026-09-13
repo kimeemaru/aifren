@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
-from runtime_layout import (
+from aifren.runtime.runtime_layout import (
     initialize_data_root,
     packaged_user_data_root,
     resolve_runtime_roots,
@@ -109,11 +109,15 @@ class ProviderResourceLayoutTests(unittest.TestCase):
             code = """
 import json, os
 from pathlib import Path
-import automatic_expression, memory.embeddings, stt.stt, config, assistant_service
+from aifren.dialogue import automatic_expression
+from aifren.memory import embeddings
+from aifren.stt import stt
+from aifren.runtime import config
+from aifren import assistant_service
 print(json.dumps({
- 'models':[str(automatic_expression.DEFAULT_MODEL_DIR),memory.embeddings.MODEL_DIR,
-           stt.stt.MODEL_DIR,config.KOKORO_MODEL_DIR,config.LOCAL_LLM_MODEL_DIR],
- 'modules':[automatic_expression.__file__,memory.embeddings.__file__,stt.stt.__file__,
+ 'models':[str(automatic_expression.DEFAULT_MODEL_DIR),embeddings.MODEL_DIR,
+           stt.MODEL_DIR,config.KOKORO_MODEL_DIR,config.LOCAL_LLM_MODEL_DIR],
+ 'modules':[automatic_expression.__file__,embeddings.__file__,stt.__file__,
             config.__file__,assistant_service.__file__]}))
 """
             environment=dict(os.environ,AIFREN_RESOURCE_ROOT=directory,PYNPUT_BACKEND='dummy')

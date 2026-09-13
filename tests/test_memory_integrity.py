@@ -5,7 +5,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-import memory.memory as memory_module
+import aifren.memory.memory as memory_module
 
 
 class FakeEmbeddingModel:

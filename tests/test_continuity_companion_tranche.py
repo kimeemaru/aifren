@@ -10,15 +10,15 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from current_continuity import admit_current_continuity_context, extract_active_state_proposal
-from durable_fact_curation import extract_durable_fact_proposal
-from interaction_policy import classify_interaction_policy, render_sleep_reaction
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository, MemoryV2Store, admit_durable_context
-from memory_v2_store.durable_prompt import filter_v1_duplicates
-from proactive_companion import (
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.state.current_continuity import admit_current_continuity_context, extract_active_state_proposal
+from aifren.continuity.durable_fact_curation import extract_durable_fact_proposal
+from aifren.state.interaction_policy import classify_interaction_policy, render_sleep_reaction
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository, MemoryV2Store, admit_durable_context
+from aifren.memory_v2_store.durable_prompt import filter_v1_duplicates
+from aifren.context.proactive_companion import (
     evaluate_proactive_eligibility,
     mark_checkins_responded,
     record_displayed_checkin,
@@ -1260,7 +1260,7 @@ class ServiceBehaviorTests(unittest.TestCase):
                 character_id=h.character_id,
                 memory_authority="v1",
             )
-            with patch("model_settings.proactive_behavior_status", return_value={"enabled": True}):
+            with patch('aifren.runtime.model_settings.proactive_behavior_status', return_value={"enabled": True}):
                 result = service.process_proactive_checkin(
                     now_us=int(now.timestamp() * 1_000_000), speak=False,
                 )
@@ -1308,7 +1308,7 @@ class ServiceBehaviorTests(unittest.TestCase):
                     )
                     events = []
                     service.subscribe(events.append)
-                    with patch("model_settings.proactive_behavior_status", return_value={
+                    with patch('aifren.runtime.model_settings.proactive_behavior_status', return_value={
                         "enabled": True, "interval_seconds": 30,
                     }):
                         result = service.process_proactive_checkin(
@@ -1348,7 +1348,7 @@ class ServiceBehaviorTests(unittest.TestCase):
                     memory_authority="v1",
                 )
 
-            with patch("model_settings.proactive_behavior_status", return_value={
+            with patch('aifren.runtime.model_settings.proactive_behavior_status', return_value={
                 "enabled": True, "interval_seconds": 30,
             }):
                 first = make_service(now)
@@ -1409,7 +1409,7 @@ class ServiceBehaviorTests(unittest.TestCase):
             service.subscribe(events.append)
             proactive_result = []
             user_result = []
-            with patch("model_settings.proactive_behavior_status", return_value={
+            with patch('aifren.runtime.model_settings.proactive_behavior_status', return_value={
                 "enabled": True, "interval_seconds": 30,
             }):
                 proactive = threading.Thread(target=lambda: proactive_result.append(
@@ -1462,7 +1462,7 @@ class ServiceBehaviorTests(unittest.TestCase):
             )
             service.subscribe(lambda event: service.stop_speaking(interrupted=True)
                               if event.type == "assistant_response" else None)
-            with patch("model_settings.proactive_behavior_status", return_value={"enabled": True}):
+            with patch('aifren.runtime.model_settings.proactive_behavior_status', return_value={"enabled": True}):
                 result = service.process_proactive_checkin(
                     now_us=int(now.timestamp() * 1_000_000), speak=True,
                 )

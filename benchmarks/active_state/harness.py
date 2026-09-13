@@ -20,23 +20,23 @@ import time
 from typing import Any, Callable, Iterable
 import uuid
 
-from capability_policy import capability_context_block, validate_capability_response
-from character_scene_profile import (
+from aifren.state.capability_policy import capability_context_block, validate_capability_response
+from aifren.character.character_scene_profile import (
     cache_character_scene_profile,
     derive_character_scene_profile,
     effective_profile_worn_items,
 )
-from companion_action import validate_companion_action_decision
-from current_continuity import admit_current_continuity_context
-from interaction_policy import (
+from aifren.state.companion_action import validate_companion_action_decision
+from aifren.state.current_continuity import admit_current_continuity_context
+from aifren.state.interaction_policy import (
     classify_interaction_policy,
     render_sleep_reaction,
 )
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
-from memory_v2_store.scene_relation_contract import compose_capability_effects
-from presentation_metadata import parse_assistant_response
-from response_requirements import (
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
+from aifren.memory_v2_store.scene_relation_contract import compose_capability_effects
+from aifren.dialogue.presentation_metadata import parse_assistant_response
+from aifren.dialogue.response_requirements import (
     derive_response_requirement,
     validate_response_requirement,
 )

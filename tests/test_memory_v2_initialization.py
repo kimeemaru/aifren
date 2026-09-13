@@ -6,13 +6,13 @@ from pathlib import Path
 from unittest.mock import patch
 import unittest
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from memory_v2_authority import DevelopmentV2MemoryAuthority
-from memory_v2_initialization import initialize_v2_derived_state, install_validated_episode_acceleration
-from memory_v2_episode_compaction import EpisodeCompactionCache, EpisodeCompactor, EPISODE_SOURCE_HISTORICAL, EPISODE_PURPOSE_HISTORICAL
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Store, MemoryV2Repository
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.continuity.memory_v2_initialization import initialize_v2_derived_state, install_validated_episode_acceleration
+from aifren.continuity.memory_v2_episode_compaction import EpisodeCompactionCache, EpisodeCompactor, EPISODE_SOURCE_HISTORICAL, EPISODE_PURPOSE_HISTORICAL
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Store, MemoryV2Repository
 from test_v2_runtime_recovery import V2RuntimeRecoveryTests
 from test_assistant_service_v2_authority import _LLM, _Memory, _TTS
 from test_memory_v2_embeddings import ToyEmbeddingProvider
@@ -93,7 +93,7 @@ class DefaultV2InitializationTests(V2RuntimeRecoveryTests):
     def test_explicit_rollback_factory_does_not_open_or_mutate_v2(self):
         components=(self.llm,_Memory(),self.conversation,object(),
                     {'_character_id':self.h.character_id},'Synthetic',_TTS(),None)
-        with patch.dict(os.environ,{'AIFREN_MEMORY_AUTHORITY':'v1'}),patch('assistant.initialize',return_value=components) as init,patch('memory_v2_shadow_writer.MemoryV2ShadowWriter',side_effect=AssertionError('Rollback must not open V2')):
+        with patch.dict(os.environ,{'AIFREN_MEMORY_AUTHORITY':'v1'}),patch('aifren.assistant.initialize',return_value=components) as init,patch('aifren.continuity.memory_v2_shadow_writer.MemoryV2ShadowWriter',side_effect=AssertionError('Rollback must not open V2')):
             service=AssistantService.create_default()
             self.assertEqual('v1',service.memory_authority_status()['mode'])
             self.assertIsNone(service._memory_v2_shadow_writer)
@@ -104,7 +104,7 @@ class DefaultV2InitializationTests(V2RuntimeRecoveryTests):
         memory=_Memory();memory.memory_file=self.h.memory_file
         components=(self.llm,memory,self.conversation,object(),
                     {'_character_id':self.h.character_id},'Synthetic',_TTS(),None)
-        with patch.dict(os.environ,{'AIFREN_MEMORY_AUTHORITY':'','AIFREN_ENABLE_DEVELOPMENT_QA':''}),patch('assistant.initialize',return_value=components) as init,patch('config.MEMORY_V2_SHADOW_WRITE_ENABLED',False),patch('memory_v2_store.MiniLMEmbeddingProvider',return_value=ToyEmbeddingProvider()),patch('memory_v2_authority.MiniLMEmbeddingProvider',return_value=ToyEmbeddingProvider()),patch.object(MemoryV2ShadowWriter,'reconcile',side_effect=AssertionError('V1 import is compatibility-only')):
+        with patch.dict(os.environ,{'AIFREN_MEMORY_AUTHORITY':'','AIFREN_ENABLE_DEVELOPMENT_QA':''}),patch('aifren.assistant.initialize',return_value=components) as init,patch('aifren.runtime.config.MEMORY_V2_SHADOW_WRITE_ENABLED',False),patch('aifren.memory_v2_store.MiniLMEmbeddingProvider',return_value=ToyEmbeddingProvider()),patch('aifren.continuity.memory_v2_authority.MiniLMEmbeddingProvider',return_value=ToyEmbeddingProvider()),patch.object(MemoryV2ShadowWriter,'reconcile',side_effect=AssertionError('V1 import is compatibility-only')):
             service=AssistantService.create_default()
             self.assertEqual('v2',service.memory_authority_status()['mode'])
             self.assertEqual(0,memory.retrieval_calls);self.assertEqual([],memory.processed)
@@ -153,9 +153,9 @@ class EpisodeAccelerationTests(unittest.TestCase):
 
 class RuntimeAttestationTests(unittest.TestCase):
     def test_normal_completed_prefix_attests_and_rejects_changed_identity(self):
-        from development_staged_runtime import _runtime_history_attested
-        from memory_v2_runtime_observation import EMPTY_DIGEST, extend_digest
-        from memory_v2_historical_evidence import HISTORICAL_EVIDENCE_POLICY_VERSION
+        from aifren.runtime.development_staged_runtime import _runtime_history_attested
+        from aifren.continuity.memory_v2_runtime_observation import EMPTY_DIGEST, extend_digest
+        from aifren.continuity.memory_v2_historical_evidence import HISTORICAL_EVIDENCE_POLICY_VERSION
         path=Path('characters/synthetic/conversation.json')
         messages=[{'role':'user','content':'A supported historical statement.'}, {'role':'assistant','content':'Okay.'}]
         digest=EMPTY_DIGEST

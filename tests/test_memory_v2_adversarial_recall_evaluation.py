@@ -1,6 +1,6 @@
 import unittest
 
-from memory_v2_adversarial_recall_evaluation import (
+from tools.memory_v2.memory_v2_adversarial_recall_evaluation import (
     EVALUATION_VERSION,
     FROZEN_RETRIEVAL_CHECKPOINT,
     AdversarialCase,

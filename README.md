@@ -118,6 +118,12 @@ See [PROJECT.md](PROJECT.md) for current direction,
 [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md) for durable decisions, and
 [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for setup and validation.
 
+## Source navigation
+
+Python implementation lives in `aifren/`, with Unity in `unity/`, supported helpers
+in `scripts/`, developer evaluations in `tools/` and `benchmarks/`, and synthetic
+regressions in `tests/`. See the [owner and entry-point map](docs/SOURCE_LAYOUT.md).
+
 ## Getting started
 
 Use Python 3.10–3.12 and Unity 2022.3.62f3. The public tree starts with a generic

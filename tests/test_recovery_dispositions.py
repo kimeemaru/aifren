@@ -59,7 +59,7 @@ class RecoveryDispositionTests(unittest.TestCase):
         self.assertEqual("unresolved", self.progress()["continuity"]["state"])
         self.assertEqual([], self.dispositions())
         recovery = self.service._canonical_observation_recovery
-        with patch("memory_v2_runtime_observation.LoadedCanonicalArchive.load",
+        with patch('aifren.continuity.memory_v2_runtime_observation.LoadedCanonicalArchive.load',
                    side_effect=AssertionError("unchanged unresolved archive reread")):
             for _ in range(4):
                 self.service.maintain_canonical_observers()
@@ -79,7 +79,7 @@ class RecoveryDispositionTests(unittest.TestCase):
         self.assertEqual([], self.dispositions())
 
     def test_disposition_failure_rolls_back_with_its_cursor_then_recovers(self):
-        from memory_v2_runtime_observation import CanonicalObservationRecovery
+        from aifren.continuity.memory_v2_runtime_observation import CanonicalObservationRecovery
         original = CanonicalObservationRecovery._record_disposition
         def crash(owner, *args, **kwargs):
             original(owner, *args, **kwargs)
@@ -99,7 +99,7 @@ class RecoveryDispositionTests(unittest.TestCase):
         self.assertEqual(originals, self.h.conversation_file.read_bytes())
 
     def test_committed_entry_with_missed_cursor_does_not_reenter_after_explicit_exit(self):
-        from memory_v2_runtime_observation import CanonicalObservationRecovery
+        from aifren.continuity.memory_v2_runtime_observation import CanonicalObservationRecovery
         with patch.object(CanonicalObservationRecovery, "run_page", return_value={}):
             self.assertTrue(self.service.process_text_turn(
                 "Let's roleplay that we're in the orchard.", speak=False).succeeded)
@@ -143,7 +143,7 @@ class RecoveryDispositionTests(unittest.TestCase):
         original = self.h.conversation_file.read_bytes()
         self.reopen()
         self.assertEqual(original, self.h.conversation_file.read_bytes())
-        with patch("memory_v2_runtime_observation.LoadedCanonicalArchive.load",
+        with patch('aifren.continuity.memory_v2_runtime_observation.LoadedCanonicalArchive.load',
                    side_effect=AssertionError("unchanged unresolved source reread")):
             for _ in range(5): self.service.maintain_canonical_observers()
         self.assertTrue(self.service.process_text_turn("My favorite color is blue.", speak=False).succeeded)

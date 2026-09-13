@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from local_model_runtime import LocalModelRuntime
+from aifren.runtime.local_model_runtime import LocalModelRuntime
 
 
 class _Response:

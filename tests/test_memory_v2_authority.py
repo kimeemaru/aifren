@@ -2,10 +2,10 @@ from dataclasses import replace
 from types import SimpleNamespace
 import unittest
 
-from config import configured_memory_authority
-from benchmarks.memory_v2.models import RetrievalHealth, RetrievalLaneHealth
-from memory_v2_answer_governance import compose_memory_answer_requirement
-from memory_v2_authority import (
+from aifren.runtime.config import configured_memory_authority
+from aifren.memory_v2_store.models import RetrievalHealth, RetrievalLaneHealth
+from aifren.continuity.memory_v2_answer_governance import compose_memory_answer_requirement
+from aifren.continuity.memory_v2_authority import (
     DevelopmentV2MemoryAuthority,
     MemoryV2AuthorityUnavailable,
     render_authoritative_no_evidence,

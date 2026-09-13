@@ -11,7 +11,7 @@ import uuid
 
 import websockets
 
-from backend_host import AIFrenWebSocketHost, LOOPBACK_HOST
+from aifren.backend_host import AIFrenWebSocketHost, LOOPBACK_HOST
 from benchmarks.active_state.production_session import ProductionSession, response_envelope
 from test_cancelled_response_repair import FocusedPtt
 from test_scene_event_persistence import PreparedTts
@@ -121,7 +121,7 @@ class SceneEventTransportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_incomplete_ack_reports_safe_failure_then_retry_completes_record(self):
         before = self.session.conversation_file.read_bytes()
-        with patch("conversation.persistence.json.dump", side_effect=scene_fixture.SceneEventPersistenceTests.partial_write):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=scene_fixture.SceneEventPersistenceTests.partial_write):
             message, events = await self.control()
         result = message["event"]["data"]
         self.assertEqual("applied_record_incomplete", result["outcome"])

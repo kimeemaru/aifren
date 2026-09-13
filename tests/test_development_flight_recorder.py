@@ -6,8 +6,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from development_flight_recorder import DevelopmentFlightRecorder, valid_capture_id
-from tts.streaming import StreamingSpeechQueue
+from aifren.runtime.development_flight_recorder import DevelopmentFlightRecorder, valid_capture_id
+from aifren.tts.streaming import StreamingSpeechQueue
 
 
 class DevelopmentFlightRecorderTests(unittest.TestCase):
@@ -172,7 +172,7 @@ class DevelopmentFlightRecorderTests(unittest.TestCase):
 
         provider_active = [True]
         fake = RetryFake()
-        with patch("tts.streaming.development_flight_recorder", return_value=self.recorder):
+        with patch('aifren.tts.streaming.development_flight_recorder', return_value=self.recorder):
             queue = StreamingSpeechQueue(
                 fake, provider_generation_active=lambda: provider_active[0],
             )

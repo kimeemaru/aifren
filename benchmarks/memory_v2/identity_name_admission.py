@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
-from memory_v2_store import MemoryV2Repository, identity_name_admission_relevant
+from aifren.memory_v2_store import MemoryV2Repository, identity_name_admission_relevant
 
 
 _MANIFEST = Path(__file__).with_name("identity_name_admission_manifest.json")

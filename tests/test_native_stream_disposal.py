@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from tts import tts as audio_owner
+from aifren.tts import tts as audio_owner
 from test_responsive_speech import StreamFactory, SyntheticKokoro
 
 
@@ -127,7 +127,7 @@ class NativeStreamDisposalTests(unittest.TestCase):
 
         recorder = SimpleNamespace(mark=lambda kind, **data: marks.append((kind, data)))
         with patch.object(audio_owner.sd, "OutputStream", factory), \
-                patch.object(audio_owner, "development_flight_recorder", return_value=recorder):
+                patch.object(audio_owner, 'development_flight_recorder', return_value=recorder):
             generation = provider.begin_prepared_stream((np.ones((120, 1)), 24000, []))
             provider.finish_prepared_stream(stream_id=generation)
             self.assertTrue(provider.playback_finished.wait(2))

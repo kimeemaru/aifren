@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from tts.streaming import StreamingSpeechQueue
-from tts.tts import KokoroTextToSpeech
-from tts import tts as audio_owner
+from aifren.tts.streaming import StreamingSpeechQueue
+from aifren.tts.tts import KokoroTextToSpeech
+from aifren.tts import tts as audio_owner
 
 
 TEXT = (
@@ -378,7 +378,7 @@ class ResponsiveSpeechTests(unittest.TestCase):
         self.provider.before_unit = before
         recorder = SimpleNamespace(mark=lambda event, **data:
                                    marks.append((threading.get_ident(), event, data)))
-        with patch.object(audio_owner, "development_flight_recorder", return_value=recorder):
+        with patch.object(audio_owner, 'development_flight_recorder', return_value=recorder):
             queue = self.queue()
             self.assertTrue(entered.wait(2))
             self.wait(lambda: self.device.streams and self.device.streams[0].callbacks > 10)

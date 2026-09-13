@@ -1,7 +1,7 @@
 """Natural plural preference requests use the existing immutable slot decision."""
 import unittest
 import test_v2_runtime_recovery as recovery_tests
-from memory_query_decision import decide_memory_query
+from aifren.continuity.memory_query_decision import decide_memory_query
 
 
 class PluralMemoryRequestTests(unittest.TestCase):

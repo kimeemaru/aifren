@@ -1,7 +1,7 @@
 import unittest
 import uuid
 
-from memory_v2_store import (
+from aifren.memory_v2_store import (
     ACTIVE_STATE,
     ActiveSceneSubjectIntroduction,
     ActiveSceneSubjectRetirement,
@@ -11,7 +11,7 @@ from memory_v2_store import (
     MemoryV2Store,
     StoreError,
 )
-from memory_v2_store.active_state_contract import MAX_ACTIVE_SCENE_SUBJECTS
+from aifren.memory_v2_store.active_state_contract import MAX_ACTIVE_SCENE_SUBJECTS
 
 
 class ActiveStateIntroductionOnlyTests(unittest.TestCase):

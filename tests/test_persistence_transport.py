@@ -11,10 +11,10 @@ from unittest.mock import Mock, patch
 
 import websockets
 
-from assistant_service import AssistantService
-from backend_host import AIFrenWebSocketHost, LOOPBACK_HOST
-from conversation.conversation import Conversation
-from conversation.persistence import ConversationPersistenceError
+from aifren.assistant_service import AssistantService
+from aifren.backend_host import AIFrenWebSocketHost, LOOPBACK_HOST
+from aifren.conversation.conversation import Conversation
+from aifren.conversation.persistence import ConversationPersistenceError
 from test_assistant_service import FakeTTS
 from test_conversation_persistence import Memory, Provider
 
@@ -50,8 +50,8 @@ class PersistenceTransportTests(unittest.IsolatedAsyncioTestCase):
             memory_authority="v1",
         )
         self.recorder = Mock(enabled=False)
-        for target in ("assistant_service.development_flight_recorder",
-                       "backend_host.development_flight_recorder"):
+        for target in ("aifren.assistant_service.development_flight_recorder",
+                       "aifren.backend_host.development_flight_recorder"):
             recorder = patch(target, return_value=self.recorder)
             recorder.start()
             self.addCleanup(recorder.stop)
@@ -137,7 +137,7 @@ class PersistenceTransportTests(unittest.IsolatedAsyncioTestCase):
             handle.write('[{"role":')
             raise OSError(f"{self.root}/private-sentinel fake-secret Synthetic input")
 
-        with patch("conversation.persistence.json.dump", side_effect=partial_write):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=partial_write):
             events, snapshot = await self.submit("Synthetic pending input.")
         self.assert_failure_outcome(events, snapshot, committed=False, assistant_persisted=False)
         self.assertEqual(self.original, self.path.read_bytes())
@@ -156,7 +156,7 @@ class PersistenceTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, len(self.provider.calls))
 
     async def test_post_replace_error_retains_commit_without_retry_or_success_event(self):
-        with patch("conversation.persistence._sync_directory", side_effect=[None, OSError("private-sentinel")]):
+        with patch('aifren.conversation.persistence._sync_directory', side_effect=[None, OSError("private-sentinel")]):
             events, snapshot = await self.submit("Synthetic committed input.")
         failure = self.assert_failure_outcome(events, snapshot, committed=True, assistant_persisted=True)
         self.assertIn("do not resend", failure["message"])
@@ -181,7 +181,7 @@ class PersistenceTransportTests(unittest.IsolatedAsyncioTestCase):
             return original_replace(source, destination)
 
         with patch.object(self.conversation, "_recent_context_start_index", return_value=22), \
-                patch("conversation.persistence.os.replace", side_effect=replace):
+                patch('aifren.conversation.persistence.os.replace', side_effect=replace):
             events, snapshot = await self.submit("Synthetic current input.")
         failure = self.assert_failure_outcome(events, snapshot, committed=False, assistant_persisted=True)
         self.assertEqual("summary", failure["record_kind"])
@@ -212,7 +212,7 @@ class PersistenceTransportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_shutdown_save_error_still_closes_transport_and_signals_runner(self):
         server = self.host._server
-        with patch("conversation.persistence.os.replace", side_effect=OSError("private-sentinel")):
+        with patch('aifren.conversation.persistence.os.replace', side_effect=OSError("private-sentinel")):
             with self.assertRaises(ConversationPersistenceError) as raised:
                 await self.host.stop()
         self.assertFalse(raised.exception.committed)

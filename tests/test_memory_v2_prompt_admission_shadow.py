@@ -1,8 +1,8 @@
 from pathlib import Path
 import unittest
 
-from memory_v2_hybrid_recall import HybridRecallCandidate
-from memory_v2_prompt_admission_shadow import (
+from aifren.continuity.memory_v2_hybrid_recall import HybridRecallCandidate
+from aifren.continuity.memory_v2_prompt_admission_shadow import (
     MAX_APPROXIMATE_PROMPT_TOKENS,
     MAX_PROMPT_BLOCK_CHARACTERS,
     MAX_PROMPT_ITEMS,
@@ -255,7 +255,7 @@ class SupplementalPromptAdmissionShadowTests(unittest.TestCase):
         # The design module remains absent from every production prompt owner.
         root = Path(__file__).resolve().parents[1]
         for relative in (
-            "assistant_service.py", "assistant.py", "conversation/conversation.py",
+            'aifren/assistant_service.py', 'aifren/assistant.py', 'aifren/conversation/conversation.py',
         ):
             self.assertNotIn(
                 "memory_v2_prompt_admission_shadow",

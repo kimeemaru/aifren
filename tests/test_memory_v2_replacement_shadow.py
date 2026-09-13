@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import dataclass
 
-from memory_v2_replacement_shadow import (
+from aifren.continuity.memory_v2_replacement_shadow import (
     MAX_V2_REPLACEMENT_BLOCK_CHARACTERS,
     MAX_V2_REPLACEMENT_ITEMS,
     compose_v2_replacement_context,
@@ -126,7 +126,7 @@ class MemoryV2ReplacementShadowTests(unittest.TestCase):
         self.assertIn("No admitted V2 evidence", design.abstention_requirement.context_block)
 
     def test_recent_context_can_be_bounded_without_removing_policy_or_query(self):
-        from memory_v2_replacement_shadow import bounded_recent_replacement_context
+        from aifren.continuity.memory_v2_replacement_shadow import bounded_recent_replacement_context
 
         query = "Which motorcycle did I say I owned?"
         context = _production_context(query)

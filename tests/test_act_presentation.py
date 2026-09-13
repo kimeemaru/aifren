@@ -5,8 +5,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from act_presentation import ActPrefixStream, parse_fresh_act_response, act_character_prompt
-from presentation_metadata import parse_assistant_response, response_contract_prompt
+from aifren.dialogue.act_presentation import ActPrefixStream, parse_fresh_act_response, act_character_prompt
+from aifren.dialogue.presentation_metadata import parse_assistant_response, response_contract_prompt
 import test_lean_ordinary_dialogue as fixture
 
 
@@ -215,8 +215,8 @@ class ActServiceTests(unittest.TestCase):
         self.assertNotIn('<|ACT:',str(self.s.conversation.messages))
 
     def test_saved_setting_is_loaded_by_recreated_service(self):
-        from model_settings import set_explicit_avatar_cues
-        from assistant_service import AssistantService
+        from aifren.runtime.model_settings import set_explicit_avatar_cues
+        from aifren.assistant_service import AssistantService
         set_explicit_avatar_cues(True)
         old=self.s
         s=AssistantService(self.llm,old.memory,old.conversation,object(),old.character,

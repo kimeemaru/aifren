@@ -1,6 +1,6 @@
 import unittest
 
-from llm.output_canonicalization import ModelOutputCanonicalizer, canonicalize_model_output
+from aifren.llm.output_canonicalization import ModelOutputCanonicalizer, canonicalize_model_output
 
 
 class ModelOutputCanonicalizationTests(unittest.TestCase):

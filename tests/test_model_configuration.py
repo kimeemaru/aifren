@@ -6,10 +6,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 import threading
 
-import model_settings
-from llm.llm import QWEN35_NON_THINKING_GENERAL, create_llm
-from llm.openai_compatible import OpenAICompatibleLLM
-from llm.unavailable import UnavailableLLM
+from aifren.runtime import model_settings
+from aifren.llm.llm import QWEN35_NON_THINKING_GENERAL, create_llm
+from aifren.llm.openai_compatible import OpenAICompatibleLLM
+from aifren.llm.unavailable import UnavailableLLM
 
 
 class ModelConfigurationTests(unittest.TestCase):
@@ -45,7 +45,7 @@ class ModelConfigurationTests(unittest.TestCase):
 
     def test_local_mode_routes_through_the_same_compatible_adapter(self):
         settings = {"mode": "local", "local_api_key": "", "local_endpoint": "http://127.0.0.1:8000/v1", "local_model": "demo", "online_provider": "auto", "api_key": "", "online_base_url": "", "online_model": ""}
-        with patch("llm.llm.get_model_settings", return_value=settings):
+        with patch('aifren.llm.llm.get_model_settings', return_value=settings):
             adapter = create_llm()
         self.assertIsInstance(adapter, OpenAICompatibleLLM)
         self.assertEqual("demo", adapter.model)
@@ -59,7 +59,7 @@ class ModelConfigurationTests(unittest.TestCase):
             "local_model": "Qwen_Qwen3.5-4B-Q4_K_M.gguf", "online_provider": "auto",
             "api_key": "", "online_base_url": "", "online_model": "",
         }
-        with patch("llm.llm.get_model_settings", return_value=settings):
+        with patch('aifren.llm.llm.get_model_settings', return_value=settings):
             adapter = create_llm()
 
         self.assertEqual("qwen3.5_non_thinking_general", adapter.sampling_preset)
@@ -71,7 +71,7 @@ class ModelConfigurationTests(unittest.TestCase):
             "local_model": "gemma-3-4b-q4.gguf", "online_provider": "auto",
             "api_key": "", "online_base_url": "", "online_model": "",
         }
-        with patch("llm.llm.get_model_settings", return_value=settings):
+        with patch('aifren.llm.llm.get_model_settings', return_value=settings):
             adapter = create_llm()
 
         self.assertEqual("", adapter.sampling_preset)
@@ -84,7 +84,7 @@ class ModelConfigurationTests(unittest.TestCase):
             SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="two"))]),
         ]
         seeds = iter((101, 202))
-        with patch("llm.openai_compatible.OpenAI", return_value=client):
+        with patch('aifren.llm.openai_compatible.OpenAI', return_value=client):
             adapter = OpenAICompatibleLLM(
                 api_key=None, base_url="http://127.0.0.1:8000/v1", model="local",
                 fresh_request_seeds=True, seed_source=lambda: next(seeds),
@@ -103,7 +103,7 @@ class ModelConfigurationTests(unittest.TestCase):
             choices=[SimpleNamespace(message=SimpleNamespace(content="fixed"))]
         )
         seed_source = MagicMock(return_value=999)
-        with patch("llm.openai_compatible.OpenAI", return_value=client):
+        with patch('aifren.llm.openai_compatible.OpenAI', return_value=client):
             adapter = OpenAICompatibleLLM(
                 api_key=None, base_url="http://127.0.0.1:8000/v1", model="local",
                 fresh_request_seeds=True, seed_source=seed_source,
@@ -118,7 +118,7 @@ class ModelConfigurationTests(unittest.TestCase):
         client.chat.completions.create.return_value = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content='{"kind":"nonverbal"}'))]
         )
-        with patch("llm.openai_compatible.OpenAI", return_value=client):
+        with patch('aifren.llm.openai_compatible.OpenAI', return_value=client):
             adapter = OpenAICompatibleLLM(
                 api_key=None, base_url="http://127.0.0.1:8000/v1", model="local",
             )
@@ -140,7 +140,7 @@ class ModelConfigurationTests(unittest.TestCase):
         client.chat.completions.create.return_value = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="preset"))]
         )
-        with patch("llm.openai_compatible.OpenAI", return_value=client):
+        with patch('aifren.llm.openai_compatible.OpenAI', return_value=client):
             adapter = OpenAICompatibleLLM(
                 api_key=None, base_url="http://127.0.0.1:8000/v1", model="qwen",
                 sampling_preset="qwen3.5_non_thinking_general",
@@ -166,7 +166,7 @@ class ModelConfigurationTests(unittest.TestCase):
         client.chat.completions.create.return_value = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="online"))]
         )
-        with patch("llm.openai_compatible.OpenAI", return_value=client):
+        with patch('aifren.llm.openai_compatible.OpenAI', return_value=client):
             adapter = OpenAICompatibleLLM(
                 api_key="test", base_url="https://example.invalid/v1", model="online",
             )
@@ -178,7 +178,7 @@ class ModelConfigurationTests(unittest.TestCase):
         settings = {"mode": "online", "online_provider": "gemini", "online_model": "demo", "api_key": "",
                     "online_base_url": "", "local_endpoint": "http://127.0.0.1:8000/v1", "local_model": "",
                     "local_api_key": ""}
-        with patch("llm.llm.get_model_settings", return_value=settings), patch("llm.gemini.Gemini") as gemini:
+        with patch('aifren.llm.llm.get_model_settings', return_value=settings), patch('aifren.llm.gemini.Gemini') as gemini:
             adapter = create_llm()
         self.assertIsInstance(adapter, UnavailableLLM)
         gemini.assert_not_called()
@@ -187,7 +187,7 @@ class ModelConfigurationTests(unittest.TestCase):
         settings = {"mode": "local", "local_api_key": "", "local_endpoint": "http://127.0.0.1:8000/v1",
                     "local_model": "", "online_provider": "gemini", "api_key": "online-key",
                     "online_base_url": "", "online_model": "demo"}
-        with patch("llm.llm.get_model_settings", return_value=settings), patch("llm.gemini.Gemini") as gemini:
+        with patch('aifren.llm.llm.get_model_settings', return_value=settings), patch('aifren.llm.gemini.Gemini') as gemini:
             adapter = create_llm()
         self.assertIsInstance(adapter, UnavailableLLM)
         gemini.assert_not_called()
@@ -197,7 +197,7 @@ class ModelConfigurationTests(unittest.TestCase):
                     "online_base_url": "", "local_endpoint": "http://127.0.0.1:8000/v1", "local_model": "",
                     "local_api_key": ""}
         sentinel = object()
-        with patch("llm.llm.get_model_settings", return_value=settings), patch("llm.gemini.Gemini", return_value=sentinel) as gemini:
+        with patch('aifren.llm.llm.get_model_settings', return_value=settings), patch('aifren.llm.gemini.Gemini', return_value=sentinel) as gemini:
             self.assertIs(sentinel, create_llm())
         gemini.assert_called_once_with()
 
@@ -205,7 +205,7 @@ class ModelConfigurationTests(unittest.TestCase):
         settings = {"mode": "local", "local_api_key": "", "local_endpoint": "http://127.0.0.1:1/v1",
                     "local_model": "demo", "online_provider": "gemini", "api_key": "online-key",
                     "online_base_url": "", "online_model": "demo"}
-        with patch("llm.llm.get_model_settings", return_value=settings), patch("llm.gemini.Gemini") as gemini:
+        with patch('aifren.llm.llm.get_model_settings', return_value=settings), patch('aifren.llm.gemini.Gemini') as gemini:
             adapter = create_llm()
         self.assertIsInstance(adapter, OpenAICompatibleLLM)
         self.assertEqual("http://127.0.0.1:1/v1/", adapter.base_url)

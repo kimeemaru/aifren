@@ -4,12 +4,12 @@ import tempfile
 import unittest
 import uuid
 
-from assistant_service import AssistantService
-from memory_v2_active_state_contextual_shadow import (
+from aifren.assistant_service import AssistantService
+from aifren.continuity.memory_v2_active_state_contextual_shadow import (
     ActiveStateContextualShadowObserver,
     JsonlActiveStateShadowTraceStore,
 )
-from memory_v2_store import (
+from aifren.memory_v2_store import (
     ActiveSceneSubjectIntroduction,
     ActiveStateProposal,
     ActiveStateProposalUpdate,

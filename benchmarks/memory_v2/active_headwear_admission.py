@@ -13,8 +13,8 @@ import re
 import tempfile
 import uuid
 
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
 
 
 _MANIFEST = Path(__file__).with_name("active_headwear_admission_manifest.json")

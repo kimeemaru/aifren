@@ -76,7 +76,7 @@ class LinuxDevLauncherTests(unittest.TestCase):
 
     def test_no_companion_tkinter_or_piper_path_is_restored(self):
         self.assertFalse((ROOT / "gui.py").exists())
-        self.assertNotIn("piper", (ROOT / "tts" / "tts.py").read_text(encoding="utf-8").lower())
+        self.assertNotIn("piper", (ROOT / "aifren" / "tts" / "tts.py").read_text(encoding="utf-8").lower())
 
 class DevelopmentButtonRouteTests(unittest.TestCase):
     def test_actual_button_construction_and_callbacks_choose_only_development(self):

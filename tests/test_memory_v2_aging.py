@@ -13,8 +13,8 @@ from benchmarks.memory_v2.aging import (
     load_aging_manifest,
     run_aging_evaluation,
 )
-from benchmarks.memory_v2.models import RetrievalQuery
-from memory_v2_store import retrieval as retrieval_module
+from aifren.memory_v2_store.models import RetrievalQuery
+from aifren.memory_v2_store import retrieval as retrieval_module
 
 
 class MemoryV2AgingFixtureTests(unittest.TestCase):

@@ -69,7 +69,7 @@ class HistoricalProjectionServiceTests(unittest.TestCase):
     def test_partial_callback_projection_is_unavailable_not_empty_recall(self):
         self.seed('I built the tower beside the window. ' + 'The day was quiet. ' * 15 +
                   'I painted the bridge silver.')
-        with patch('memory_v2_prompt_admission_shadow.MAX_PROMPT_ITEMS', 1):
+        with patch('aifren.continuity.memory_v2_prompt_admission_shadow.MAX_PROMPT_ITEMS', 1):
             result = self.ask('What did you tell me about the tower and bridge earlier?')
         self.assertFalse(result.succeeded)
         self.assertIn("can't check", result.error)
@@ -99,15 +99,15 @@ class HistoricalProjectionServiceTests(unittest.TestCase):
 
 class ExactSourceProjectionTests(unittest.TestCase):
     def project(self, content, query='tower', source_id=None):
-        from memory_v2_episode_compaction import canonical_record_id
-        from memory_v2_source_projection import project_source
-        from memory_v2_store.retrieval import _tokens
+        from aifren.continuity.memory_v2_episode_compaction import canonical_record_id
+        from aifren.continuity.memory_v2_source_projection import project_source
+        from aifren.memory_v2_store.retrieval import _tokens
         messages = [{'role': 'assistant', 'content': content}]
         return project_source(messages, 0, source_id or canonical_record_id(0, messages[0]),
                               'assistant', _tokens(query), _tokens)
 
     def test_source_edits_are_unavailable_even_with_same_index_and_role(self):
-        from memory_v2_episode_compaction import canonical_record_id
+        from aifren.continuity.memory_v2_episode_compaction import canonical_record_id
         old = canonical_record_id(0, {'role': 'assistant', 'content': 'I built a tower.'})
         self.assertEqual('source_changed', self.project('I broke a tower.', source_id=old).reason)
 
@@ -136,9 +136,9 @@ class ExactSourceProjectionTests(unittest.TestCase):
         self.assertIn('imagined', result.segments[0].text)
 
     def test_generic_context_cannot_keep_half_a_source_projection(self):
-        from benchmarks.memory_v2.models import HistoricalSourceSegment, RetrievalHealth, RetrievalLaneHealth
-        from memory_v2_hybrid_recall import HybridRecallCandidate
-        from memory_v2_replacement_shadow import compose_v2_replacement_context
+        from aifren.memory_v2_store.models import HistoricalSourceSegment, RetrievalHealth, RetrievalLaneHealth
+        from aifren.continuity.memory_v2_hybrid_recall import HybridRecallCandidate
+        from aifren.continuity.memory_v2_replacement_shadow import compose_v2_replacement_context
         text = 'I built a tower. Then I painted the bridge.'
         a, b = text.index('Then'), len(text)
         candidate = HybridRecallCandidate('c', 'historical_evidence', text[:a].strip(), 8, (), 's',
@@ -147,7 +147,7 @@ class ExactSourceProjectionTests(unittest.TestCase):
             canonical_record_id='exact-canonical', canonical_index=1,
             source_segments=(HistoricalSourceSegment(0, a-1, text[:a-1], b),
                              HistoricalSourceSegment(a, b, text[a:b], b)))
-        with patch('memory_v2_replacement_shadow.MAX_V2_REPLACEMENT_ITEMS', 1):
+        with patch('aifren.continuity.memory_v2_replacement_shadow.MAX_V2_REPLACEMENT_ITEMS', 1):
             context = compose_v2_replacement_context([], 'Do you remember my tower and bridge?',
                 [candidate], active_truth_scope_id='s',
                 lookup_health=RetrievalHealth((RetrievalLaneHealth('claims', 'complete'),)))

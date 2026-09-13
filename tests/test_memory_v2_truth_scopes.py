@@ -4,15 +4,15 @@ import tempfile
 import unittest
 import uuid
 
-from benchmarks.memory_v2.models import RetrievalQuery
-from memory_v2_store import (
+from aifren.memory_v2_store.models import RetrievalQuery
+from aifren.memory_v2_store import (
     ActiveSceneSubjectIntroduction, ActiveStateProposal, ActiveStateProposalUpdate,
     EmbeddingLifecycle, HnswClaimIndex, MemoryV2Repository, MemoryV2Store,
     OpenThreadProposal, OpenThreadProposalOperation, RetrievalLimits,
     SemanticRetrievalV2, StoreError, actor_state_subject_key,
     scene_state_subject_key,
 )
-from memory_v2_store.active_state_prompt import admit_active_headwear_context
+from aifren.memory_v2_store.active_state_prompt import admit_active_headwear_context
 
 
 class _ScopeEmbeddingProvider:

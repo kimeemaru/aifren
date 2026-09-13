@@ -7,10 +7,10 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from assistant import build_character_prompt
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.assistant import build_character_prompt
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
 from test_assistant_service_v2_authority import _LLM, _TTS
 from test_continuity_companion_tranche import _Harness
 from test_memory_routing_partial_evidence import HealthyRecall
@@ -99,7 +99,7 @@ class ResponseExpressionContextTests(unittest.TestCase):
             if records and records[-1].get('content') == 'That sounds hard.':
                 handle.write('[{'); raise OSError('synthetic write failure')
             return dump(records, handle, **kwargs)
-        with patch('conversation.persistence.json.dump', side_effect=fail_assistant):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=fail_assistant):
             result = s.process_text_turn('Let us continue.', speak=False)
         self.assertFalse(result.succeeded)
         self.assertFalse(any(e.type=='assistant_response' for e in self.events))
@@ -177,7 +177,7 @@ class ResponseExpressionContextTests(unittest.TestCase):
             if records and records[-1].get('content') == text:
                 raise OSError('synthetic precommit failure')
             return dump(records, handle, **kwargs)
-        with patch('conversation.persistence.json.dump', side_effect=fail_assistant):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=fail_assistant):
             result = s.process_text_turn('Let us continue.', speak=False)
         self.assertFalse(result.succeeded)
         self.assertFalse(any(e.type == 'assistant_response' for e in self.events))

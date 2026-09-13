@@ -64,6 +64,10 @@ V1-origin records already admitted to V2, ordinary Reset/Delete, continuing
 operation recovery and future V2 schema upgrades. No live-data cleanup or migration
 is performed by this catch-up.
 
+Any later conversation-quality comparison should distinguish the effective request,
+raw provider draft, admission/repair and final spoken projection. Source relocation
+does not establish a quality or latency improvement.
+
 ## Next work
 
 1. Resolve demonstrated continuity/refresh defects and improve companion feel.

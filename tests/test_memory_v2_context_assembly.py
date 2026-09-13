@@ -5,11 +5,11 @@ import tempfile
 import unittest
 import uuid
 
-from conversation.conversation import Conversation
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
-from memory_v2_store.active_state_prompt import admit_active_headwear_context
-from memory_v2_store.durable_prompt import admit_identity_name_context
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
+from aifren.memory_v2_store.active_state_prompt import admit_active_headwear_context
+from aifren.memory_v2_store.durable_prompt import admit_identity_name_context
 
 
 class _Memory:

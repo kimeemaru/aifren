@@ -16,17 +16,17 @@ from pathlib import Path
 import re
 from typing import Any
 
-from assistant import build_character_prompt
+from aifren.assistant import build_character_prompt
 from benchmarks.active_state.production_session import ProductionSession, response_envelope
-from capability_policy import validate_capability_response
-from config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR
-from development_flight_recorder import development_flight_recorder
-from llm.llm import QWEN35_NON_THINKING_GENERAL
-from llm.openai_compatible import OpenAICompatibleLLM
-from local_model_runtime import LocalModelRuntime
-from model_settings import get_model_settings
-from presentation_metadata import parse_assistant_response
-from response_requirements import derive_response_requirement, validate_response_requirement
+from aifren.state.capability_policy import validate_capability_response
+from aifren.runtime.config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR
+from aifren.runtime.development_flight_recorder import development_flight_recorder
+from aifren.llm.llm import QWEN35_NON_THINKING_GENERAL
+from aifren.llm.openai_compatible import OpenAICompatibleLLM
+from aifren.runtime.local_model_runtime import LocalModelRuntime
+from aifren.runtime.model_settings import get_model_settings
+from aifren.dialogue.presentation_metadata import parse_assistant_response
+from aifren.dialogue.response_requirements import derive_response_requirement, validate_response_requirement
 
 
 ROOT = Path(__file__).resolve().parents[2]

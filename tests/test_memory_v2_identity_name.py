@@ -5,10 +5,10 @@ import tempfile
 import unittest
 import uuid
 
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
-from memory_v2_store.identity_name import extract_identity_name_assertion
-from memory_v2_store.store import parse_timestamp_us
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
+from aifren.memory_v2_store.identity_name import extract_identity_name_assertion
+from aifren.memory_v2_store.store import parse_timestamp_us
 
 
 class IdentityNameExtractionTests(unittest.TestCase):

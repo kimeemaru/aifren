@@ -5,12 +5,12 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from context_governor import (
+from aifren.context.context_governor import (
     ContextBudget, ContextBudgetExceeded, ContextPlanItem, canonical_source_ref,
     plan_context,
 )
-from conversation.conversation import Conversation
-from memory_query_decision import decide_memory_query
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_query_decision import decide_memory_query
 
 
 def msg(role, text, index=0):
@@ -147,8 +147,8 @@ class ContextGovernorTests(unittest.TestCase):
 
     def test_normal_default_selects_responsive_v2_without_override(self):
         import os
-        from context_governor import governor_enabled
-        from config import configured_memory_authority
+        from aifren.context.context_governor import governor_enabled
+        from aifren.runtime.config import configured_memory_authority
         with patch.dict(os.environ):
             os.environ.pop('AIFREN_CONTEXT_GOVERNOR', None)
             self.assertTrue(governor_enabled('v2'))
@@ -162,7 +162,7 @@ class ContextGovernorTests(unittest.TestCase):
                 self.assertEqual('Hello.',result[-1]['content'])
 
     def test_explicit_responsive_profile_matches_normal_deployment(self):
-        from context_governor import governor_enabled
+        from aifren.context.context_governor import governor_enabled
         self.assertTrue(governor_enabled('v2'))
         self.assertFalse(governor_enabled('v1'))
         budget=ContextBudget.for_provider(SimpleNamespace(context_capacity_tokens=16384))
@@ -196,8 +196,8 @@ class ContextGovernorTests(unittest.TestCase):
             self.assertEqual(1,c._last_context_plan.diagnostics["recent_messages"])
 
     def test_temporal_authority_is_rendered_once_and_state_is_whole(self):
-        from assistant_service import AssistantService
-        from conversation.temporal_context import build_temporal_context_block
+        from aifren.assistant_service import AssistantService
+        from aifren.conversation.temporal_context import build_temporal_context_block
         with tempfile.TemporaryDirectory() as d:
             c=Conversation(None,conversation_file=str(Path(d)/"conversation.json"),summary_file=str(Path(d)/"summary.json"))
             c.messages=[msg("user","Hello.")]
@@ -271,15 +271,15 @@ class ContextGovernorTests(unittest.TestCase):
             self.assertEqual('Hello.',result[-1]['content'])
 
     def test_local_factory_budget_matches_managed_context_capacity(self):
-        from llm.llm import create_llm
-        from config import LOCAL_LLM_CONTEXT_SIZE
-        with patch('llm.llm.get_model_settings',return_value=dict(mode='local',local_api_key='',local_endpoint='http://127.0.0.1:1/v1',local_model='synthetic')):
+        from aifren.llm.llm import create_llm
+        from aifren.runtime.config import LOCAL_LLM_CONTEXT_SIZE
+        with patch('aifren.llm.llm.get_model_settings',return_value=dict(mode='local',local_api_key='',local_endpoint='http://127.0.0.1:1/v1',local_model='synthetic')):
             provider=create_llm();self.addCleanup(provider.client.close)
             self.assertEqual(LOCAL_LLM_CONTEXT_SIZE,ContextBudget.for_provider(provider).capacity_tokens)
             self.assertTrue(provider.local_tokenizer)
 
     def test_content_tokenizer_uses_only_local_endpoint_without_inference(self):
-        from llm.openai_compatible import OpenAICompatibleLLM
+        from aifren.llm.openai_compatible import OpenAICompatibleLLM
         provider=OpenAICompatibleLLM(api_key='',base_url='http://127.0.0.1:1/v1',model='synthetic',local_tokenizer=True)
         self.addCleanup(provider.client.close)
         response=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'count':17})
@@ -305,8 +305,8 @@ class ContextGovernorTests(unittest.TestCase):
 
     def test_production_open_thread_dedup_uses_exact_canonical_event_identity(self):
         from test_continuity_companion_tranche import _Harness
-        from current_continuity import admit_current_continuity_context
-        from memory_v2_store.store import parse_timestamp_us
+        from aifren.state.current_continuity import admit_current_continuity_context
+        from aifren.memory_v2_store.store import parse_timestamp_us
         h=_Harness();self.addCleanup(h.close)
         h.turn("I'm waiting for my blue parcel to arrive.")
         query='How is the blue parcel situation going?'
@@ -401,7 +401,7 @@ class ContextGovernorTests(unittest.TestCase):
         self.assertIn('estimate',a.diagnostics['counting_method'])
 
     def test_counting_cancellation_stops_additional_preflight_work(self):
-        from context_governor import _Cost
+        from aifren.context.context_governor import _Cost
         cancelled=False;calls=[]
         def check():
             if cancelled:raise InterruptedError('owned turn cancelled')
@@ -415,7 +415,7 @@ class ContextGovernorTests(unittest.TestCase):
         self.assertEqual(1,len(calls))
 
     def test_counter_cache_is_request_model_and_scope_local(self):
-        from context_governor import _Cost
+        from aifren.context.context_governor import _Cost
         calls=[]
         def count(text):calls.append(text);return 10
         for identity in [('mira','real'),('mira','scenario'),('nova','real')]:
@@ -426,8 +426,8 @@ class ContextGovernorTests(unittest.TestCase):
 
     def test_later_thread_status_is_not_equivalent_to_old_support(self):
         from test_continuity_companion_tranche import _Harness
-        from current_continuity import admit_current_continuity_context
-        from memory_v2_store.store import parse_timestamp_us
+        from aifren.state.current_continuity import admit_current_continuity_context
+        from aifren.memory_v2_store.store import parse_timestamp_us
         h=_Harness();self.addCleanup(h.close)
         h.turn("I'm waiting for my blue parcel to arrive.")
         h.turn("Still waiting for it.")

@@ -4,18 +4,18 @@ import json
 import unittest
 
 import test_memory_v2_ordering as ordering_tests
-from memory_v2_answer_governance import (
+from aifren.continuity.memory_v2_answer_governance import (
     MAX_MEMORY_ANSWER_CONTEXT_CHARACTERS, MemoryAnswerEvidence,
     compose_memory_answer_requirement, memory_answer_brief,
     memory_answer_system_prompt, validate_memory_answer_response,
     memory_answer_should_attempt_repair,
 )
-from benchmarks.memory_v2.models import HistoricalSourceSegment
-from memory_v2_prompt_admission_shadow import (
+from aifren.memory_v2_store.models import HistoricalSourceSegment
+from aifren.continuity.memory_v2_prompt_admission_shadow import (
     PromptEvidenceItem, SupplementalPromptDesign, historical_response_fallback_dialogue,
 )
-from memory_v2_exact_source_callback_shadow import compose_exact_source_callback_contract
-from presentation_metadata import response_contract_prompt, memory_answer_format_prompt
+from aifren.continuity.memory_v2_exact_source_callback_shadow import compose_exact_source_callback_contract
+from aifren.dialogue.presentation_metadata import response_contract_prompt, memory_answer_format_prompt
 
 
 def payload(brief):

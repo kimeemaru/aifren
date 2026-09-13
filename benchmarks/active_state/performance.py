@@ -8,10 +8,10 @@ import statistics
 import time
 
 from benchmarks.active_state.harness import BASE_TIME, SyntheticSession
-from capability_policy import capability_context_block, validate_capability_response
-from companion_action import validate_companion_action_decision
-from presentation_metadata import parse_assistant_response
-from response_requirements import derive_response_requirement, validate_response_requirement
+from aifren.state.capability_policy import capability_context_block, validate_capability_response
+from aifren.state.companion_action import validate_companion_action_decision
+from aifren.dialogue.presentation_metadata import parse_assistant_response
+from aifren.dialogue.response_requirements import derive_response_requirement, validate_response_requirement
 
 
 @dataclass(frozen=True)

@@ -9,13 +9,13 @@ import json
 import threading
 from zoneinfo import ZoneInfo
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from conversation.temporal_context import derive_temporal_context_facts, build_temporal_context_block
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.conversation.temporal_context import derive_temporal_context_facts, build_temporal_context_block
 from test_assistant_service_v2_authority import _LLM, _TTS
 from test_continuity_companion_tranche import _Harness
 from test_memory_routing_partial_evidence import HealthyRecall
-from memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
 
 
 class Memory:
@@ -135,7 +135,7 @@ class ReturnContinuityTests(unittest.TestCase):
         original=s.conversation.save
         def fail_assistant():
             if s.conversation.messages[-1]['role']=='assistant':
-                with patch('conversation.persistence.os.replace',side_effect=OSError('synthetic')):return original()
+                with patch('aifren.conversation.persistence.os.replace',side_effect=OSError('synthetic')):return original()
             return original()
         with patch.object(s.conversation,'save',side_effect=fail_assistant):
             r=s.process_text_turn('Hello again.',speak=False)
@@ -165,7 +165,7 @@ class ReturnContinuityTests(unittest.TestCase):
         self.assertIn('Return opportunity',self.block())
 
     def test_proactive_receipt_does_not_acknowledge_pending_human_return(self):
-        from proactive_companion import record_displayed_checkin, ProactiveReason
+        from aifren.context.proactive_companion import record_displayed_checkin, ProactiveReason
         s=self.service();self.seed(s)
         s.conversation.add_user_message("I'm back",truth_scope=s.truth_scope_provenance());s.conversation.save()
         s.conversation.add_assistant_message('A synthetic check-in.',truth_scope=s.truth_scope_provenance());s.conversation.save()
@@ -284,7 +284,7 @@ class ReturnContinuityTests(unittest.TestCase):
         original=s.conversation.save
         def fail_after_commit():
             if s.conversation.messages[-1]['role']=='assistant':
-                with patch('conversation.persistence._sync_directory',side_effect=OSError('synthetic')):return original()
+                with patch('aifren.conversation.persistence._sync_directory',side_effect=OSError('synthetic')):return original()
             return original()
         with patch.object(s.conversation,'save',side_effect=fail_after_commit):
             r=s.process_text_turn("I'm back",speak=False)

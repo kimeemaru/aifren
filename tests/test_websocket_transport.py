@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import websockets
 
-import model_settings
-from assistant_service import AssistantEvent, TurnResult
-from backend_host import AIFrenWebSocketHost, LOOPBACK_HOST
+from aifren.runtime import model_settings
+from aifren.assistant_service import AssistantEvent, TurnResult
+from aifren.backend_host import AIFrenWebSocketHost, LOOPBACK_HOST
 
 
 class FakeConversation:
@@ -529,7 +529,7 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("development_qa_disabled", disabled["error"]["code"])
         self.assertEqual([], self.service.development_qa_calls)
 
-        with patch("backend_host._DEVELOPMENT_QA_ENABLED", True):
+        with patch('aifren.backend_host._DEVELOPMENT_QA_ENABLED', True):
             await self.client.send(json.dumps({"command": "development_presentation_qa", "scenario": "cold"}))
             for _ in range(20):
                 if self.service.development_qa_calls:
@@ -787,7 +787,7 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("invalid_proactive_interval", error["error"]["code"])
 
     async def test_local_settings_wait_for_runtime_model_verification_without_restarting_transport(self):
-        with patch("llm.llm.create_llm", return_value=object()):
+        with patch('aifren.llm.llm.create_llm', return_value=object()):
             await self.client.send(json.dumps({
                 "command": "set_model_settings", "mode": "local", "provider": "auto",
                 "local_endpoint": "http://127.0.0.1:8000/v1", "local_model": "local-test",
@@ -800,7 +800,7 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("local-test", snapshot["data"]["models"]["current"]["model"])
 
     async def test_mode_only_updates_persist_and_preserve_local_configuration(self):
-        with patch("llm.llm.create_llm", return_value=object()):
+        with patch('aifren.llm.llm.create_llm', return_value=object()):
             await self.client.send(json.dumps({
                 "command": "set_model_settings", "mode": "local",
                 "local_endpoint": "http://127.0.0.1:8000/v1", "local_model": "local-test",
@@ -880,13 +880,13 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("online", snapshot["data"]["models"]["current"]["mode"])
 
     async def test_unavailable_local_discovery_is_a_command_error_not_a_transport_exit(self):
-        with patch("llm.llm.create_llm", return_value=object()):
+        with patch('aifren.llm.llm.create_llm', return_value=object()):
             await self.client.send(json.dumps({
                 "command": "set_model_settings", "mode": "local", "provider": "auto",
                 "local_endpoint": "http://127.0.0.1:1/v1", "local_model": "local-test",
             }))
             await self.receive_until(lambda item: item.get("type") == "snapshot")
-        with patch("llm.llm.discover_local_models", side_effect=RuntimeError("connection refused")):
+        with patch('aifren.llm.llm.discover_local_models', side_effect=RuntimeError("connection refused")):
             await self.client.send(json.dumps({"command": "discover_local_models", "local_endpoint": "http://127.0.0.1:1/v1"}))
             error = await self.receive_until(lambda item: item.get("type") == "command_error")
 
@@ -899,7 +899,7 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("unavailable", current["availability"])
 
     async def test_unity_auto_start_command_persists_while_provider_reconfiguration_is_busy(self):
-        with patch("llm.llm.create_llm", return_value=object()):
+        with patch('aifren.llm.llm.create_llm', return_value=object()):
             await self.client.send(json.dumps({
                 "command": "set_model_settings", "mode": "local",
                 "local_endpoint": "http://127.0.0.1:8000/v1", "local_model": "four-b.gguf",
@@ -912,7 +912,7 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         }))
         snapshot = await self.receive_until(lambda item: item.get("type") == "snapshot")
         self.assertTrue(snapshot["data"]["models"]["current"]["local_auto_start"])
-        from model_settings import get_model_settings
+        from aifren.runtime.model_settings import get_model_settings
         self.assertTrue(get_model_settings()["local_auto_start"])
 
         await self.client.close()

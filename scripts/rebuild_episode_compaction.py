@@ -13,17 +13,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from character_registry import CharacterRegistry
-from conversation.conversation import load_json
-from llm.maintenance import configured_maintenance_provider
-from memory_v2_episode_compaction import (
+from aifren.character.character_registry import CharacterRegistry
+from aifren.conversation.conversation import load_json
+from aifren.llm.maintenance import configured_maintenance_provider
+from aifren.continuity.memory_v2_episode_compaction import (
     COMPACTION_VERSION,
     ERA_COMPACTION_VERSION,
     ERA_RETENTION_GATE_VERSION,
     EpisodeCompactionCache,
     EpisodeCompactor,
 )
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
 
 
 def main() -> None:

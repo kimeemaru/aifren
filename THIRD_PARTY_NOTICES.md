@@ -78,8 +78,8 @@ declares MIT. Credit Cardiff NLP and the upstream model authors; preserve the
 model card and applicable MIT notices when distributing weights or derivatives.
 Upstream benchmark claims are not AIFren deployment measurements.
 
-`automatic_expression.py` pins upstream safetensors/configuration/tokenizer and
-verifies SHA-256 identities. `expression_model_export.py` performs an explicit
+`aifren/dialogue/automatic_expression.py` pins upstream safetensors/configuration/tokenizer and
+verifies SHA-256 identities. `aifren/dialogue/expression_model_export.py` performs an explicit
 local CPU conversion using built-in Transformers, ONNX export and ONNX Runtime
 INT8 quantization. The source safetensors are 498,640,508 bytes. The derived graph
 is 125,860,185 bytes; graph/tokenizer/configuration total 127,970,095 bytes.

@@ -6,9 +6,9 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from dialogue_semantics import SemanticSentenceAccumulator, spoken_text
-from llm.output_canonicalization import ModelOutputCanonicalizer
-from presentation_metadata import parse_assistant_response
+from aifren.dialogue.dialogue_semantics import SemanticSentenceAccumulator, spoken_text
+from aifren.llm.output_canonicalization import ModelOutputCanonicalizer
+from aifren.dialogue.presentation_metadata import parse_assistant_response
 
 
 FIXTURES = json.loads((Path(__file__).parent / "fixtures" /
@@ -128,7 +128,7 @@ class SpeechProjectionServiceTests(unittest.TestCase):
                     self.check_synthesis(case, responsive=responsive)
 
     def test_fresh_act_is_separated_but_quoted_and_user_syntax_are_inert(self):
-        from act_presentation import PREFIX
+        from aifren.dialogue.act_presentation import PREFIX
         self.s.explicit_avatar_cues = True
         for responsive in (False, True):
             case = {"raw": "<|ACT:emotion=happy|>*I look *really* confused.* Wait, what?",

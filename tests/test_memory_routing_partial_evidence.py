@@ -8,11 +8,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from assistant_service import AssistantService
-from benchmarks.memory_v2.models import RetrievalHealth, RetrievalLaneHealth
-from conversation.conversation import Conversation
-from memory_v2_authority import DevelopmentV2MemoryAuthority
-from memory_v2_episode_compaction import canonical_record_id
+from aifren.assistant_service import AssistantService
+from aifren.memory_v2_store.models import RetrievalHealth, RetrievalLaneHealth
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.continuity.memory_v2_episode_compaction import canonical_record_id
 from test_assistant_service_v2_authority import _LLM, _Memory, _TTS
 from test_continuity_companion_tranche import _Harness
 from test_memory_v2_embeddings import ToyEmbeddingProvider
@@ -67,7 +67,7 @@ class MemoryRoutingPartialEvidenceTests(unittest.TestCase):
         self.events = []
         self.service.subscribe(self.events.append)
         self.recorder = Mock(enabled=False)
-        recorder = patch("assistant_service.development_flight_recorder", return_value=self.recorder)
+        recorder = patch('aifren.assistant_service.development_flight_recorder', return_value=self.recorder)
         recorder.start()
         self.addCleanup(recorder.stop)
         self.turns = []

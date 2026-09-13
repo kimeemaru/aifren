@@ -9,33 +9,33 @@ import unittest
 from unittest import mock
 import uuid
 
-from benchmarks.memory_v2.models import RetrievalQuery
-from character_registry import CharacterRegistry
-from development_staged_runtime import (
+from aifren.memory_v2_store.models import RetrievalQuery
+from aifren.character.character_registry import CharacterRegistry
+from aifren.runtime.development_staged_runtime import (
     DevelopmentStagedRuntimeError,
     attest_development_staged_runtime,
     development_staged_environment,
 )
-from memory_v2_episode_compaction import (
+from aifren.continuity.memory_v2_episode_compaction import (
     EPISODE_PURPOSE_HISTORICAL,
     EPISODE_SOURCE_HISTORICAL,
     EpisodeCompactionCache,
     EpisodeCompactor,
     canonical_record_id,
 )
-from memory_v2_historical_evidence import (
+from aifren.continuity.memory_v2_historical_evidence import (
     HistoricalEvidenceIndexer,
     open_staged_historical_evidence_writer,
 )
-from memory_v2_historical_episodes import (
+from aifren.continuity.memory_v2_historical_episodes import (
     HistoricalEpisodeError,
     HistoricalEpisodeRebuilder,
 )
-from memory_v2_hybrid_recall import HistoricalRecallAnchor, HybridMemoryV2Recall
-from memory_v2_shadow_writer import default_v2_path
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_staged_clone import create_memory_v2_staged_clone
-from memory_v2_store import MemoryV2Store, SemanticRetrievalV2
+from aifren.continuity.memory_v2_hybrid_recall import HistoricalRecallAnchor, HybridMemoryV2Recall
+from aifren.continuity.memory_v2_shadow_writer import default_v2_path
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.continuity.memory_v2_staged_clone import create_memory_v2_staged_clone
+from aifren.memory_v2_store import MemoryV2Store, SemanticRetrievalV2
 
 
 class _DeterministicHistoricalCompactor:
@@ -327,10 +327,10 @@ class HistoricalEpisodeRebuildTests(unittest.TestCase):
 
     def test_host_restart_accepts_committed_append_but_rejects_changed_frozen_prefix(self):
         import asyncio
-        from assistant_service import AssistantService
-        from backend_host import AIFrenWebSocketHost
-        from conversation.conversation import Conversation
-        from memory_v2_authority import DevelopmentV2MemoryAuthority
+        from aifren.assistant_service import AssistantService
+        from aifren.backend_host import AIFrenWebSocketHost
+        from aifren.conversation.conversation import Conversation
+        from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
         from test_assistant_service_v2_authority import _LLM, _Memory, _TTS
 
         self._finish_index()
@@ -378,10 +378,10 @@ class HistoricalEpisodeRebuildTests(unittest.TestCase):
             os.chdir(old_cwd)
 
     def test_idle_runtime_cannot_shrink_a_valid_staged_generation_at_an_ineligible_record(self):
-        from assistant_service import AssistantService
-        from conversation.conversation import Conversation
-        from memory_v2_authority import DevelopmentV2MemoryAuthority
-        from memory_v2_episode_compaction import EpisodeCompactionRollover
+        from aifren.assistant_service import AssistantService
+        from aifren.conversation.conversation import Conversation
+        from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
+        from aifren.continuity.memory_v2_episode_compaction import EpisodeCompactionRollover
         from test_assistant_service_v2_authority import _LLM, _Memory, _TTS
 
         for index in range(120, 240):

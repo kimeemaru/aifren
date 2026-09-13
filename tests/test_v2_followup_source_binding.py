@@ -113,9 +113,9 @@ class FollowupSourceBindingTests(unittest.TestCase):
                 self.assertNotIn("maple arch", result.reply or "")
 
     def test_fresh_exact_candidate_requires_complete_canonical_provenance(self):
-        from benchmarks.memory_v2.models import RetrievalQuery
-        from memory_query_decision import decide_memory_query
-        from memory_v2_replacement_shadow import _historical_exclusion
+        from aifren.memory_v2_store.models import RetrievalQuery
+        from aifren.continuity.memory_query_decision import decide_memory_query
+        from aifren.continuity.memory_v2_replacement_shadow import _historical_exclusion
         self.service.process_text_turn(self.event, speak=False)
         self.recall_event()
         query = "Which place was that?"
@@ -138,8 +138,8 @@ class FollowupSourceBindingTests(unittest.TestCase):
                 self.assertTrue(_historical_exclusion(altered, scope, allow_recall_anchor=True))
 
     def test_fresh_source_scope_cannot_be_relabelled_by_an_anchor(self):
-        from benchmarks.memory_v2.models import RetrievalQuery
-        from memory_query_decision import decide_memory_query
+        from aifren.memory_v2_store.models import RetrievalQuery
+        from aifren.continuity.memory_query_decision import decide_memory_query
         self.service.process_text_turn("Let's roleplay that we're in a synthetic test scene.", speak=False)
         self.assertEqual("scenario", self.service.truth_scope_provenance()["kind"])
         self.service.process_text_turn(self.event, speak=False)
@@ -158,8 +158,8 @@ class FollowupSourceBindingTests(unittest.TestCase):
                             for lane in result.health.lanes))
 
     def test_fresh_broader_association_still_requires_a_valid_episode(self):
-        from benchmarks.memory_v2.models import RetrievalQuery
-        from memory_query_decision import decide_memory_query
+        from aifren.memory_v2_store.models import RetrievalQuery
+        from aifren.continuity.memory_query_decision import decide_memory_query
         self.service.process_text_turn(self.event, speak=False)
         self.recall_event()
         query = "What else was connected to that?"
@@ -227,7 +227,7 @@ class FollowupSourceBindingTests(unittest.TestCase):
         self.assertTrue(recalled.succeeded)
         anchor = self.authority._recall_anchor
         self.assertIsNotNone(anchor)
-        from memory_v2_evidence_sufficiency import relation_value
+        from aifren.continuity.memory_v2_evidence_sufficiency import relation_value
         expected = relation_value(self.conversation.messages[anchor.canonical_indices[0]]["content"], "place")
         result = self.service.process_text_turn("Which place was that?", speak=False)
         self.assertTrue(result.succeeded)
@@ -333,7 +333,7 @@ class FollowupSourceBindingTests(unittest.TestCase):
         self.assertNotIn("fountain", result.reply or "")
 
     def test_failed_assistant_persistence_cannot_publish_anchor(self):
-        from conversation.persistence import ConversationPersistenceError
+        from aifren.conversation.persistence import ConversationPersistenceError
         self.prepare_history()
         save = self.conversation.save
         def fail_assistant():
@@ -378,7 +378,7 @@ class FollowupSourceBindingTests(unittest.TestCase):
 
 class FollowupAttributeUniquenessTests(unittest.TestCase):
     def test_unique_attribute_uses_existing_grammar_without_cross_value_guessing(self):
-        from memory_v2_evidence_sufficiency import AmbiguousHistoricalAttribute, relation_value
+        from aifren.continuity.memory_v2_evidence_sufficiency import AmbiguousHistoricalAttribute, relation_value
         supported = (("We watched the meteor beside the maple arch.", "place", "beside the maple arch"),
                      ("I wrote the parser in Python.", "programming_language", "Python"),
                      ("I met Mira.", "person", "Mira"), ("My name is Mira.", "identity", "Mira"))

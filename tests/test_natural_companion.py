@@ -9,17 +9,17 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from assistant import build_character_prompt
-from conversation_style import natural_character_prompt, NATURAL_POLICY
-from model_settings import companion_preferences, set_companion_preferences
-from presentation_metadata import ParsedAssistantResponse, ResponsePresentationMetadata
+from aifren.assistant import build_character_prompt
+from aifren.dialogue.conversation_style import natural_character_prompt, NATURAL_POLICY
+from aifren.runtime.model_settings import companion_preferences, set_companion_preferences
+from aifren.dialogue.presentation_metadata import ParsedAssistantResponse, ResponsePresentationMetadata
 
 
 class CompanionPreferenceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.file = Path(self.temp.name) / 'settings.json'
-        p = patch('model_settings.LOCAL_SETTINGS_FILE', self.file); p.start(); self.addCleanup(p.stop)
+        p = patch('aifren.runtime.model_settings.LOCAL_SETTINGS_FILE', self.file); p.start(); self.addCleanup(p.stop)
 
     def test_defaults_and_atomic_partial_save_preserve_unrelated_data(self):
         self.assertEqual(companion_preferences(), dict(conversation_style='roleplay',
@@ -42,7 +42,7 @@ class CompanionPreferenceTests(unittest.TestCase):
 
 class ManagedTemplateAdmissionTests(unittest.TestCase):
     def test_only_ready_managed_matching_model_admits_reviewed_template_role(self):
-        from backend_host import AIFrenWebSocketHost
+        from aifren.backend_host import AIFrenWebSocketHost
         from unittest.mock import Mock
         for ownership, active, expected in (
                 ('managed', 'selected.gguf', 'system'),
@@ -55,8 +55,8 @@ class ManagedTemplateAdmissionTests(unittest.TestCase):
                     replace_llm=lambda llm: setattr(host.service, 'llm', llm),
                     report_model_runtime_available=Mock())
                 host._owns_model_operation = lambda operation: True
-                with patch('llm.llm.create_llm', return_value=adapter), \
-                        patch('llm.local_template.installed_policy_role', return_value='system') as admit:
+                with patch('aifren.llm.llm.create_llm', return_value=adapter), \
+                        patch('aifren.llm.local_template.installed_policy_role', return_value='system') as admit:
                     host._apply_local_result(object(), dict(state='ready', ownership=ownership, active_model=active))
                 self.assertEqual(adapter.application_policy_role, expected)
                 self.assertEqual(admit.call_count, int(expected == 'system'))
@@ -82,7 +82,7 @@ class NaturalPromptTests(unittest.TestCase):
         self.assertIsNone(natural_character_prompt(original))
 
     def test_unreviewed_template_keeps_one_policy_without_promoting_history(self):
-        from llm.openai_compatible import OpenAICompatibleLLM
+        from aifren.llm.openai_compatible import OpenAICompatibleLLM
         prompt = natural_character_prompt(build_character_prompt({'name': 'Mira'}, 'Dry wit.'))
         llm = OpenAICompatibleLLM(api_key='test', base_url='http://127.0.0.1:9/v1',
                                  model='synthetic', local_presentation=True)
@@ -95,8 +95,8 @@ class NaturalPromptTests(unittest.TestCase):
         self.assertEqual(1, sum(m['content'].count(NATURAL_POLICY) for m in wire))
 
     def test_verified_template_places_one_owned_policy_after_history_without_promoting_data(self):
-        from llm.openai_compatible import OpenAICompatibleLLM
-        from conversation_style import separate_owned_delivery_policy
+        from aifren.llm.openai_compatible import OpenAICompatibleLLM
+        from aifren.dialogue.conversation_style import separate_owned_delivery_policy
         prompt = natural_character_prompt(build_character_prompt({'name':'Mira'}, 'Wry and thoughtful.'))
         llm = OpenAICompatibleLLM(api_key='test', base_url='http://127.0.0.1:9/v1', model='synthetic',
                                  local_presentation=True, application_policy_role='system')
@@ -139,10 +139,10 @@ class NaturalServiceTests(unittest.TestCase):
         self.assertNotIn(NATURAL_POLICY, self.llm.calls[0][1])
 
     def test_enabled_expression_preference_initializes_worker_on_restart(self):
-        from assistant_service import AssistantService
+        from aifren.assistant_service import AssistantService
         prefs = dict(conversation_style='natural', responsive_speech=True, automatic_expressions=True)
-        with patch('model_settings.companion_preferences', return_value=prefs), \
-                patch('automatic_expression.AutomaticExpressionWorker') as worker:
+        with patch('aifren.runtime.model_settings.companion_preferences', return_value=prefs), \
+                patch('aifren.dialogue.automatic_expression.AutomaticExpressionWorker') as worker:
             current = self.s
             reopened = AssistantService(self.llm, current.memory, current.conversation, current.voice,
                 current.character, current.character_prompt, current.tts, memory_authority='v2',
@@ -166,7 +166,7 @@ class NaturalServiceTests(unittest.TestCase):
 
     def test_selection_diagnostics_distinguish_applied_from_unsupported_or_required_contract(self):
         ordinary = self.policy()
-        with patch('assistant_service.development_flight_recorder') as recorder:
+        with patch('aifren.assistant_service.development_flight_recorder') as recorder:
             prompt = self.s._response_character_prompt(ordinary_policy=ordinary)
             self.assertEqual(1, prompt.count(NATURAL_POLICY))
             self.assertEqual(self.s._last_delivery_diagnostics, {
@@ -175,7 +175,7 @@ class NaturalServiceTests(unittest.TestCase):
                 'conversation_delivery', **self.s._last_delivery_diagnostics)
 
         self.s.character_prompt = 'An unsupported custom prompt with private payload.'
-        with patch('assistant_service.development_flight_recorder') as recorder:
+        with patch('aifren.assistant_service.development_flight_recorder') as recorder:
             prompt = self.s._response_character_prompt(ordinary_policy=self.policy())
             self.assertNotIn(NATURAL_POLICY, prompt)
             self.assertEqual(self.s._last_delivery_diagnostics['reason'], 'unrecognized_prompt')
@@ -218,7 +218,7 @@ class NaturalServiceTests(unittest.TestCase):
                 self.assertEqual(1, len(self.llm.calls))
 
     def test_quoted_prose_does_not_satisfy_constrained_speech_obligations(self):
-        from presentation_metadata import parse_assistant_response
+        from aifren.dialogue.presentation_metadata import parse_assistant_response
         p = self.policy()
         parsed = parse_assistant_response('"I can speak normally."')
         for mode in ('unavailable', 'constrained'):
@@ -228,7 +228,7 @@ class NaturalServiceTests(unittest.TestCase):
                 self.assertFalse(self.s._validate_governed_response(parsed, policy)[0])
 
     def test_body_restriction_does_not_impose_nonverbal_caption_length_on_speech(self):
-        from capability_policy import capability_context_block
+        from aifren.state.capability_policy import capability_context_block
         p = self.policy('Explain how an audio queue works in detail.')
         text = ('A queue preserves the order of pending work while one component prepares '
                 'the next unit and another component uses the current one. ') * 6
@@ -318,7 +318,7 @@ class NaturalServiceTests(unittest.TestCase):
 
 class LocalTemplateTests(unittest.TestCase):
     def test_capability_changes_only_application_prefix_and_never_double_templates(self):
-        from llm.openai_compatible import OpenAICompatibleLLM
+        from aifren.llm.openai_compatible import OpenAICompatibleLLM
         for role in ('user', 'system'):
             llm = OpenAICompatibleLLM(api_key='', base_url='http://127.0.0.1:1/v1',
                                      model='synthetic', application_policy_role=role)
@@ -332,11 +332,11 @@ class LocalTemplateTests(unittest.TestCase):
             self.assertNotIn('stop', request)
 
     def test_unknown_metadata_keeps_legacy_role(self):
-        from llm.local_template import installed_policy_role
+        from aifren.llm.local_template import installed_policy_role
         self.assertEqual(installed_policy_role('synthetic-missing-model.gguf'), 'user')
 
     def test_provider_diagnostics_only_keep_counts_and_finish_reason(self):
-        from llm.openai_compatible import OpenAICompatibleLLM
+        from aifren.llm.openai_compatible import OpenAICompatibleLLM
         llm = OpenAICompatibleLLM(api_key='', base_url='http://127.0.0.1:1/v1', model='synthetic')
         self.addCleanup(llm.client.close)
         llm._record_response_diagnostics(SimpleNamespace(usage=SimpleNamespace(prompt_tokens=123,
@@ -347,7 +347,7 @@ class LocalTemplateTests(unittest.TestCase):
 
 class OwnedMemoryCommentaryTests(unittest.TestCase):
     def test_closed_present_speech_acts_keep_core_immutable(self):
-        from companion_memory_realizer import (CompanionMemoryCore, CompanionMemoryRealizer,
+        from aifren.continuity.companion_memory_realizer import (CompanionMemoryCore, CompanionMemoryRealizer,
             PRESENT_COMMENTARY, owned_reaction_valid)
         core = CompanionMemoryCore('You said it was green before you switched to blue.',
                                    'before', ('synthetic-evidence',))
@@ -360,7 +360,7 @@ class OwnedMemoryCommentaryTests(unittest.TestCase):
             self.assertFalse(owned_reaction_valid(replace(response, reaction='You always loved that.')))
 
     def test_arbitrary_payload_or_historical_commentary_is_dropped(self):
-        from companion_memory_realizer import CompanionMemoryCore, CompanionMemoryRealizer
+        from aifren.continuity.companion_memory_realizer import CompanionMemoryCore, CompanionMemoryRealizer
         core = CompanionMemoryCore('I said it used Python.', 'language', ('synthetic-evidence',))
         for text in ('INTEREST because you loved it', 'APPROVAL: you seemed happy',
                      'I think you always wanted it.', 'It must have been raining.',

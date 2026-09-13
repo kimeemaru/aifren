@@ -4,7 +4,7 @@ from benchmarks.memory_v2.adapters import GoldReferenceAdapter, MemoryV1Structur
 from benchmarks.memory_v2.fixtures import build_core_fixture, generate_scale_fixture, structural_baseline_cases
 from benchmarks.memory_v2.harness import run_retrieval_benchmark
 from benchmarks.memory_v2.metrics import evaluate_consolidation, evaluate_retrieval
-from benchmarks.memory_v2.models import ClaimProposal, EmbeddingIdentity, RetrievalOutcome, RetrievalQuery, RetrievalTrace
+from aifren.memory_v2_store.models import ClaimProposal, EmbeddingIdentity, RetrievalOutcome, RetrievalQuery, RetrievalTrace
 
 
 class MemoryV2BenchmarkTests(unittest.TestCase):

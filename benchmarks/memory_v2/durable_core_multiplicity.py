@@ -14,7 +14,7 @@ from .durable_core_lane import (
     assess_durable_lane,
     build_durable_core_index,
 )
-from .models import BenchmarkFixture, GoldClaim, RetrievalCase, SyntheticEvent
+from aifren.memory_v2_store.models import BenchmarkFixture, GoldClaim, RetrievalCase, SyntheticEvent
 
 
 MANIFEST_VERSION = "memory-v2-durable-core-multiplicity-v1"

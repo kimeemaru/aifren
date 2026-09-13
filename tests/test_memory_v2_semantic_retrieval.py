@@ -2,9 +2,9 @@ import unittest
 import uuid
 
 from benchmarks.memory_v2.fixtures import build_core_fixture
-from memory_v2_store import MemoryV2Store, RetrievalLimits, SemanticRetrievalV2
-from memory_v2_store.importer import import_fixture
-from memory_v2_store.retrieval import (
+from aifren.memory_v2_store import MemoryV2Store, RetrievalLimits, SemanticRetrievalV2
+from aifren.memory_v2_store.importer import import_fixture
+from aifren.memory_v2_store.retrieval import (
     _has_asserted_event_mismatch,
     _has_explicit_attribute_mismatch,
     _has_possessive_role_mismatch,

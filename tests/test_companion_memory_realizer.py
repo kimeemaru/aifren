@@ -4,13 +4,13 @@ import unittest
 from unittest.mock import patch
 import threading
 
-from companion_memory_realizer import (
+from aifren.continuity.companion_memory_realizer import (
     CompanionMemoryRealizer, CompanionMemoryResponse, present_reaction_allowed,
 )
-from memory_v2_answer_governance import (
+from aifren.continuity.memory_v2_answer_governance import (
     MemoryAnswerEvidence, compose_memory_answer_requirement, validate_memory_answer_response,
 )
-from presentation_metadata import parse_assistant_response
+from aifren.dialogue.presentation_metadata import parse_assistant_response
 import test_memory_v2_ordering as ordering
 import test_v2_followup_source_binding as binding
 
@@ -47,7 +47,7 @@ class CompanionSurfaceTests(unittest.TestCase):
                     self.assertNotRegex(a.dialogue,r"(?:Yeah|Right), i\b|that We\b")
 
     def test_typed_place_avoids_archive_quotation(self):
-        from memory_query_decision import decide_memory_query
+        from aifren.continuity.memory_query_decision import decide_memory_query
         req=compose_memory_answer_requirement('Which place was that?', (
             MemoryAnswerEvidence('event','historical_conversation_only','user','real_world','assertion',
                                  'We watched a meteor beside the maple arch.'),),
@@ -60,8 +60,8 @@ class CompanionSurfaceTests(unittest.TestCase):
             self.assertTrue(validate_memory_answer_response(req,core.dialogue).accepted)
 
     def test_other_typed_attributes_identity_and_unavailable(self):
-        from memory_query_decision import decide_memory_query
-        from benchmarks.memory_v2.models import RetrievalHealth, RetrievalLaneHealth
+        from aifren.continuity.memory_query_decision import decide_memory_query
+        from aifren.memory_v2_store.models import RetrievalHealth, RetrievalLaneHealth
         for source,query,value in (
             ('I wrote the parser in Python.','What language was it?','Python'),
             ('I met Mira.','Who was that?','Mira'),
@@ -175,7 +175,7 @@ class CompanionServiceTests(unittest.TestCase):
         self.assertEqual('normal',published.data['presentation']['awareness_mode'])
 
     def test_unsafe_empty_malformed_and_failed_provider_keep_core_without_repair(self):
-        from llm.unavailable import ModelTransportError
+        from aifren.llm.unavailable import ModelTransportError
         self.learn('My favorite color is blue.');self.enable()
         for raw in ('You wore it in the rain.', '{"dialogue":', '', 'Your favorite color is red.'):
             self.llm.response=raw;before=len(self.llm.calls)

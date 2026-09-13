@@ -1,0 +1,1 @@
+"""aifren characters owners."""

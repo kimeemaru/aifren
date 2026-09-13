@@ -13,8 +13,8 @@ import time
 import unittest
 import uuid
 
-from character_registry import CharacterRegistry, CharacterStorageError, write_json_atomic
-from character_storage_runtime import (
+from aifren.character.character_registry import CharacterRegistry, CharacterStorageError, write_json_atomic
+from aifren.character.character_storage_runtime import (
     CharacterStorageBusy, acquire_runtime_lease, maintenance_lease,
 )
 
@@ -65,8 +65,8 @@ class CharacterStorageRuntimeTests(unittest.TestCase):
 
     def test_other_process_runtime_blocks_maintenance_then_releases_on_exit(self):
         script = (
-            "import sys; from character_registry import CharacterRegistry; "
-            "from character_storage_runtime import acquire_runtime_lease; "
+            "import sys; from aifren.character.character_registry import CharacterRegistry; "
+            "from aifren.character.character_storage_runtime import acquire_runtime_lease; "
             "r=CharacterRegistry(sys.argv[1]); l=acquire_runtime_lease(r,sys.argv[2]); "
             "print('leased',flush=True); sys.stdin.readline(); l.close()"
         )

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import json
 import unittest
 
-from companion_context import (
+from aifren.context.companion_context import (
     CompanionContextAssembler, CompanionContextContribution, CompanionContextRequest,
     MAX_CONTEXT_CHARACTERS,
 )

@@ -6,11 +6,11 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from memory_v2_authority import DevelopmentV2MemoryAuthority
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
 from test_assistant_service_v2_authority import _LLM, _Memory, _TTS
 from test_continuity_companion_tranche import _Harness
 from test_memory_v2_embeddings import ToyEmbeddingProvider
@@ -96,7 +96,7 @@ class V2RuntimeRecoveryTests(unittest.TestCase):
         self.assertFalse(any("red" in value for value in self.facts()))
 
     def test_each_deterministic_consumer_has_independent_failed_progress(self):
-        from memory_v2_runtime_observation import CONSUMERS
+        from aifren.continuity.memory_v2_runtime_observation import CONSUMERS
         for consumer, method in CONSUMERS.items():
             with self.subTest(consumer=consumer):
                 with patch.object(self.h.writer, method, side_effect=RuntimeError("synthetic crash")):
@@ -213,7 +213,7 @@ class RecoveryHostOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_host_poll_joins_cancelled_page_before_retiring_owner(self):
         import asyncio
         import threading
-        from backend_host import AIFrenWebSocketHost
+        from aifren.backend_host import AIFrenWebSocketHost
         from test_websocket_transport import FakeService
         started, release = threading.Event(), threading.Event()
         service = FakeService()
@@ -225,7 +225,7 @@ class RecoveryHostOwnershipTests(unittest.IsolatedAsyncioTestCase):
         host = AIFrenWebSocketHost(service=service)
         async def tick(_seconds):
             return
-        with patch("backend_host.asyncio.sleep", side_effect=tick):
+        with patch('aifren.backend_host.asyncio.sleep', side_effect=tick):
             task = asyncio.create_task(host._proactive_loop())
             try:
                 self.assertTrue(await asyncio.to_thread(started.wait, 2))

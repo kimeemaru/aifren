@@ -3,8 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from conversation.context_hygiene import ContextHygiene
-from conversation.conversation import Conversation
+from aifren.conversation.context_hygiene import ContextHygiene
+from aifren.conversation.conversation import Conversation
 
 
 def message(role, content, index=0):

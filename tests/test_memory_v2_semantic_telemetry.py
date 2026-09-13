@@ -1,9 +1,9 @@
 import tempfile
 import unittest
 
-from memory_v2_semantic_evaluation import run_semantic_evaluation
-from memory_v2_store import MemoryV2Repository, MemoryV2Store
-from memory_v2_telemetry import MAX_TELEMETRY_ROWS, record_dual_read, retrieval_report
+from tools.memory_v2.memory_v2_semantic_evaluation import run_semantic_evaluation
+from aifren.memory_v2_store import MemoryV2Repository, MemoryV2Store
+from aifren.continuity.memory_v2_telemetry import MAX_TELEMETRY_ROWS, record_dual_read, retrieval_report
 
 
 class MemoryV2SemanticTelemetryTests(unittest.TestCase):

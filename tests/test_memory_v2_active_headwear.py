@@ -5,11 +5,11 @@ import tempfile
 import unittest
 import uuid
 
-from assistant_service import AssistantService
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
-from memory_v2_store.active_state_headwear import extract_headwear_state_assertion
-from memory_v2_store.store import parse_timestamp_us
+from aifren.assistant_service import AssistantService
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
+from aifren.memory_v2_store.active_state_headwear import extract_headwear_state_assertion
+from aifren.memory_v2_store.store import parse_timestamp_us
 
 
 class HeadwearExtractionTests(unittest.TestCase):

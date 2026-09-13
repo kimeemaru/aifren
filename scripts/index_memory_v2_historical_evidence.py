@@ -14,14 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from character_registry import CharacterRegistry  # noqa: E402
-from memory_v2_historical_evidence import (  # noqa: E402
+from aifren.character.character_registry import CharacterRegistry  # noqa: E402
+from aifren.continuity.memory_v2_historical_evidence import (  # noqa: E402
     MAX_ARCHIVE_RECORDS,
     HistoricalEvidenceError,
     HistoricalEvidenceIndexer,
     open_staged_historical_evidence_writer,
 )
-from memory_v2_store import EmbeddingLifecycle, MiniLMEmbeddingProvider  # noqa: E402
+from aifren.memory_v2_store import EmbeddingLifecycle, MiniLMEmbeddingProvider  # noqa: E402
 
 
 def main() -> None:

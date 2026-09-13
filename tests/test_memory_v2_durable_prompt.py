@@ -4,18 +4,18 @@ import tempfile
 import unittest
 import uuid
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository, MemoryV2Store
-from memory_v2_store.durable_prompt import (
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository, MemoryV2Store
+from aifren.memory_v2_store.durable_prompt import (
     MAX_DURABLE_CONTEXT_CHARS,
     MAX_DURABLE_CONTEXT_RECORDS,
     TypedDurableFact,
     admit_identity_name_context,
     render_durable_context,
 )
-from memory_v2_store.store import utc_now_us
+from aifren.memory_v2_store.store import utc_now_us
 
 
 class _Memory:
@@ -281,7 +281,7 @@ class DurablePromptEligibilityTests(unittest.TestCase):
         self.store.close()
 
     def test_incomplete_and_assistant_authored_durable_rows_are_not_admitted(self):
-        from memory_v2_store import DURABLE_CORE_FACT
+        from aifren.memory_v2_store import DURABLE_CORE_FACT
 
         with self.store.transaction():
             for claim_id, provenance, event_id, content in (

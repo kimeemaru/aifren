@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 import unittest
 
-from dialogue_semantics import spoken_text
-from llm.output_canonicalization import ModelOutputCanonicalizer
-from presentation_metadata import parse_assistant_response
+from aifren.dialogue.dialogue_semantics import spoken_text
+from aifren.llm.output_canonicalization import ModelOutputCanonicalizer
+from aifren.dialogue.presentation_metadata import parse_assistant_response
 
 
 CASES = (

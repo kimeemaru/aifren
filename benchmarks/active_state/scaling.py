@@ -15,9 +15,9 @@ import tempfile
 import time
 import uuid
 
-from current_continuity import admit_current_continuity_context
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import (
+from aifren.state.current_continuity import admit_current_continuity_context
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import (
     ActiveSceneSubjectIntroduction,
     ActiveSceneSubjectReactivation,
     ActiveSceneSubjectRetirement,

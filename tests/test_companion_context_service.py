@@ -6,11 +6,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from assistant import build_character_prompt
-from assistant_service import AssistantService
-from companion_context import CompanionContextContribution
-from conversation.conversation import Conversation
-from memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.assistant import build_character_prompt
+from aifren.assistant_service import AssistantService
+from aifren.context.companion_context import CompanionContextContribution
+from aifren.conversation.conversation import Conversation
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
 from test_assistant_service_v2_authority import _LLM, _TTS
 from test_continuity_companion_tranche import _Harness
 from test_memory_routing_partial_evidence import HealthyRecall

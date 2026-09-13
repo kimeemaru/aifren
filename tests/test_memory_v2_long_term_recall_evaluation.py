@@ -1,6 +1,6 @@
 import unittest
 
-from memory_v2_long_term_recall_evaluation import build_long_history_fixture
+from tools.memory_v2.memory_v2_long_term_recall_evaluation import build_long_history_fixture
 
 
 class LongTermRecallEvaluationTests(unittest.TestCase):

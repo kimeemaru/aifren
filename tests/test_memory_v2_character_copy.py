@@ -12,13 +12,13 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from memory_v2_store import character_copy as copying
-from memory_v2_store.character_copy import (
+from aifren.memory_v2_store import character_copy as copying
+from aifren.memory_v2_store.character_copy import (
     CharacterCopyError, CharacterCopyCancelled, SelectedCharacterInventory,
     inspect_character_state, copy_character_state, cleanup_character_state,
 )
-from memory_v2_store.production_import import import_v1_memories
-from memory_v2_store.store import MemoryV2Store
+from aifren.memory_v2_store.production_import import import_v1_memories
+from aifren.memory_v2_store.store import MemoryV2Store
 
 
 class SelectedCharacterCopyTests(unittest.TestCase):

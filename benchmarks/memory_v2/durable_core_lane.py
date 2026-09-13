@@ -8,10 +8,10 @@ import re
 import time
 from typing import Iterable
 
-from memory_v2_store.retrieval import _infer_intent, _tokens
+from aifren.memory_v2_store.retrieval import _infer_intent, _tokens
 
 from .aging import AgingFixture
-from .models import BenchmarkFixture, RetrievalCase
+from aifren.memory_v2_store.models import BenchmarkFixture, RetrievalCase
 from .router_intent import RouterIntentFixture
 from .router_intent_counterfactual import GenericHoldoutCase
 

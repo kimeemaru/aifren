@@ -7,10 +7,10 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from memory.memory import EMBEDDING_DIMENSIONS, Memory
-from memory_viewer import MemoryViewer
-from memory_v2_episode_compaction import EpisodeCompactionCache, EpisodeCompactor
-from memory_v2_store import (
+from aifren.memory.memory import EMBEDDING_DIMENSIONS, Memory
+from aifren.continuity.memory_viewer import MemoryViewer
+from aifren.continuity.memory_v2_episode_compaction import EpisodeCompactionCache, EpisodeCompactor
+from aifren.memory_v2_store import (
     MemoryV2Repository, MemoryV2Store, OpenThreadProposal,
     OpenThreadProposalOperation,
 )

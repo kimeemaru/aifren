@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from memory_v2_store import ACTIVE_STATE_ACTORS, ACTIVE_STATE_ACTOR_ATTRIBUTES, ACTIVE_STATE_SCENE_ATTRIBUTES
+from aifren.memory_v2_store import ACTIVE_STATE_ACTORS, ACTIVE_STATE_ACTOR_ATTRIBUTES, ACTIVE_STATE_SCENE_ATTRIBUTES
 
 from .active_state_contextual_extraction import (
     ContextualScenario, ParsedCandidate, SceneSubject, _LOCAL_REF, _native_schema_provider_response,
@@ -146,7 +146,7 @@ def run_subject_introduction_policy(
     name: str, instructions: str, *, provider: Any | None = None,
 ) -> IntroductionPolicyReport:
     """One fixed no-retry run of the focused frozen suite."""
-    from llm.gemini import Gemini
+    from aifren.llm.gemini import Gemini
 
     cases = load_subject_introduction_manifest()
     provider = provider or Gemini()

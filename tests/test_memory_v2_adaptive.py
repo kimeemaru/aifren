@@ -1,6 +1,6 @@
 import unittest
 
-from memory_v2_adaptive import AdaptiveShadowRetrieval, WorkingRecallCache
+from aifren.continuity.memory_v2_adaptive import AdaptiveShadowRetrieval, WorkingRecallCache
 
 
 class AdaptiveShadowRetrievalTests(unittest.TestCase):

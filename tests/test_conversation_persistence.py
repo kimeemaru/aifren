@@ -13,10 +13,10 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from assistant_service import AssistantService
-from conversation.conversation import Conversation
-from conversation.persistence import ConversationPersistenceError
-from memory_v2_authority import DevelopmentV2MemoryAuthority
+from aifren.assistant_service import AssistantService
+from aifren.conversation.conversation import Conversation
+from aifren.conversation.persistence import ConversationPersistenceError
+from aifren.continuity.memory_v2_authority import DevelopmentV2MemoryAuthority
 
 
 class Provider:
@@ -76,7 +76,7 @@ class ConversationPersistenceTests(unittest.TestCase):
         conversation = self.conversation("v2")
         original = self.path.read_bytes()
         before = self.path.stat()
-        with patch("conversation.conversation.save_json") as save:
+        with patch('aifren.conversation.conversation.save_json') as save:
             self.assertFalse(conversation.prepare_maintenance())
         save.assert_not_called()
         after = self.path.stat()
@@ -224,7 +224,7 @@ class ConversationPersistenceTests(unittest.TestCase):
         service.subscribe(events.append)
         with patch.object(service, "_observe_current_continuity") as continuity, \
                 patch.object(service, "_observe_durable_identity_name") as durable, \
-                patch("conversation.persistence.json.dump", side_effect=self.partial_write):
+                patch('aifren.conversation.persistence.json.dump', side_effect=self.partial_write):
             result = service.process_text_turn("Synthetic pending input.", speak=False)
         self.assert_no_success(service, events, result)
         continuity.assert_not_called()
@@ -254,7 +254,7 @@ class ConversationPersistenceTests(unittest.TestCase):
                 self.partial_write(data, handle)
             return original_dump(data, handle, **kwargs)
 
-        with patch("conversation.persistence.json.dump", side_effect=fail_second), \
+        with patch('aifren.conversation.persistence.json.dump', side_effect=fail_second), \
                 patch.object(service, "_observe_durable_identity_name") as durable:
             result = service.process_text_turn("Synthetic committed input.", speak=False)
         self.assert_no_success(service, events, result)
@@ -281,7 +281,7 @@ class ConversationPersistenceTests(unittest.TestCase):
             queues.append(service._streaming_speech_queue)
             self.partial_write(data, handle, **kwargs)
 
-        with patch("conversation.persistence.json.dump", side_effect=fail):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=fail):
             result = service.process_text_turn("Synthetic input.", speak=True)
         self.assertTrue(any(e.type == "assistant_delta" for e in events))
         self.assertIsNotNone(queues[0])
@@ -314,7 +314,7 @@ class ConversationPersistenceTests(unittest.TestCase):
             with self.subTest(stage=stage):
                 c = self.conversation()
                 c.add_assistant_message("Synthetic pending reply.")
-                with patch("conversation.persistence." + target, side_effect=OSError("synthetic")):
+                with patch('aifren.conversation.persistence.' + target, side_effect=OSError("synthetic")):
                     with self.assertRaises(ConversationPersistenceError) as raised:
                         c.save()
                 self.assertFalse(raised.exception.committed)
@@ -333,10 +333,10 @@ class ConversationPersistenceTests(unittest.TestCase):
         c.reload()
         c.add_assistant_message("Synthetic reply.", truth_scope={"kind": "scenario", "scope_id": "scope-other"})
         expected = list(c.messages)
-        from assistant_service import canonical_message_identity
+        from aifren.assistant_service import canonical_message_identity
         identity = canonical_message_identity(0, c.messages[0])
         original_replace = os.replace
-        with patch("conversation.persistence.os.replace", wraps=original_replace) as replace:
+        with patch('aifren.conversation.persistence.os.replace', wraps=original_replace) as replace:
             c.save()
         source, destination = replace.call_args.args
         self.assertEqual(self.path.parent, Path(source).parent)
@@ -351,7 +351,7 @@ class ConversationPersistenceTests(unittest.TestCase):
     def test_first_run_failed_write_does_not_create_a_canonical_archive(self):
         c = self.conversation()
         c.add_user_message("Synthetic pending input.")
-        with patch("conversation.persistence.json.dump", side_effect=self.partial_write):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=self.partial_write):
             with self.assertRaises(ConversationPersistenceError):
                 c.save()
         self.assertFalse(self.path.exists())
@@ -364,7 +364,7 @@ class ConversationPersistenceTests(unittest.TestCase):
         service = self.service()
         events = []
         service.subscribe(events.append)
-        with patch("conversation.persistence._sync_directory", side_effect=[None, OSError("synthetic")]) as sync, \
+        with patch('aifren.conversation.persistence._sync_directory', side_effect=[None, OSError("synthetic")]) as sync, \
                 patch.object(service, "_observe_durable_identity_name") as durable:
             result = service.process_text_turn("Synthetic committed input.", speak=False)
         self.assert_no_success(service, events, result)
@@ -395,7 +395,7 @@ class ConversationPersistenceTests(unittest.TestCase):
     def test_unreadable_archive_is_not_first_run(self):
         self.seed()
         original = self.path.read_bytes()
-        with patch("conversation.persistence.open", side_effect=PermissionError("synthetic")):
+        with patch('aifren.conversation.persistence.open', side_effect=PermissionError("synthetic")):
             with self.assertRaises(ConversationPersistenceError):
                 self.conversation()
         self.assertEqual(original, self.path.read_bytes())
@@ -434,8 +434,8 @@ class ConversationPersistenceTests(unittest.TestCase):
         shared = service.conversation.messages
         events = []
         service.subscribe(events.append)
-        with patch("conversation.persistence.json.dump", side_effect=self.partial_write), \
-                patch("conversation.persistence.open", side_effect=PermissionError("synthetic rollback denial")):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=self.partial_write), \
+                patch('aifren.conversation.persistence.open', side_effect=PermissionError("synthetic rollback denial")):
             result = service.process_text_turn("Synthetic pending input.", speak=False)
         self.assert_no_success(service, events, result)
         self.assertEqual(original_bytes, self.path.read_bytes())
@@ -467,7 +467,7 @@ class ConversationPersistenceTests(unittest.TestCase):
         c = self.conversation()
         c.summary_data = {"summary": "Synthetic retained summary.", "summarized_messages": 1}
         c.save_summary()
-        with patch("conversation.persistence.json.dump", side_effect=self.partial_write):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=self.partial_write):
             with self.assertRaises(ConversationPersistenceError):
                 c.clear_conversation(keep_summary=False)
         self.assertEqual(original, c.messages)
@@ -504,7 +504,7 @@ class ConversationPersistenceTests(unittest.TestCase):
                 raise OSError("synthetic summary replacement failure")
             return original_replace(source, destination)
 
-        with patch("conversation.persistence.os.replace", side_effect=replace):
+        with patch('aifren.conversation.persistence.os.replace', side_effect=replace):
             with self.assertRaises(ConversationPersistenceError) as raised:
                 service.save()
         self.assertEqual("summary", raised.exception.record_kind)
@@ -540,7 +540,7 @@ class ConversationPersistenceTests(unittest.TestCase):
             return original_replace(source, destination)
 
         with patch.object(service.conversation, "_recent_context_start_index", return_value=22), \
-                patch("conversation.persistence.os.replace", side_effect=replace):
+                patch('aifren.conversation.persistence.os.replace', side_effect=replace):
             result = service.process_text_turn("Synthetic current input.", speak=True)
         self.assertEqual(1, len(queues))
         queue = queues[0]
@@ -574,7 +574,7 @@ class ConversationPersistenceTests(unittest.TestCase):
                     self.provider.callback = service._cancel_active_turn
                     self.assertEqual("interrupted", service.process_text_turn("Synthetic cancelled input.", speak=False).error)
                     self.provider.callback = None
-                    with patch("conversation.persistence.json.dump", side_effect=self.partial_write):
+                    with patch('aifren.conversation.persistence.json.dump', side_effect=self.partial_write):
                         self.assertFalse(service.process_text_turn("Synthetic unsaved input.", speak=False).succeeded)
                     service.conversation.update_summary()
                     service.conversation.save_summary()
@@ -588,7 +588,7 @@ class ConversationPersistenceTests(unittest.TestCase):
                 self.memory.save.assert_not_called()
 
     def test_initialize_passes_authority_before_conversation_load(self):
-        import assistant
+        from aifren import assistant
         paths = {"memory": self.root / "memories.json", "conversation": self.path,
                  "summary": self.summary, "character": self.root / "character.json",
                  "personality": self.root / "personality.md"}
@@ -597,7 +597,7 @@ class ConversationPersistenceTests(unittest.TestCase):
         # Corrupt unused compatibility data must not block V2 startup or be repaired there.
         self.summary.write_bytes(b"[")
         with self.summary_mutations() as attempts, ExitStack() as stack:
-            stack.enter_context(patch('character_storage_runtime.acquire_runtime_lease',return_value=Mock(spec=['close','assert_current'])))
+            stack.enter_context(patch('aifren.character.character_storage_runtime.acquire_runtime_lease',return_value=Mock(spec=['close','assert_current'])))
             for target, value in (("create_llm", self.provider), ("CharacterRegistry", registry),
                                   ("Memory", self.memory), ("VoiceInput", object()),
                                   ("TextToSpeech", object()), ("load_character", ({"name": "Synthetic"}, "Synthetic"))):
@@ -629,9 +629,9 @@ class ConversationPersistenceTests(unittest.TestCase):
                     self.summary.write_bytes(raw)
                     paths["summary"].write_bytes(raw)
                 with self.summary_mutations() as attempts, \
-                        patch("memory.memory.Memory", return_value=Memory()), \
-                        patch("config.MEMORY_V2_SHADOW_WRITE_ENABLED", True), \
-                        patch("config.MEMORY_V2_REAL_TURN_SHADOW_ENABLED", False):
+                        patch('aifren.memory.memory.Memory', return_value=Memory()), \
+                        patch('aifren.runtime.config.MEMORY_V2_SHADOW_WRITE_ENABLED', True), \
+                        patch('aifren.runtime.config.MEMORY_V2_REAL_TURN_SHADOW_ENABLED', False):
                     service = self.service("v2")
                     try:
                         service.conversation.reload()
@@ -674,8 +674,8 @@ class ConversationPersistenceTests(unittest.TestCase):
         )
         events = []
         service.subscribe(events.append)
-        with patch("model_settings.proactive_behavior_status", return_value={"enabled": True}), \
-                patch("conversation.persistence.json.dump", side_effect=self.partial_write):
+        with patch('aifren.runtime.model_settings.proactive_behavior_status', return_value={"enabled": True}), \
+                patch('aifren.conversation.persistence.json.dump', side_effect=self.partial_write):
             result = service.process_proactive_checkin(now_us=int(now.timestamp() * 1_000_000), speak=False)
         self.assert_no_success(service, events, result)
         self.assertFalse(any(e.type == "turn_started" for e in events))
@@ -691,7 +691,7 @@ class ConversationPersistenceTests(unittest.TestCase):
         service = self.service()
         service._memory_v2_shadow_writer = SimpleNamespace(close=Mock())
         original = self.path.read_bytes()
-        with patch("conversation.persistence.json.dump", side_effect=self.partial_write):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=self.partial_write):
             with self.assertRaises(ConversationPersistenceError):
                 service.save()
             with self.assertRaises(ConversationPersistenceError):
@@ -707,7 +707,7 @@ class ConversationPersistenceTests(unittest.TestCase):
         paths = {key: self.root / "new" / key for key in (
             "conversation", "summary", "memory", "character", "personality",
         )}
-        with patch("conversation.persistence.json.dump", side_effect=self.partial_write):
+        with patch('aifren.conversation.persistence.json.dump', side_effect=self.partial_write):
             with self.assertRaises(ConversationPersistenceError):
                 service.switch_character_state(
                     character_id="33333333-3333-4333-8333-333333333333",

@@ -2,8 +2,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from memory_v2_lifetime_benchmark import run_lifetime_benchmark
-from memory_v2_store import MemoryV2Store
+from tools.memory_v2.memory_v2_lifetime_benchmark import run_lifetime_benchmark
+from aifren.memory_v2_store import MemoryV2Store
 
 
 class LifetimeBenchmarkHarnessTests(unittest.TestCase):

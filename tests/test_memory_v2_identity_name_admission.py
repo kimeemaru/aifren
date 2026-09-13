@@ -9,8 +9,8 @@ from benchmarks.memory_v2.identity_name_admission import (
     identity_name_admission_relevant,
     load_admission_manifest,
 )
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
 
 
 class IdentityNameAdmissionExperimentTests(unittest.TestCase):

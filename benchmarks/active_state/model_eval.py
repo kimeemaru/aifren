@@ -18,42 +18,42 @@ import time
 from typing import Any
 
 from benchmarks.active_state.harness import BASE_TIME, SyntheticSession
-from capability_policy import (
+from aifren.state.capability_policy import (
     capability_context_block,
     normalize_constrained_caption,
     normalize_response_for_capabilities,
     preview_capability_effects,
     validate_capability_response,
 )
-from character_scene_profile import cache_character_scene_profile, derive_character_scene_profile
-from companion_action import (
+from aifren.character.character_scene_profile import cache_character_scene_profile, derive_character_scene_profile
+from aifren.state.companion_action import (
     action_fallback_dialogue,
     action_narration_valid,
     companion_action_decision_prompt,
     validate_companion_action_decision,
 )
-from config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR
-from conversation.conversation import ContextManager
-from current_continuity import admit_current_continuity_context
-from dialogue_semantics import spoken_text
-from interaction_policy import (
+from aifren.runtime.config import LOCAL_LLM_CONTEXT_SIZE, LOCAL_LLM_MODEL_DIR
+from aifren.conversation.conversation import ContextManager
+from aifren.state.current_continuity import admit_current_continuity_context
+from aifren.dialogue.dialogue_semantics import spoken_text
+from aifren.state.interaction_policy import (
     SleepReactionSignature,
     classify_interaction_policy,
     render_sleep_reaction,
     sleep_reaction_prompt,
 )
-from llm.llm import QWEN35_NON_THINKING_GENERAL
-from llm.openai_compatible import OpenAICompatibleLLM
-from local_model_runtime import LocalModelRuntime
-from llm.output_canonicalization import canonicalize_model_output
-from model_settings import get_model_settings
-from presentation_metadata import (
+from aifren.llm.llm import QWEN35_NON_THINKING_GENERAL
+from aifren.llm.openai_compatible import OpenAICompatibleLLM
+from aifren.runtime.local_model_runtime import LocalModelRuntime
+from aifren.llm.output_canonicalization import canonicalize_model_output
+from aifren.runtime.model_settings import get_model_settings
+from aifren.dialogue.presentation_metadata import (
     ParsedAssistantResponse,
     ResponsePresentationMetadata,
     parse_assistant_response,
     response_contract_prompt,
 )
-from response_requirements import (
+from aifren.dialogue.response_requirements import (
     derive_mutation_response_requirement,
     derive_response_requirement,
     repair_requirement_prompt,

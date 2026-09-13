@@ -9,8 +9,8 @@ from benchmarks.memory_v2.active_headwear_admission import (
     evaluate_active_headwear_admission,
     load_active_headwear_admission_manifest,
 )
-from memory_v2_shadow_writer import MemoryV2ShadowWriter
-from memory_v2_store import MemoryV2Repository
+from aifren.continuity.memory_v2_shadow_writer import MemoryV2ShadowWriter
+from aifren.memory_v2_store import MemoryV2Repository
 
 
 class ActiveHeadwearAdmissionExperimentTests(unittest.TestCase):
