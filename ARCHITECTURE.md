@@ -1,177 +1,178 @@
 # AIFren architecture
 
-## Runtime and authority
+## Ownership and publication
 
 ```text
-Unity companion
-    | loopback WebSocket (one client)
-backend_host.py
-    | AssistantService
-    |-- canonical conversation
-    |-- Memory V2 authority
-    |     |-- facts / corrections
-    |     |-- historical occurrences / episodes
-    |     |-- Active State / Open Threads / Truth Scope
-    |     `-- MiniLM / FTS / ANN (derived retrieval)
-    |-- CompanionMemoryRealizer
-    |-- V1 explicit rollback
-    `-- replaceable LLM / TTS / STT
+Unity companion -> loopback WebSocket -> backend_host -> AssistantService
+    canonical conversation -> V2 evidence / structured continuity
+        -> typed admitted memory answer -> CompanionMemoryRealizer
+        -> optional non-authoritative present reaction
+        -> canonical assistant commit -> dialogue / TTS / subtitles
 ```
 
-`AssistantService` owns turns, persistence, memory processing, context, speech/PTT
-and backend events. `backend_host.py` is a loopback transport adapter. Unity is
-the sole production frontend and never writes canonical stores directly.
+AssistantService owns turns, final validation, canonical persistence, cancellation,
+PTT/speech and backend events. backend_host is a frontend-neutral transport adapter.
+Unity owns product settings and presentation; it cannot directly mutate memory.
+LLM, TTS, STT and embedding providers remain replaceable. Managed llama.cpp uses
+`--logits_all false`; the server applies its selected chat template exactly once.
 
-V2 is normal prompt-facing long-term-memory authority. Explicit process-local
-`AIFREN_MEMORY_AUTHORITY=v1` selects compatibility; the Development launcher
-exposes `development v1-memory` for one launch. An ordinary next start selects V2.
-V2 failure stays visible and cannot silently activate V1. Normal V2 contributes
-zero V1 prompt memory and makes no V1 learned-memory or rolling-summary writes.
+## Memory and current truth
 
-## Durable owners and derived representations
+V2 is the normal prompt-facing memory authority. Canonical conversation is permanent
+source evidence, not replaced by retrieval. Original facts, Viewer corrections,
+scene state, lifecycle records, Open Threads and scopes have dedicated owners.
+FTS, MiniLM, ANN and source-ranged episodes are derived/rebuildable. Similarity or a
+summary does not create truth. Original administrative state cannot be rebuilt
+from conversation alone.
 
-| Material | Owner and boundary |
-| --- | --- |
-| Canonical dialogue | `Conversation`: atomic JSON replacement; permanent original evidence. |
-| Original V2 evidence | Character-scoped SQLite repository: source events, Viewer corrections and administrative actions retain their provenance. |
-| Facts and corrections | Closed typed contracts and supersession/lifecycle records; old values never replace current corrections through indexing. |
-| Active State | Current subjects, attributes, relations, literal loci and independent capability causes. |
-| Open Threads / Truth Scope | Scoped unresolved continuity and explicit scenario control, separate from biography. |
-| Historical occurrences | Exact canonical record/index, speaker, scope, hash and source classification. |
-| Episodes, FTS, MiniLM, ANN | Rebuildable representations; retrieval relevance never establishes truth by itself. |
-| Presentation | Unity preferences, avatar, backgrounds and framing; not character identity. |
+V1 is explicit process-local compatibility rollback. Normal V2 has no V1 prompt,
+learned-memory or rolling-summary writes. V2 failure stays visible and never selects
+V1 silently. Legacy V1-origin records in V2 are not themselves a V1 authority read.
 
-The entire V2 database cannot be reconstructed from conversation alone: Viewer
-corrections and other original SQLite evidence must be retained. Summaries and
-prepared caches are neither migration authority nor replacements for live truth.
+Source admission preserves character, speaker, scope, polarity, modality and
+current/history meaning. Before/after ordering uses canonical sources. Historical
+projection stays at most two passages with 220 total source characters. Immediate
+attribute follow-ups use the unique admitted source of the published prior answer,
+not another record with a matching relation. Cancelled/unpublished turns establish
+no anchor; switching, scope changes, unrelated turns and restart retire it.
 
-## Initialization and recovery
+A named-topic personal past-value callback after restart is a new governed recall
+query. Its topic must match an applicable canonical assertion; competing accounts
+clarify. It neither resurrects a one-hop anchor nor searches an entire episode as
+one proposition. Unrelated ordinary questions retain ordinary routing.
 
-`config.configured_memory_authority`, the service factory and character rebind
-select the same authority. Normal V2 opens/version-upgrades the existing store,
-ensures the selected character without overwriting it, and uses existing bounded
-canonical observation and idle index/episode owners. It does not import V1 memory
-or require a prepared acceptance cache.
+CompanionMemoryRealizer retrieves nothing. It deterministically surfaces an already
+admitted proposition with owner/tense/relation-safe variation. Optional commentary
+cannot change the factual core or invent remembered circumstances. Rejection drops
+only commentary without a new repair inference. Emergency safety responses remain
+separate from ordinary successful memory realization.
 
-`memory_v2_initialization.initialize_v2_derived_state` supplies finite explicit catch-up
-through those owners. Independent progress cursors, exact source-prefix digests,
-source identities and durable per-vector state make work idempotent and resumable.
-Already-current work is a no-op; appends continue rather than triggering a full
-rebuild. Source edits, unsafe old scope operations and ambiguous replay stay
-visible. Unchanged idle work does not reread/retry indefinitely; independently
-valid ranges can progress beyond excluded gaps. Never suppress an unresolved
-operation simply because it is old.
+Active State uses generic subjects, attributes, relations and literal loci.
+Accepted application/removal changes the intended object and independent capability
+causes; holding is not wearing. Current corrections outrank old supporting dialogue.
+State, biography and future Relationship State are distinct.
 
-Optional episode acceleration must be strictly attested against exact source and
-policy identities, installed additively, and validated by the shared episode
-owner. It cannot replace current facts, corrections, state, threads or scopes.
+## Character-local storage
 
-## Query, admission and exact follow-up
+CharacterRegistry centrally resolves UUID, storage layout, readiness, timeline and
+paths. New directories use `sanitized-name--UUID`: character.json, personality.md,
+conversation.json, memory_v2.sqlite3 and its WAL/SHM, explicit same-character V1
+compatibility files and owned derived/attention state. Identity never comes from a
+readable directory name. Database UUID/scope checks remain defense in depth.
+Existing legacy layouts move only after confirmation. Missing/corrupt/wrong-owner
+local storage is unavailable; no shared-store, root V1 or seed fallback is allowed.
 
-One immutable `MemoryQueryDecision` travels through retrieval, projection, evidence
-sufficiency, context containment, answer requirements and diagnostics. A question
-must actually request memory; incidental temporal words are not enough.
+CharacterOperationService inventories a selected UUID/revision, retires runtime
+writers under a cooperative maintenance lease, journals progress, then publishes
+the new pointer last. Selected migration builds a new empty schema from a consistent
+SQLite snapshot, copying only owned rows and necessary metadata. It verifies
+schema completeness, original IDs/status/provenance, per-table logical digests,
+foreign keys and integrity. Unknown schema blocks instead of silently dropping data.
+Derived FTS is rebuilt; ANN retains its normal validation. No whole shared-database
+backup-and-delete scheme is used. A logical canonical namespace preserves source
+keys across a deliberate location change.
 
-Typed before/after requests retain their anchor, canonical ordering, speaker and
-scope. A before answer needs evidence preceding the identified correction/event.
-Multiple eligible predecessors clarify instead of guessing. Current durable state
-cannot substitute for historical-before evidence.
+Migration reports retained old application copies. Cleanup is separately confirmed
+and preserves other characters. Reset removes selected learned original/derived/
+recovery/attention continuity, changes the timeline epoch, and preserves profile,
+avatar and framing. Delete removes identity/owned preferences, not shared assets.
+The last deletion leaves an explicit empty library. Neither operation creates a
+hidden archive or revives a seed/V1 import. Independent backups and forensic erasure
+are outside these operations. Interrupted operations are explicit and resumable.
 
-Historical source projection selects up to two complete local passages sharing
-220 source characters. Separate passages retain distinct offsets; they are never
-spliced into a fake contiguous quote. Candidate/context bounds remain enforced.
-Budget or projection failure is unavailable, not healthy absence.
+Runtime write leases fence old workers. Switch/reset events capture UUID, session
+and generation when produced. Scene/Viewer mutations also require revision/action
+tokens. A→B→A does not make an old A event current again. Empty snapshots replace
+old arrays. History updates mark hidden views dirty; visible updates are coalesced.
+The intermittent reported blank-panel issue remains unresolved; these fences must
+not be weakened to hide it.
 
-A published grounded answer can establish one unique provenance-only anchor for
-an immediate concrete attribute question. The next lookup is restricted to that
-exact source/event's permitted evidence neighborhood. It cannot search unrelated
-history for a place/language/color. Missing or ambiguous attributes fail closed.
-The handle is not a new fact and cannot derive truth from assistant wording.
-Intervening unrelated input, scope/character changes, cancellation and unpublished
-answers invalidate it. Retired callbacks cannot establish a new anchor.
+## Responsive context planning
 
-## Companion memory realization
+`assistant.build_response_request` is shared by complete/streaming requests.
+`conversation/governed_context.py` and `context_governor.py` coordinate existing
+owners; they do not retrieve, mutate memory or infer new truth.
 
-```text
-canonical / V2 evidence
-    -> typed admitted answer
-    -> CompanionMemoryRealizer: immutable grounded core
-    -> optional non-authoritative present reaction
-    -> final service governance and canonical commit
-    -> one publication / subtitle session / TTS utterance
-```
+Required character/current-user authority, scope, temporal facts, applicable state,
+capabilities and machine/memory obligations are preserved whole. Selection then
+keeps an immediate whole exchange, admitted current continuity, older coherent
+exchanges and optional bookkeeping. Exact source identity plus equivalent proposition
+semantics permits deduplication; a newer thread status cannot be discarded merely
+because its supporting source is old. Temporal facts have one representation.
 
-The realizer performs no retrieval and stores no memory. Relation/ownership-specific
-forms express current facts, historical attribution, before/after relations,
-source-bound attributes and supported/missing slots. A session/turn hash selects
-bounded reproducible surface variation without varying facts. Narrow grammatical
-person projection is allowed; unrepresentable source syntax remains an exact
-attributed report rather than an invented paraphrase.
+Local model capacity defaults to 16,384; the complete-request operating target is
+4,608 tokens. This deployment starting point is not a universal optimum or a smaller
+model allocation. Required context can exceed the target within the hard ceiling;
+hard overflow fails visibly. Output/framing reserves remain separate. Counting uses
+bounded planning estimates plus mandatory/final local content verification where
+available. Framing is estimated; content counting is not exact chat-template counting.
+Unavailable tokenization uses the labelled conservative path. Cancellation stops
+additional preflight work before inference.
 
-The memory validator checks the complete immutable factual core. The optional
-reaction has its own whole-tail present-subjective grammar: it cannot add past
-feelings, repetition, circumstances, causes, questions or new historical claims.
-Invalid or unavailable reaction output is dropped without repair and the grounded
-core remains. The existing response inference supplies this optional tail; there
-is no second style/emotion call. Other adapters retain governed provider-direct
-realization. Emergency safe responses remain observable internal invariant paths,
-not normal grounded-answer presentation.
+The newest coherent suffix depends on content cost, not a semantic last-N rule.
+V1 summary/count policy remains rollback-only; hygiene comparison horizons are work
+ceilings. Canonical messages are never internally clipped or stripped of meaningful
+roleplay to fit the budget. `AIFREN_CONTEXT_GOVERNOR=0` is an explicit process-level
+composition rollback independent of V1/V2 authority. No fill-the-window policy is
+restored. Diagnostics contain costs/counts/owners/reasons, not raw private dialogue.
 
-Complete service governance still applies to capabilities, temporal content,
-persistence, cancellation and publication. No core is shown before commit, no
-late reaction becomes a second utterance, and the source anchor uses admitted
-proposition identities rather than rendered words.
+The bounded CompanionContext seam carries escaped, non-authoritative salience data.
+It contributes no explicit memory evidence. Recent Pulse is disabled; transactional
+impulses are dormant with no producers. They are not new truth stores.
 
-## State, publication and audio
+## Dialogue, speech and presentation
 
-Accepted scene transactions precede capability recomputation and response eligibility.
-Removing one cause does not restore a capability while another remains. A scene
-interaction creates its canonical event independently of whether its reaction
-succeeds. Silent administrative corrections remain a separate source class.
+Natural/Roleplay is a delivery preference, not an identity edit. Only eligible
+ordinary local requests change contract; constrained/machine/governed-memory
+obligations retain their paths. Reviewed template support is fingerprinted; unknown
+templates retain compatible role handling. Every added policy is budgeted.
 
-User and assistant persistence have explicit commit/failure boundaries. Cancelled,
-failed and superseded drafts cannot publish or apply final presentation metadata.
-Canonical JSON and SQLite retain separate transactional owners and recovery proofs.
-Provider readiness belongs to a configuration/operation identity; a stale worker
-cannot certify a replacement. Only demonstrably owned model processes are stopped.
-Managed llama.cpp uses `--logits_all false`.
+Fresh output normalization and the shared dialogue span owner separate plain text,
+emphasis and actions. Inline emphasis stays spoken; an outer action owns nested
+formatting. Full/responsive speech project the complete accepted text before
+segmentation, so chunk boundaries cannot change meaning. Canonical visible dialogue
+may retain roleplay; hidden speech subtitles and synthesis omit nonspoken actions.
 
-PTT immediately retires synthesis/playback. Bounded synthesis worker ownership,
-queue draining and playback dispatch keep obsolete work from blocking replacement
-turns. Natural audio completion and interruption are different retirement events.
-Subtitle layout, fade and dwell never gate capture, synthesis, playback or readiness.
+Responsive speech starts only after validation and canonical commit. One utterance
+has ordered chunk/word/sample offsets, bounded work/audio queues and one CPU Kokoro
+worker. Callbacks consume PCM without I/O or synthesis. Cancellation retires queued
+and prepared work immediately; in-flight native work drains cooperatively. Failure
+does not replay spoken words or pretend normal completion. Subtitle dwell/page state
+never controls PTT readiness. HiddenSubtitlePresenter owns hidden visual progression;
+CommittedSpeechTimeline accepts continuing timing without resetting the utterance.
 
-## Unity presentation
+ACT preview is opt-in. Prefix-only bounded fresh-output parsing strips actual
+control markup before canonical/TTS/subtitle publication, buffers split prefixes,
+and accepts plain dialogue immediately. Quoted/history/user/source markers remain
+inert data. Invalid separable optional markup loses presentation, not safe dialogue.
+No expression dispatch is allowed before accepted current persistence.
 
-Direct VRM rendering is normal; RenderTexture is rollback/debug-only. UI visibility
-never resizes/reframes the avatar. Portrait/landscape framing and backgrounds are
-independent; visual asset swaps cannot alter a character's durable identity.
+Automatic CPU expressions use accepted current prose, excluding factual memory
+cores, quotation, reporting/code/control data. One asynchronous item/no backlog and
+a deadline prevent publication/first-speech blocking. Manual/restrictions > valid
+explicit ACT/structured channel > admitted automatic > eligible legacy/no-change.
+RP parsers remain compatibility paths, not competing owners for an explicit channel.
 
-`HiddenSubtitlePresenter` owns renderability, page changes, per-word TMP alpha and
-transitions. Timing-due, actually-shown and fade progress are distinct. Temporary
-peek suppresses rendering without replaying settled fades; committed Show cancels
-the session. Base text color is persisted through `PresentationPreferences` and
-multiplied by transient alpha. Typed action/emphasis semantics match backend TTS.
+Automatic expressions are temporary overlays: newer replies, interruption, switch,
+disable and expiry release only that owned contribution. Lease checks stop old
+cleanup clearing new requests. Equivalent proposals extend without restarting blends.
+Release is not a neutral truth claim. Blink, gaze, lip-sync and explicit/manual state
+remain independent. Unity maps semantic expressions/gestures to concrete VRM behavior.
+Direct rendering is normal; RenderTexture is debug rollback. Framing is scoped to
+character/asset/orientation, restored after the matching avatar-ready event; drawers
+and global UI hide never resize the avatar.
 
-Final accepted semantic metadata and bounded explicit facial-emote/body fallback
-share one resolver. Explicit emotion wins; absent emotion preserves the face and
-neutral clears it. Persistent expression, transient body, blink, lips and gaze
-retain separate owners and authored VRM overrides. Capabilities are applied before
-eligibility, with at most one deliberate gesture per reply. Missing assets or
-presets degrade gracefully; optional local motion trials are not required assets.
+## Source, runtime and validation boundaries
 
-History loads bounded newest pages. The Memory Viewer uses bounded requests,
-provenance/health labels and backend corrections; stale character/request results
-are rejected. The Current Scene drawer is a visibility owner over existing rows:
-hover/click/focus never mutates state, and X uses the exact cause/token/revision.
+Application code comes from this checkout. `AIFREN_RESOURCE_ROOT` selects existing
+model/static resources; `AIFREN_DATA_ROOT` selects mutable application data. Local
+launcher `.env` may choose an external `AIFREN_PYTHON`. These paths never authorize
+moving data or importing code from a data directory. Seeds are optional first-install
+inputs, never automatic reset recovery. Public builds retain reviewed public assets.
 
-Development diagnostics are bounded and content-free by default. Finite automation
-must isolate application data/preferences before initialization; normal launches
-have no implicit test plan. See the developer guide for public-safe validation.
-
-## Historical research
-
-Modules named `*_shadow` and `*_evaluation` include earlier disconnected experiments
-and reusable typed helpers. A module name does not grant runtime authority. Current
-production follows the owners above; no historical V1-default or Development-only
-V2 experiment overrides normal startup.
+Synthetic structural tests, installed-model checks, native tests and player proof
+are distinct evidence. Development flight recording is bounded/privacy-safe; release
+diagnostics default off. See the [developer guide](docs/DEVELOPER_GUIDE.md) and
+[delivery design](docs/NATURAL_COMPANION_DESIGN.md) for commands and limitations.
+Historical `*_shadow` and evaluation modules may remain disconnected/opt-in research;
+their names do not define normal memory authority.

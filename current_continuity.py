@@ -126,6 +126,9 @@ class CurrentContinuityAdmission:
     open_thread_context: str | None
     admitted_thread_count: int
     reason: str
+    # Third field is owner-proven raw equivalence, not source-ID similarity.
+    open_thread_fragments: tuple[tuple[str, tuple[str, ...], bool], ...] = ()
+    active_source_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -412,7 +415,15 @@ def extract_scenario_transition(
     return None
 
 
-def _activity_set(value: str, start: int, end: int) -> ActiveStateProposal:
+def _activity_set(value: str, start: int, end: int) -> ActiveStateProposal | None:
+    # Extraction must not promise a mutation that the unchanged store value
+    # contract cannot represent. Keep unsupported punctuation/instruction-like
+    # content in canonical dialogue; do not strip it into a different activity.
+    from memory_v2_store.active_state_contract import validate_active_state_value
+    try:
+        validate_active_state_value(USER_ACTIVITY_KEY, value)
+    except ValueError:
+        return None
     return ActiveStateProposal((ActiveStateProposalUpdate(
         operation="set", value=value, excerpt_start_cp=start, excerpt_end_cp=end,
         target_kind="actor", target_ref="user", attribute="activity",
@@ -1990,7 +2001,52 @@ def admit_current_continuity_context(
         selected = tuple(item for item in selected if not (_tokens(item.description) and _tokens(item.description) <= activity_tokens))
     thread_context = _render_open_threads(selected, now_us)
     reason = "relevant_current_context" if active_context or thread_context else "conservative_withhold"
-    return CurrentContinuityAdmission(scope_context, active_context, thread_context, len(selected), reason)
+    fragments = []
+    for thread in selected:
+        refs = []
+        raw_equivalent = False
+        for event_id in thread.evidence_event_ids:
+            event = repository.store.connection.execute(
+                "SELECT payload_json, source_reference, recorded_at_us, content_sha256, actor_kind "
+                ", content_text FROM events WHERE character_id=? AND event_id=? "
+                "AND source_origin='canonical_conversation' AND redaction_state='active'",
+                (character_id, event_id),
+            ).fetchone()
+            try:
+                ref = json.loads(event[0]).get("canonical_record_id") if event else None
+            except (ValueError, TypeError):
+                ref = None
+            if not ref and event is not None and event["actor_kind"] == "user":
+                match = re.fullmatch(r"[^\n]+/conversation\.json#(\d+)|conversation\.json#(\d+)", str(event["source_reference"] or ""))
+                digest = str(event["content_sha256"] or "")
+                if match and re.fullmatch(r"[0-9a-f]{64}", digest):
+                    index = int(match[1] or match[2])
+                    ref = f"canonical-user:{index}:{event['recorded_at_us']}:{digest}"
+            if not isinstance(ref, str) or not ref:
+                refs = []
+                break  # No dedup unless every supporting identity is proven.
+            refs.append(ref)
+            # Only an unchanged initial typed opening can be represented by
+            # its opening prose alone. A later reconfirmation/correction/status
+            # remains current context even when older evidence is still raw.
+            if (len(thread.evidence_event_ids) == 1 and thread.status == "open"
+                    and thread.opened_at_us == thread.last_mentioned_at_us == event["recorded_at_us"]):
+                proposal = extract_open_thread_proposal(event["content_text"], current_threads=())
+                if proposal and len(proposal.operations) == 1:
+                    operation = proposal.operations[0]
+                    raw_equivalent = (operation.operation == "open"
+                        and operation.kind == thread.kind
+                        and operation.participant_scope == thread.participant_scope
+                        and operation.description == thread.description
+                        and operation.temporal_anchor == thread.temporal_anchor)
+        block = _render_open_threads((thread,), now_us)
+        if block:
+            fragments.append((block, tuple(refs), raw_equivalent))
+    active_refs = tuple(dict.fromkeys(
+        ["state:" + item.state_id for item in (admitted_user_activity, admitted_companion_activity) if item is not None]
+        + ["relation:" + item.relation_id for item in relevant_relations]
+    ))
+    return CurrentContinuityAdmission(scope_context, active_context, thread_context, len(selected), reason, tuple(fragments), active_refs)
 
 
 def find_exact_scenario_scope(

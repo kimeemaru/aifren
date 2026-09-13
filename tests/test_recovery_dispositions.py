@@ -11,14 +11,24 @@ class RecoveryDispositionTests(unittest.TestCase):
     reopen = recovery_tests.V2RuntimeRecoveryTests.reopen
     progress = recovery_tests.V2RuntimeRecoveryTests.progress
 
-    def miss_then_replace(self, text, replacement="I'm reading Dune."):
+    def miss_then_replace(self, text, replacement="I'm reading Dune.", *, expect_failure=True):
         original = self.h.writer.observe_canonical_user_continuity
         def missed(message, **kwargs):
             if message["content"] == text:
                 raise RuntimeError("Synthetic missed observation")
             return original(message, **kwargs)
         with patch.object(self.h.writer, "observe_canonical_user_continuity", side_effect=missed):
-            self.assertTrue(self.service.process_text_turn(text, speak=False).succeeded)
+            calls = len(self.llm.calls)
+            result = self.service.process_text_turn(text, speak=False)
+            if expect_failure:
+                self.assertFalse(result.succeeded)
+                self.assertIn("current-state update could not be completed", result.error)
+                self.assertEqual(calls, len(self.llm.calls))
+                self.assertEqual("user", self.conversation.messages[-1]["role"])
+                self.assertEqual(text, self.conversation.messages[-1]["content"])
+                self.assertEqual(self.conversation.messages, json.loads(self.h.conversation_file.read_text()))
+            else:
+                self.assertTrue(result.succeeded, result.error)
             self.assertTrue(self.service.process_text_turn(replacement, speak=False).succeeded)
         self.reopen()
 
@@ -40,7 +50,7 @@ class RecoveryDispositionTests(unittest.TestCase):
         self.assertEqual(originals, self.h.conversation_file.read_bytes())
 
     def test_missed_read_only_question_does_not_need_current_state_replay(self):
-        self.miss_then_replace("Did you enjoy the picnic?")
+        self.miss_then_replace("Did you enjoy the picnic?", expect_failure=False)
         self.assertEqual("complete", self.progress()["continuity"]["state"])
         self.assertEqual("non_mutating_question", self.dispositions()[0]["reason"])
 
@@ -115,7 +125,14 @@ class RecoveryDispositionTests(unittest.TestCase):
                 raise RuntimeError("Synthetic missed scope application")
             return original(message, **kwargs)
         with patch.object(self.h.writer, "observe_canonical_user_continuity", side_effect=missed):
-            self.assertTrue(self.service.process_text_turn(entry, speak=False).succeeded)
+            calls = len(self.llm.calls)
+            result = self.service.process_text_turn(entry, speak=False)
+            self.assertFalse(result.succeeded)
+            self.assertIn("current-state update could not be completed", result.error)
+            self.assertEqual(calls, len(self.llm.calls))
+            self.assertEqual("user", self.conversation.messages[-1]["role"])
+            self.assertEqual(entry, self.conversation.messages[-1]["content"])
+            self.assertEqual(self.conversation.messages, json.loads(self.h.conversation_file.read_text()))
             self.assertTrue(self.service.process_text_turn(
                 "Let's roleplay that we're in the pear orchard.", speak=False).succeeded)
             self.assertTrue(self.service.process_text_turn("Back to real life.", speak=False).succeeded)

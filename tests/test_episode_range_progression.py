@@ -73,7 +73,7 @@ class EpisodeRangeProgressionTests(unittest.TestCase):
         self.assertIn("lake", followup.reply)
         self.assertFalse(self.service._last_memory_authority_diagnostics["authoritative_no_evidence"])
 
-    def test_unprepared_applicable_anchor_is_unavailable_not_absent(self):
+    def test_exact_canonical_anchor_does_not_require_pending_episode(self):
         self.prepare_gap()
         cache, rollover = self.install_rollover(_DeterministicHistoricalCompactor())
         self.maintain(rollover, pages=1)  # Older valid range, later event not prepared yet.
@@ -81,11 +81,14 @@ class EpisodeRangeProgressionTests(unittest.TestCase):
         self.llm.response = "I cannot supply that answer."
         self.assertTrue(self.service.process_text_turn(
             "Do you remember the violet meteor beside the lake?", speak=False).succeeded)
-        calls = len(self.llm.calls)
         followup = self.service.process_text_turn("Which place was that?", speak=False)
-        self.assertFalse(followup.succeeded, str(self.service._last_memory_authority_diagnostics))
-        self.assertEqual(calls, len(self.llm.calls))
-        self.assertEqual("lookup_unavailable", self.service._last_memory_authority_diagnostics["absence_kind"])
+        self.assertTrue(followup.succeeded, followup.error)
+        self.assertIn("beside the lake", followup.reply)
+        diagnostics = self.service._last_memory_authority_diagnostics
+        self.assertEqual("not_applicable", diagnostics["absence_kind"])
+        self.assertEqual("historical_recall_anchor_source", diagnostics["admitted_items"][0]["lane"])
+        self.assertEqual(canonical_record_id(self.event_index, self.conversation.messages[self.event_index]),
+                         diagnostics["admitted_items"][0]["canonical_record_id"])
 
     def test_place_paraphrase_keeps_the_source_relation_without_forcing_fallback(self):
         self.prepare_gap()

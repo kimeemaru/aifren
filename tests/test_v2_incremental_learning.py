@@ -42,7 +42,7 @@ class V2IncrementalLearningTests(unittest.TestCase):
         self.assertIn("by the lake", result.reply)
         self.assertFalse(self.service._last_memory_authority_diagnostics["authoritative_no_evidence"])
 
-    def test_new_semantic_source_is_unavailable_until_idle_vectors_recover(self):
+    def test_failed_new_semantic_vectors_remain_unavailable_until_retry_recovers(self):
         from test_memory_retrieval_health import ControlledEmbedding
         embedding = ControlledEmbedding()
         self.authority.recall.semantic.embedding_provider = embedding
@@ -50,11 +50,13 @@ class V2IncrementalLearningTests(unittest.TestCase):
             "I spent the afternoon refactoring my Python project.", speak=False).succeeded)
         query = "Do you recall software coding?"
         calls = len(self.llm.calls)
+        # A due page is now serviced at explicit lookup as well as idle. A real
+        # provider failure still cannot be relabelled healthy absence.
+        embedding.failed = True
         missing_vectors = self.service.process_text_turn(query, speak=False)
         self.assertFalse(missing_vectors.succeeded)
         self.assertEqual(calls, len(self.llm.calls))
         self.assertEqual("lookup_unavailable", self.service._last_memory_authority_diagnostics["absence_kind"])
-        embedding.failed = True
         self.service.maintain_canonical_observers()
         self.assertGreater(self.service._canonical_observation_recovery.last_embedding_work["failed"], 0)
         reasons = [row[0] for row in self.h.writer.store.connection.execute(

@@ -114,7 +114,7 @@ def render_authoritative_no_evidence(turn: V2AuthorityTurn) -> str:
 def _render_no_evidence_variant(turn: V2AuthorityTurn) -> str:
     requirement = turn.requirement
     decision = requirement.memory_query_decision
-    if getattr(turn, "abstention_reason", "") == "anchor_attribute_ambiguous":
+    if getattr(turn, "abstention_reason", "") in {"anchor_attribute_ambiguous", "topic_reference_ambiguous"}:
         return "I don't remember which one that was. Could you clarify which one you mean?"
     if decision is not None and decision.source_order is not None:
         direction = decision.source_order.direction
@@ -312,6 +312,8 @@ class DevelopmentV2MemoryAuthority:
             ):
                 recall_anchor = self._recall_anchor
             self._recall_anchor = None  # Consume even on error or unrelated input.
+            observed = (self.observation_health_provider(decision)
+                        if self.observation_health_provider is not None else None)
             query = RetrievalQuery(
                 self.character_id,
                 str(query_text),
@@ -339,8 +341,8 @@ class DevelopmentV2MemoryAuthority:
                     RetrievalLaneHealth("claims", "incomplete", "lookup", "lookup_failed"),
                 )))
             health = getattr(result, "health", RetrievalHealth())
-            if self.observation_health_provider is not None:
-                observed_health, current_complete = self.observation_health_provider(decision)
+            if observed is not None:
+                observed_health, current_complete = observed
                 base_lanes = health.lanes or (
                     RetrievalLaneHealth("claims", "incomplete", "lookup", "unreported"),
                 )
@@ -437,7 +439,8 @@ class DevelopmentV2MemoryAuthority:
         return V2AuthorityTurn(
             design, context_block, requirement,
             round((time.perf_counter() - started) * 1000.0, 3),
-            len(candidates), str(getattr(result, "abstention_reason", "") or ""),
+            len(candidates), (admission.reason if admission.reason == "topic_reference_ambiguous"
+                              else str(getattr(result, "abstention_reason", "") or "")),
             (
                 "lookup_unavailable" if requirement.lookup_unavailable else _absence_kind(design, candidates)
                 if requirement.evidence_state

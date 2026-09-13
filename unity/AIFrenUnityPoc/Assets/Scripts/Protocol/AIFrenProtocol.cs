@@ -22,8 +22,13 @@ namespace AIFren.UnityPoc.Protocol
         public bool has_local_auto_start;
         public bool early_speech;
         public bool proactive_behavior;
+        public bool explicit_avatar_cues;
+        public string conversation_style;
+        public bool responsive_speech;
+        public bool automatic_expressions;
         public int proactive_interval_seconds;
         public string character_id;
+        public string character_session;
         public string display_name;
         public string personality;
         public string scenario;
@@ -34,6 +39,8 @@ namespace AIFren.UnityPoc.Protocol
         public string action_token;
         public string expected_revision;
         public string request_id;
+        public string token;
+        public long revision;
         public string memory_lane;
         public string query;
         public string status_filter;
@@ -50,6 +57,9 @@ namespace AIFren.UnityPoc.Protocol
     [Serializable]
     public sealed class ServerMessage
     {
+        public string character_id;
+        public string character_session;
+        public long character_generation;
         public string type;
         public SnapshotData data;
         public BackendEvent @event;
@@ -59,6 +69,16 @@ namespace AIFren.UnityPoc.Protocol
     [Serializable]
     public sealed class SnapshotData
     {
+        public string character_id;
+        public string character_session;
+        public long character_generation;
+        public long registry_revision;
+        public bool storage_unavailable;
+        public bool explicit_avatar_cues;
+        public string conversation_style;
+        public bool responsive_speech = true;
+        public bool automatic_expressions;
+        public string automatic_expression_status;
         public int transport_version;
         public ConversationMessage[] conversation;
         public CharacterIdentity character;
@@ -96,6 +116,11 @@ namespace AIFren.UnityPoc.Protocol
         public string character_id;
         public string display_name;
         public bool is_active;
+        public string storage_layout;
+        public string storage_status;
+        public string timeline_generation;
+        public string operation_kind;
+        public bool has_retained_copy;
     }
 
     [Serializable]
@@ -111,6 +136,11 @@ namespace AIFren.UnityPoc.Protocol
     [Serializable]
     public sealed class CompanionSettingsSnapshot
     {
+        public bool explicit_avatar_cues;
+        public string conversation_style;
+        public bool responsive_speech = true;
+        public bool automatic_expressions;
+        public string automatic_expression_status;
         public bool proactive_behavior;
         public int proactive_interval_seconds;
         public string proactive_eligibility;
@@ -177,6 +207,7 @@ namespace AIFren.UnityPoc.Protocol
         public string side;
         public string predicate;
         public string cause;
+        public string locus;
         public string effect;
         public int quantity;
         public string scope;
@@ -421,6 +452,16 @@ namespace AIFren.UnityPoc.Protocol
         public string replacement_record_id;
         public string character_id;
         public MemoryViewPage memory_page;
+        public string display_name;
+        public string token;
+        public long revision;
+        public string scope_text;
+        public string[] files;
+        public bool old_copy_retained;
+        public int original_rows;
+        public string status;
+        public string deleted_character_id;
+        public string folder_path;
         public MemoryViewDetail memory_detail;
         public float minimum_available_ram_mb;
         public float swap_in_pages_total;
@@ -431,6 +472,19 @@ namespace AIFren.UnityPoc.Protocol
         public float peak_unity_rss_mb;
         public float peak_llama_rss_mb;
         public bool streamed;
+        public bool committed_stream;
+        public string complete_text;
+        public string chunk_text;
+        public int sequence;
+        public int word_offset;
+        public int word_count;
+        public long sample_offset;
+        public long sample_count;
+        public int sample_rate;
+        public long playback_sample_offset;
+        public bool final_chunk;
+        public string alignment_kind;
+        public bool automatic_expression_pending;
         public bool interrupted;
         public bool global_listener;
         public string[] lines;
@@ -445,6 +499,7 @@ namespace AIFren.UnityPoc.Protocol
     [Serializable]
     public sealed class PresentationMetadata
     {
+        public string origin;
         public string emotion;
         public float intensity;
         public bool has_intensity;
@@ -465,6 +520,7 @@ namespace AIFren.UnityPoc.Protocol
     {
         public string code;
         public string message;
+        public string request_id;
     }
 
     public static class AIFrenProtocol

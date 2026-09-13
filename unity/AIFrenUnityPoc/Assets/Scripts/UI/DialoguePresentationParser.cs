@@ -222,9 +222,10 @@ namespace AIFren.UnityPoc.UI
         private static int FindMarkerStart(string value, int offset, out int markerLength)
         {
             markerLength = 0;
+            var literals = LiteralSpans(value);
             for (int index = offset; index < value.Length; index++)
             {
-                if (value[index] != '*' || IsEscaped(value, index)) continue;
+                if (value[index] != '*' || IsEscaped(value, index) || InLiteral(literals, index)) continue;
                 bool doubleMarker = index + 1 < value.Length && value[index + 1] == '*' &&
                     (index == 0 || value[index - 1] != '*') && (index + 2 >= value.Length || value[index + 2] != '*');
                 if (doubleMarker)
@@ -242,9 +243,10 @@ namespace AIFren.UnityPoc.UI
 
         private static int FindMarkerEnd(string value, int offset, int markerLength)
         {
+            var literals = LiteralSpans(value);
             for (int index = offset; index < value.Length; index++)
             {
-                if (value[index] != '*' || IsEscaped(value, index)) continue;
+                if (value[index] != '*' || IsEscaped(value, index) || InLiteral(literals, index)) continue;
                 if (markerLength == 2 && index + 1 < value.Length && value[index + 1] == '*' &&
                     (index == 0 || value[index - 1] != '*') && (index + 2 >= value.Length || value[index + 2] != '*')) return index;
                 if (markerLength == 1 && !IsDoubleStar(value, index))
@@ -281,6 +283,46 @@ namespace AIFren.UnityPoc.UI
         }
 
         private static bool IsEscaped(string value, int index) => index > 0 && value[index - 1] == '\\';
+
+        // Complete quoted/code spans are literal data. Match the backend's
+        // delimiter ownership without inferring reported speech from prose.
+        private static List<(int start, int end)> LiteralSpans(string value)
+        {
+            var result = new List<(int, int)>();
+            for (int cursor = 0; cursor < value.Length;)
+            {
+                char marker = value[cursor];
+                bool single = marker == '\'' || marker == '‘';
+                if (IsEscaped(value, cursor) || "\"'“‘`".IndexOf(marker) < 0
+                    || (single && cursor > 0 && char.IsLetterOrDigit(value[cursor - 1])))
+                { cursor++; continue; }
+                int width = 1;
+                if (marker == '`') while (cursor + width < value.Length && value[cursor + width] == '`') width++;
+                string closing = marker == '`' ? new string('`', width) :
+                    (marker == '“' ? "”" : marker == '‘' ? "’" : marker.ToString());
+                int search = cursor + width, end = -1;
+                while (search < value.Length)
+                {
+                    int candidate = value.IndexOf(closing, search, StringComparison.Ordinal);
+                    if (candidate < 0) break;
+                    int after = candidate + closing.Length;
+                    if (IsEscaped(value, candidate)
+                        || (marker == '`' && ((candidate > 0 && value[candidate - 1] == '`') || (after < value.Length && value[after] == '`')))
+                        || (single && after < value.Length && char.IsLetterOrDigit(value[after])))
+                    { search = candidate + 1; continue; }
+                    end = after; break;
+                }
+                if (end < 0) break; // Preserve existing completed malformed-literal behavior.
+                result.Add((cursor, end)); cursor = end;
+            }
+            return result;
+        }
+
+        private static bool InLiteral(List<(int start, int end)> literals, int index)
+        {
+            foreach (var span in literals) if (span.start <= index && index < span.end) return true;
+            return false;
+        }
         private static bool IsDoubleStar(string value, int index) =>
             (index > 0 && value[index - 1] == '*') || (index + 1 < value.Length && value[index + 1] == '*');
         private static bool ContainsLetter(string value) { foreach (char character in value) if (char.IsLetter(character)) return true; return false; }

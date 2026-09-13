@@ -7,6 +7,10 @@ events that a future frontend can consume.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from context_governor import governor_enabled
+
 from collections import deque
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
@@ -126,6 +130,10 @@ class _TurnCancelled(Exception):
     """Internal control flow for a user turn replaced by newer input."""
 
 
+class _ContinuityMutationUnavailable(RuntimeError):
+    """A committed user input whose expected state update could not complete."""
+
+
 @dataclass(frozen=True)
 class _SceneReaction:
     """One optional reaction to an independently committed scene event."""
@@ -239,16 +247,53 @@ class AssistantService:
         memory_authority: str | None = None,
         memory_v2_authority: Any = None,
         v2_recent_context_policy: str | None = None,
+        recent_pulse_enabled: bool | None = None,
+        companion_context_sources: tuple[Any, ...] = (),
+        transient_impulse_store: Any = None,
     ) -> None:
+        from config import RECENT_PULSE_ENABLED
+        self._recent_pulse_enabled = RECENT_PULSE_ENABLED if recent_pulse_enabled is None else bool(recent_pulse_enabled)
+        # Small explicit dependency seam, not a registry/plugin framework.
+        self._companion_context_sources = tuple(companion_context_sources[:3])
+        self._last_companion_context_diagnostics = {}
         self.llm = llm
         self._model_runtime_availability = "unconfigured" if getattr(llm, "is_available", True) is False else "unknown"
         self.memory = memory
         self.conversation = conversation
+        self._storage_lease = getattr(conversation, "_storage_lease", None) or getattr(memory_v2_shadow_writer, "runtime_lease", None)
+        if self._storage_lease is not None:
+            self.conversation.continuity_write_guard = self._storage_lease.assert_current
+            self.memory.continuity_write_guard = self._storage_lease.assert_current
+        self._closed = False
+        self._transient_impulse_store = transient_impulse_store
+        self._impulse_session = uuid.uuid4().hex
+        self._impulse_turn_owner = None
+        self._impulse_lease = None
+        self._impulse_receipt_ready = False
+        self._impulse_published = False
+        self._last_impulse_diagnostics = {}
+        if transient_impulse_store is not None:
+            from transient_impulses import TransientImpulseStore
+            if (not isinstance(transient_impulse_store, TransientImpulseStore)
+                    or transient_impulse_store.character_id != str(character_id or character.get("_character_id"))):
+                raise ValueError("attention owner does not match the selected character")
+            self._last_impulse_diagnostics = transient_impulse_store.recover(conversation)
         self.conversation._temporal_reply_is_human_owned = self._temporal_reply_is_human_owned
         self.voice = voice
         self.character = character
         self.character_id = character_id or character.get("_character_id")
+        self._character_binding_lock = threading.RLock()
+        self._character_session = str(uuid.uuid4())
         self.character_prompt = character_prompt
+        from model_settings import explicit_avatar_cues_enabled, companion_preferences
+        self.explicit_avatar_cues = explicit_avatar_cues_enabled()
+        preferences = companion_preferences()
+        self.conversation_style = preferences["conversation_style"]
+        self.responsive_speech = preferences["responsive_speech"]
+        self.automatic_expressions = preferences["automatic_expressions"]
+        self._automatic_expression_worker = None
+        self._automatic_expression_lease = None
+        self._automatic_expression_lock = threading.Lock()
         self._published_expression: ResponsePresentationMetadata | None = None
         self._published_expression_owner: tuple | None = None
         self.tts = tts
@@ -327,6 +372,8 @@ class AssistantService:
         self._configure_tts_playback_events()
         self._sync_character_scene_profile()
         self._bind_canonical_observation_recovery()
+        if self.automatic_expressions:
+            self.apply_companion_preferences(preferences)
 
     def _bind_canonical_observation_recovery(self) -> None:
         self._canonical_observation_recovery = None
@@ -339,7 +386,7 @@ class AssistantService:
                 self._memory_v2_shadow_writer, self.conversation,
             )
             self._memory_v2_authority.observation_health_provider = (
-                self._canonical_observation_recovery.lookup_health
+                self._canonical_observation_recovery.prepare_lookup
             )
             authority = self._memory_v2_authority
             self._canonical_observation_recovery.embedding_provider_getter = lambda: getattr(
@@ -493,6 +540,7 @@ class AssistantService:
         lip_sync_envelope: list[float] | None = None,
         word_start_seconds: list[float] | None = None,
         playback_id: int | None = None,
+        *, chunk_metadata: dict | None = None,
     ) -> None:
         """Forward actual local playback start without coupling to a frontend."""
         with self._speech_generation_lock:
@@ -501,69 +549,80 @@ class AssistantService:
                 self._pending_stream_speech = None
             else:
                 stream_speech = None
-        with self._tts_state_lock:
-            self._active_tts_playback_id = int(playback_id or 0)
-            self._active_stream_playback = stream_speech
-        event_data = {
-            "state": "playback_started",
-            "duration_seconds": float(duration_seconds),
-            "lip_sync_envelope": list(lip_sync_envelope or ()),
-            "word_start_seconds": list(word_start_seconds or ()),
-            "playback_id": int(playback_id or 0),
-            "streamed": stream_speech is not None,
-        }
-        if stream_speech is not None:
-            event_data.update(
-                content=stream_speech["spoken"],
-                subtitle_content=stream_speech["subtitle"],
-                chunk_index=stream_speech["chunk_index"],
-                turn_id=stream_speech["turn_id"],
-            )
-        callback_at = time.monotonic()
-        self._mark_turn_timing("tts_synthesis_complete", callback_at)
-        self._mark_turn_timing("playback_started", callback_at)
-        with self._performance_lock:
-            trace = self._current_turn_timing
-            if trace is not None and int(playback_id or 0) > 0:
-                self._playback_turn_timings[int(playback_id)] = trace
-        self._emit("tts_state", **event_data)
-        if self._current_turn_started_at is not None:
-            _timing_log(f"first audio playback t={callback_at - self._current_turn_started_at:.3f}s")
-        if trace is not None:
-            self._log_turn_latency_summary(trace)
+            if chunk_metadata is not None and stream_speech is None:
+                # A late continuous transition cannot fall back to direct
+                # speech and reopen a cancelled subtitle/lip-sync session.
+                return
+            with self._tts_state_lock:
+                self._active_tts_playback_id = int(playback_id or 0)
+                self._active_stream_playback = stream_speech
+            event_data = {
+                "state": "playback_started",
+                "duration_seconds": float(duration_seconds),
+                "lip_sync_envelope": list(lip_sync_envelope or ()),
+                "word_start_seconds": list(word_start_seconds or ()),
+                "playback_id": int(playback_id or 0),
+                "streamed": stream_speech is not None,
+            }
+            if stream_speech is not None:
+                event_data.update(
+                    content=stream_speech["spoken"],
+                    subtitle_content=stream_speech["subtitle"],
+                    chunk_index=stream_speech["chunk_index"],
+                    turn_id=stream_speech["turn_id"],
+                )
+            if chunk_metadata is not None:
+                event_data.update(chunk_metadata)
+            callback_at = time.monotonic()
+            self._mark_turn_timing("first_chunk_ready" if chunk_metadata is not None else "tts_synthesis_complete", callback_at)
+            self._mark_turn_timing("playback_started", callback_at)
+            with self._performance_lock:
+                trace = self._current_turn_timing
+                if trace is not None and int(playback_id or 0) > 0:
+                    self._playback_turn_timings[int(playback_id)] = trace
+            self._emit("tts_state", **event_data)
+            if self._current_turn_started_at is not None:
+                _timing_log(f"first audio playback t={callback_at - self._current_turn_started_at:.3f}s")
+            if trace is not None:
+                self._log_turn_latency_summary(trace)
 
     def _on_tts_playback_finished(self, playback_id: int | None = None) -> None:
         """Forward a natural local playback completion to presentation clients."""
-        completed_id = int(playback_id or 0)
-        with self._tts_state_lock:
-            if completed_id and self._active_tts_playback_id not in (0, completed_id):
-                development_flight_recorder().mark(
-                    "tts_stale_result_discarded", playback_id=completed_id
-                )
-                print(
-                    "[AIFren TTS] ignored stale natural completion; "
-                    f"id={completed_id}; active={self._active_tts_playback_id}"
-                )
-                return
-            stream_speech = self._active_stream_playback
-            self._active_tts_playback_id = 0
-            self._active_stream_playback = None
-        print(f"[AIFren TTS] service natural completion; id={completed_id}; PTT ready")
-        playback_finished_at = time.monotonic()
-        with self._performance_lock:
-            trace = self._playback_turn_timings.pop(completed_id, None)
+        with self._speech_generation_lock:
+            completed_id = int(playback_id or 0)
+            with self._tts_state_lock:
+                if completed_id and self._active_tts_playback_id != completed_id:
+                    development_flight_recorder().mark(
+                        "tts_stale_result_discarded", playback_id=completed_id
+                    )
+                    print(
+                        "[AIFren TTS] ignored stale natural completion; "
+                        f"id={completed_id}; active={self._active_tts_playback_id}"
+                    )
+                    return
+                stream_speech = self._active_stream_playback
+                retire_face = self._active_tts_playback_id == completed_id and completed_id != 0
+                self._active_tts_playback_id = 0
+                self._active_stream_playback = None
+            if retire_face:
+                self._retire_automatic_expression()
+            print(f"[AIFren TTS] service natural completion; id={completed_id}; PTT ready")
+            playback_finished_at = time.monotonic()
+            with self._performance_lock:
+                trace = self._playback_turn_timings.pop(completed_id, None)
+                if trace is not None:
+                    trace["playback_ended"] = playback_finished_at
             if trace is not None:
-                trace["playback_ended"] = playback_finished_at
-        if trace is not None:
-            _timing_log(
-                "playback ended; "
-                f"accepted -> end={self._duration(trace, 'accepted', 'playback_ended')}; "
-                f"playback duration={self._duration(trace, 'playback_started', 'playback_ended')}"
-            )
-        event_data = {"state": "stopped", "playback_id": completed_id, "streamed": stream_speech is not None}
-        if stream_speech is not None:
-            event_data.update(chunk_index=stream_speech["chunk_index"], turn_id=stream_speech["turn_id"])
-        self._emit("tts_state", **event_data)
+                _timing_log(
+                    "playback ended; "
+                    f"accepted -> end={self._duration(trace, 'accepted', 'playback_ended')}; "
+                    f"playback duration={self._duration(trace, 'playback_started', 'playback_ended')}"
+                )
+            event_data = {"state": "stopped", "playback_id": completed_id, "streamed": stream_speech is not None}
+            if stream_speech is not None:
+                event_data.update(chunk_index=stream_speech["chunk_index"], turn_id=stream_speech["turn_id"],
+                                  committed_stream=stream_speech.get("committed_stream", False))
+            self._emit("tts_state", **event_data)
 
     @classmethod
     def create_default(cls) -> "AssistantService":
@@ -588,118 +647,132 @@ class AssistantService:
             _,
         ) = initialize(prepare_v1_memory=memory_authority == "v1")
 
-        shadow = None
-        shadow_writer = None
-        memory_recall_shadow = None
-        memory_v2_authority = None
-        shadow_unsubscribe = None
-        if memory_authority == "v2":
-            from memory_v2_shadow_writer import MemoryV2ShadowWriter
-            shadow_writer = MemoryV2ShadowWriter(
-                ".",
-                character_id=character["_character_id"],
-                display_name=character.get("_display_name") or character.get("name", "AIFren"),
-                memory_file=getattr(memory, "memory_file", "memories.json"),
-            )
-            from memory_v2_store import MemoryV2Repository
-            MemoryV2Repository(shadow_writer.store).ensure_character(
-                character["_character_id"], character.get("_display_name") or character.get("name", "AIFren"),
-            )
-            try:
-                from memory_v2_episode_compaction import (
-                    EpisodeCompactionCache,
-                    EpisodeCompactionRollover,
-                    EpisodeCompactor,
+        with ExitStack() as setup:
+            storage_lease = getattr(conversation, "_storage_lease", None)
+            if storage_lease is not None:
+                setup.callback(storage_lease.close)
+            shadow = None
+            shadow_writer = None
+            memory_recall_shadow = None
+            memory_v2_authority = None
+            shadow_unsubscribe = None
+            if memory_authority == "v2":
+                from memory_v2_shadow_writer import MemoryV2ShadowWriter
+                shadow_writer = MemoryV2ShadowWriter(
+                    ".",
+                    character_id=character["_character_id"],
+                    display_name=character.get("_display_name") or character.get("name", "AIFren"),
+                    memory_file=getattr(memory, "memory_file", "memories.json"),
                 )
-                episode_cache = EpisodeCompactionCache(
-                    shadow_writer.store, character["_character_id"],
+                setup.callback(shadow_writer.close)
+                from memory_v2_store import MemoryV2Repository
+                MemoryV2Repository(shadow_writer.store).ensure_character(
+                    character["_character_id"], character.get("_display_name") or character.get("name", "AIFren"),
                 )
-                conversation.episode_compaction_cache = episode_cache
-
-                def episode_compactor_factory():
-                    # Use a distinct transport client so background derived
-                    # work never shares mutable stream state with live chat.
-                    from llm.llm import create_llm
-                    return EpisodeCompactor(create_llm())
-
-                conversation.episode_compaction_rollover = EpisodeCompactionRollover(
-                    episode_cache,
-                    episode_compactor_factory,
-                    historical_runtime=memory_authority == "v2",
-                    canonical_source_provider=lambda: conversation.messages[:conversation._persisted_message_count],
-                    event_callback=lambda event, data: development_flight_recorder().mark(
-                        event, **data,
-                    ),
-                )
-            except Exception:
-                # Episode compaction is disposable derived context. A missing
-                # or unreadable cache must never prevent ordinary raw history.
-                conversation.episode_compaction_cache = None
-                conversation.episode_compaction_rollover = None
-            subscribe = getattr(memory, "subscribe_mutations", None)
-            if callable(subscribe):
-                shadow_unsubscribe = subscribe(shadow_writer.observe)
-            try:
-                from config import MEMORY_V2_REAL_TURN_SHADOW_ENABLED
-                if MEMORY_V2_REAL_TURN_SHADOW_ENABLED:
-                    from memory_recall_shadow import RealTurnMemoryShadow
-                    memory_recall_shadow = RealTurnMemoryShadow(
-                        shadow_writer.database_path,
-                        character["_character_id"],
-                        recorder=development_flight_recorder(),
+                try:
+                    from memory_v2_episode_compaction import (
+                        EpisodeCompactionCache,
+                        EpisodeCompactionRollover,
+                        EpisodeCompactor,
                     )
-            except Exception:
-                memory_recall_shadow = None
+                    episode_cache = EpisodeCompactionCache(
+                        shadow_writer.store, character["_character_id"],
+                    )
+                    conversation.episode_compaction_cache = episode_cache
 
-        if memory_authority == "v2":
-            if shadow_writer is None:
-                raise RuntimeError(
-                    "Memory V2 authority requires the governed V2 store; "
-                    "V1 fallback is intentionally disabled."
+                    def episode_compactor_factory():
+                        # Use a distinct transport client so background derived
+                        # work never shares mutable stream state with live chat.
+                        from llm.llm import create_llm
+                        return EpisodeCompactor(create_llm())
+
+                    conversation.episode_compaction_rollover = EpisodeCompactionRollover(
+                        episode_cache,
+                        episode_compactor_factory,
+                        historical_runtime=memory_authority == "v2",
+                        canonical_source_provider=lambda: conversation.messages[:conversation._persisted_message_count],
+                        event_callback=lambda event, data: development_flight_recorder().mark(
+                            event, **data,
+                        ),
+                    )
+                except Exception:
+                    # Episode compaction is disposable derived context. A missing
+                    # or unreadable cache must never prevent ordinary raw history.
+                    conversation.episode_compaction_cache = None
+                    conversation.episode_compaction_rollover = None
+                close_episode = getattr(conversation, "close_episode_compaction_rollover", None)
+                if callable(close_episode):
+                    setup.callback(close_episode)
+                subscribe = getattr(memory, "subscribe_mutations", None)
+                if callable(subscribe):
+                    shadow_unsubscribe = subscribe(shadow_writer.observe)
+                    setup.callback(shadow_unsubscribe)
+                try:
+                    from config import MEMORY_V2_REAL_TURN_SHADOW_ENABLED
+                    if MEMORY_V2_REAL_TURN_SHADOW_ENABLED:
+                        from memory_recall_shadow import RealTurnMemoryShadow
+                        memory_recall_shadow = RealTurnMemoryShadow(
+                            shadow_writer.database_path,
+                            character["_character_id"],
+                            recorder=development_flight_recorder(),
+                        )
+                        setup.callback(memory_recall_shadow.close)
+                except Exception:
+                    memory_recall_shadow = None
+
+            if memory_authority == "v2":
+                if shadow_writer is None:
+                    raise RuntimeError(
+                        "Memory V2 authority requires the governed V2 store; "
+                        "V1 fallback is intentionally disabled."
+                    )
+                from memory_v2_authority import DevelopmentV2MemoryAuthority
+                memory_v2_authority = DevelopmentV2MemoryAuthority(
+                    shadow_writer.store,
+                    character["_character_id"],
+                    conversation.messages,
+                    recent_context_policy=V2_AUTHORITY_RECENT_POLICY,
                 )
-            from memory_v2_authority import DevelopmentV2MemoryAuthority
-            memory_v2_authority = DevelopmentV2MemoryAuthority(
-                shadow_writer.store,
-                character["_character_id"],
-                conversation.messages,
-                recent_context_policy=V2_AUTHORITY_RECENT_POLICY,
-            )
-            print("[AIFren] Memory authority: V2")
+                setup.callback(memory_v2_authority.close)
+                print("[AIFren] Memory authority: V2")
 
-        # No external extractor is installed here.  The optional seam is
-        # reserved for an explicitly approved local provider and remains
-        # disabled unless a future factory supplies one deliberately.
-        from config import (ACTIVE_STATE_CONTEXTUAL_SHADOW_ENABLED, ACTIVE_STATE_CONTEXTUAL_SHADOW_PROVIDER,
-                            OPEN_THREAD_CONTEXTUAL_SHADOW_ENABLED, OPEN_THREAD_CONTEXTUAL_SHADOW_PROVIDER)
-        if ACTIVE_STATE_CONTEXTUAL_SHADOW_ENABLED:
-            print(
-                "[Active State shadow] no approved local extractor is installed "
-                f"for provider={ACTIVE_STATE_CONTEXTUAL_SHADOW_PROVIDER!r}; observation remains disabled"
-            )
-        if OPEN_THREAD_CONTEXTUAL_SHADOW_ENABLED:
-            print(
-                "[Open Thread shadow] no approved local extractor is installed "
-                f"for provider={OPEN_THREAD_CONTEXTUAL_SHADOW_PROVIDER!r}; observation remains disabled"
-            )
+            # No external extractor is installed here.  The optional seam is
+            # reserved for an explicitly approved local provider and remains
+            # disabled unless a future factory supplies one deliberately.
+            from config import (ACTIVE_STATE_CONTEXTUAL_SHADOW_ENABLED, ACTIVE_STATE_CONTEXTUAL_SHADOW_PROVIDER,
+                                OPEN_THREAD_CONTEXTUAL_SHADOW_ENABLED, OPEN_THREAD_CONTEXTUAL_SHADOW_PROVIDER)
+            if ACTIVE_STATE_CONTEXTUAL_SHADOW_ENABLED:
+                print(
+                    "[Active State shadow] no approved local extractor is installed "
+                    f"for provider={ACTIVE_STATE_CONTEXTUAL_SHADOW_PROVIDER!r}; observation remains disabled"
+                )
+            if OPEN_THREAD_CONTEXTUAL_SHADOW_ENABLED:
+                print(
+                    "[Open Thread shadow] no approved local extractor is installed "
+                    f"for provider={OPEN_THREAD_CONTEXTUAL_SHADOW_PROVIDER!r}; observation remains disabled"
+                )
 
-        return cls(
-            llm=llm,
-            memory=memory,
-            conversation=conversation,
-            voice=voice,
-            character=character,
-            character_prompt=character_prompt,
-            tts=tts,
-            memory_v2_shadow=shadow,
-            memory_v2_shadow_writer=shadow_writer,
-            memory_recall_shadow=memory_recall_shadow,
-            active_state_contextual_shadow=None,
-            open_thread_contextual_shadow=None,
-            character_id=character["_character_id"],
-            memory_v2_unsubscribe=shadow_unsubscribe,
-            memory_authority=memory_authority,
-            memory_v2_authority=memory_v2_authority,
-        )
+            service = cls(
+                llm=llm,
+                memory=memory,
+                conversation=conversation,
+                voice=voice,
+                character=character,
+                character_prompt=character_prompt,
+                tts=tts,
+                memory_v2_shadow=shadow,
+                memory_v2_shadow_writer=shadow_writer,
+                memory_recall_shadow=memory_recall_shadow,
+                active_state_contextual_shadow=None,
+                open_thread_contextual_shadow=None,
+                character_id=character["_character_id"],
+                memory_v2_unsubscribe=shadow_unsubscribe,
+                memory_authority=memory_authority,
+                memory_v2_authority=memory_v2_authority,
+            )
+            setup.pop_all()  # The fully constructed service owns these resources.
+            return service
+
 
     def _assert_character_state_ownership(self) -> None:
         """Fail closed if a character-scoped cache was rebound incompletely."""
@@ -718,6 +791,15 @@ class AssistantService:
                 or authority_character != expected):
             raise RuntimeError("Character-scoped state ownership is inconsistent.")
 
+    def character_binding(self) -> dict[str, str]:
+        return {"character_id": str(self.character_id or ""),
+                "character_session": self._character_session}
+
+    def require_character_binding(self, character_id, character_session) -> None:
+        if (str(character_id or "") != str(self.character_id or "")
+                or str(character_session or "") != self._character_session):
+            raise RuntimeError("This control belongs to a retired character selection. Refresh it.")
+
     def memory_authority_status(self) -> dict[str, object]:
         return {
             "mode": self._memory_authority,
@@ -728,6 +810,8 @@ class AssistantService:
 
     def prepare_character_switch(self) -> None:
         """Invalidate old-character turn/audio authority before rebinding."""
+        with self._character_binding_lock:
+            self._character_session = str(uuid.uuid4())
         self._cancel_active_turn()
         if self._ptt is not None:
             try:
@@ -750,6 +834,7 @@ class AssistantService:
         display_name: str,
         runtime_paths: dict[str, Any],
         application_dir: str | os.PathLike[str] = ".",
+        publish_selection: Callable[[], Any] | None = None,
     ) -> None:
         """Atomically replace only character-owned continuity state.
 
@@ -765,37 +850,50 @@ class AssistantService:
         if not isinstance(runtime_paths, dict) or not required.issubset(runtime_paths):
             raise ValueError("Character runtime paths are incomplete.")
 
-        # Flush the old owner's canonical records before constructing the new
-        # state. A candidate is otherwise built completely before any live
-        # service reference changes.
-        self.save()
+        from character_registry import CharacterRegistry
+        registry_path = Path(application_dir).resolve() / "characters" / "registry.json"
+        candidate_lease = None
+        if registry_path.exists():
+            from character_storage_runtime import acquire_runtime_lease
+            candidate_lease = acquire_runtime_lease(CharacterRegistry(application_dir), expected)
+            runtime_paths = candidate_lease.paths
 
-        from assistant import build_character_prompt, load_character
-        from conversation.conversation import Conversation
-        from memory.memory import Memory
+        try:
+            from assistant import build_character_prompt, load_character
+            from conversation.conversation import Conversation
+            from memory.memory import Memory
+            # Candidate admission already holds a lease. A failed old-owner
+            # save must release it without changing either live identity.
+            self.save()
+            memory = Memory(
+                self.llm,
+                memory_file=str(runtime_paths["memory"]),
+                embedding_model=getattr(self.memory, "embedding_model", None),
+            )
+            if self._memory_authority == "v1":
+                memory.generate_missing_embeddings()
+                memory.generate_missing_metadata()
+            conversation = Conversation(
+                self.llm,
+                conversation_file=str(runtime_paths["conversation"]),
+                summary_file=str(runtime_paths["summary"]),
+                memory_authority=self._memory_authority,
+            )
+            character, personality = load_character(
+                runtime_paths["character"], runtime_paths["personality"],
+            )
+            character = dict(character)
+            character["_character_id"] = expected
+            character["_display_name"] = str(display_name)
+            character_prompt = build_character_prompt(character, personality)
+        except Exception:
+            if candidate_lease is not None: candidate_lease.close()
+            raise
 
-        memory = Memory(
-            self.llm,
-            memory_file=str(runtime_paths["memory"]),
-            embedding_model=getattr(self.memory, "embedding_model", None),
-        )
-        if self._memory_authority == "v1":
-            memory.generate_missing_embeddings()
-            memory.generate_missing_metadata()
-        conversation = Conversation(
-            self.llm,
-            conversation_file=str(runtime_paths["conversation"]),
-            summary_file=str(runtime_paths["summary"]),
-            memory_authority=self._memory_authority,
-        )
-        character, personality = load_character(
-            runtime_paths["character"], runtime_paths["personality"],
-        )
-        character = dict(character)
-        character["_character_id"] = expected
-        character["_display_name"] = str(display_name)
-        character_prompt = build_character_prompt(character, personality)
-
+        if candidate_lease is not None:
+            conversation._storage_lease = candidate_lease
+            conversation.continuity_write_guard = candidate_lease.assert_current
+            memory.continuity_write_guard = candidate_lease.assert_current
         shadow_writer = None
         shadow_unsubscribe = None
         memory_recall_shadow = None
@@ -859,22 +957,38 @@ class AssistantService:
                     shadow_writer.store, expected, conversation.messages,
                     recent_context_policy=self._v2_recent_context_policy,
                 )
+            # The candidate is complete, but the live owner is still intact.
+            # A failed durable pointer write must never publish mixed identity.
+            if publish_selection is not None:
+                publish_selection()
         except Exception:
-            if shadow_unsubscribe is not None:
-                shadow_unsubscribe()
-            if shadow_writer is not None:
-                shadow_writer.close()
-            if memory_recall_shadow is not None:
-                memory_recall_shadow.close()
+            # Cleanup failures cannot strand another provisional owner.
+            with ExitStack() as cleanup:
+                if candidate_lease is not None:
+                    cleanup.callback(candidate_lease.close)
+                if shadow_writer is not None:
+                    cleanup.callback(shadow_writer.close)
+                if memory_v2_authority is not None:
+                    cleanup.callback(memory_v2_authority.close)
+                if memory_recall_shadow is not None:
+                    cleanup.callback(memory_recall_shadow.close)
+                if shadow_unsubscribe is not None:
+                    cleanup.callback(shadow_unsubscribe)
             raise
 
         close_episode_rollover = getattr(
             self.conversation, "close_episode_compaction_rollover", None,
         )
         if callable(close_episode_rollover):
-            close_episode_rollover()
+            try:
+                close_episode_rollover()
+            except Exception as error:
+                print(f"[Character switch] retired episode cleanup failed: {type(error).__name__}")
         if self._memory_v2_unsubscribe is not None:
-            self._memory_v2_unsubscribe()
+            try:
+                self._memory_v2_unsubscribe()
+            except Exception as error:
+                print(f"[Character switch] retired subscription cleanup failed: {type(error).__name__}")
         if self._memory_v2_authority is not None:
             try:
                 self._memory_v2_authority.close()
@@ -897,14 +1011,25 @@ class AssistantService:
                 self._memory_recall_shadow.close()
             except Exception:
                 pass
+        if self._storage_lease is not None:
+            try:
+                self._storage_lease.close()
+            except Exception as error:
+                print(f"[Character switch] retired lease cleanup failed: {type(error).__name__}")
+        self._storage_lease = candidate_lease or getattr(shadow_writer, "runtime_lease", None)
         self.memory = memory
         self.conversation = conversation
         self.conversation._temporal_reply_is_human_owned = self._temporal_reply_is_human_owned
-        self.character = character
-        self.character_id = expected
+        with self._character_binding_lock:
+            self.character = character
+            self.character_id = expected
+            self._character_session = str(uuid.uuid4())
         self.character_prompt = character_prompt
         self._published_expression = None
         self._published_expression_owner = None
+        # Explicitly supplied attention stores are character/archive-bound and
+        # caller-owned. A character switch never carries their producer forward.
+        self._transient_impulse_store = None
         self._memory_v2_shadow_writer = shadow_writer
         self._memory_v2_authority = memory_v2_authority
         self._memory_recall_shadow = memory_recall_shadow
@@ -944,6 +1069,7 @@ class AssistantService:
         return unsubscribe
 
     def _emit(self, event_type: str, **data: Any) -> None:
+        data = {**self.character_binding(), **data}
         event = AssistantEvent(event_type, data)
 
         with self._listeners_lock:
@@ -1699,11 +1825,14 @@ class AssistantService:
     def _merge_response_policy_context(
         active_state_context: str | None,
         response_policy_context: str | None,
+        *, preserve_whole: bool = False,
     ) -> str | None:
         if not response_policy_context:
             return active_state_context
         if not active_state_context:
             return response_policy_context
+        if preserve_whole:
+            return response_policy_context + "\n" + active_state_context
         remaining = max(0, 2800 - len(response_policy_context) - 1)
         return response_policy_context + "\n" + active_state_context[:remaining]
 
@@ -1745,10 +1874,6 @@ class AssistantService:
             policy.effects is not None and (
                 policy.effects.awareness_mode == "asleep"
                 or policy.effects.speech_mode != "normal"
-                or policy.effects.vision_mode != "available"
-                or policy.effects.hearing_mode != "normal"
-                or policy.effects.hands_mode != "free"
-                or policy.effects.locomotion_constraint != "normal"
             )
         )
         if constrained_length and len(re.findall(r"\b[\w’'-]+\b", parsed.dialogue)) > 100:
@@ -1779,10 +1904,10 @@ class AssistantService:
             from memory_v2_answer_governance import validate_memory_answer_response
             memory_dialogue = parsed.dialogue
             if policy.memory_realized_response is not None:
-                from companion_memory_realizer import present_reaction_allowed
+                from companion_memory_realizer import owned_reaction_valid
                 owned = policy.memory_realized_response
                 if (parsed.dialogue != owned.dialogue
-                        or (owned.reaction and not present_reaction_allowed(owned.reaction))):
+                        or not owned_reaction_valid(owned)):
                     return False, "memory_realization_ownership", "", None
                 memory_dialogue = owned.core.dialogue
             memory_answer = validate_memory_answer_response(
@@ -1919,12 +2044,17 @@ class AssistantService:
         finally:
             self._provider_request_end()
         repair_diagnostics: dict[str, int] = {}
-        repaired = parse_assistant_response(canonicalize_model_output(
-            proposal, diagnostics=repair_diagnostics,
-        ), normalize_presentation_format=bool(
-            policy.memory_answer_requirement is not None
-            and policy.memory_answer_requirement.triggered
-        ))
+        if self._act_eligible(policy):
+            from act_presentation import parse_fresh_act_response
+            repaired, act_status = parse_fresh_act_response(proposal, diagnostics=repair_diagnostics)
+            development_flight_recorder().mark("act_prefix", turn_id=int(self._active_turn_id or 0),
+                                               outcome=act_status, phase="existing_semantic_repair")
+        else:
+            normalized_repair = canonicalize_model_output(proposal, diagnostics=repair_diagnostics)
+            repaired = parse_assistant_response(normalized_repair, normalize_generated_dialogue=True, normalize_presentation_format=bool(
+                policy.memory_answer_requirement is not None
+                and policy.memory_answer_requirement.triggered
+            ))
         repaired = self._assemble_memory_answer_response(repaired, policy)
         if policy.effects is not None:
             from capability_policy import normalize_response_for_capabilities
@@ -1971,7 +2101,8 @@ class AssistantService:
             dialogue = (
                 policy.memory_answer_requirement.fallback_dialogue
                 if (policy.memory_answer_requirement is not None
-                    and (policy.memory_answer_requirement.triggered or policy.requirement is None)) else
+                    and policy.memory_answer_requirement.triggered
+                    and policy.memory_answer_requirement.fallback_dialogue.strip()) else
                 policy.requirement.fallback_dialogue
                 if policy.requirement is not None else
                 "*Responds with a small, attentive movement.*"
@@ -2208,10 +2339,234 @@ class AssistantService:
             self._published_expression_owner = owner
         return self._published_expression
 
-    def _response_character_prompt(self) -> str:
+    def _lean_ordinary_eligible(self, policy: _ResponsePolicy | None) -> bool:
+        return (getattr(self.llm, "local_ordinary_dialogue", False) is True
+                and self._ordinary_text_eligible(policy))
+
+    def _act_eligible(self, policy: _ResponsePolicy | None) -> bool:
+        from act_presentation import act_character_prompt
+        return (self.explicit_avatar_cues is True
+                and getattr(self.llm, "local_presentation", False) is True
+                and self._ordinary_text_eligible(policy)
+                and act_character_prompt(self.character_prompt) is not None)
+
+    def _ordinary_text_eligible(self, policy: _ResponsePolicy | None, *,
+                                allow_completed_state_update: bool = False) -> bool:
+        """Output style only. A validation gate is not a format obligation.
+
+        The caller supplies the final ordinary-turn policy, after state/action,
+        temporal and memory routing. Other generation owners never opt in.
+        """
+        if (self._response_generator is not None or self._memory_authority != "v2"
+                or not isinstance(policy, _ResponsePolicy)):
+            return False
+        from memory_query_decision import MemoryQueryDecision
+        from memory_v2_store.scene_relation_contract import CapabilityEffects
+        from response_requirements import ResponseRequirement
+        decision = policy.memory_query_decision
+        if not isinstance(decision, MemoryQueryDecision) or decision.applicable:
+            return False
+        if (policy.policy_error is not None or policy.action_plan is not None
+                or policy.action_decision_category is not None
+                or (policy.changed_by_current_evidence and not allow_completed_state_update)
+                or policy.hearing_input_unavailable
+                or policy.current_user_projection is not None or policy.inaccessible_input_terms
+                or policy.recent_administrative_clears
+                or policy.authoritative_memory_response is not None
+                or policy.memory_realization is not None or policy.memory_realized_response is not None):
+            return False
+        requirement = policy.requirement
+        # A greeting after a gap may retain its existing nonfactual respect
+        # constraint. All factual, constrained or unknown requirements stay out.
+        if requirement is not None and not (
+                isinstance(requirement, ResponseRequirement)
+                and requirement.intent == "return_continuity"
+                and requirement.mode == "must_respect" and not requirement.facts):
+            return False
+        from memory_v2_answer_governance import MemoryAnswerRequirement
+        memory = policy.memory_answer_requirement
+        if not isinstance(memory, MemoryAnswerRequirement) or memory.triggered or memory.slots:
+            return False
+        effects = policy.effects
+        if not isinstance(effects, CapabilityEffects):
+            return False
+        return (all(effects.perception_mode(name) == "normal"
+                    for name in ("vision", "hearing", "smell", "taste", "touch"))
+                and effects.speech_mode == "normal" and effects.awareness_mode == "normal"
+                and effects.hands_mode == effects.left_hand_mode == effects.right_hand_mode == "free"
+                and effects.left_arm_mode == effects.right_arm_mode == "normal"
+                and effects.locomotion_mode == "walking" and effects.locomotion_constraint == "normal"
+                and effects.posture_mode in {None, "sitting", "standing"})
+
+    def _response_character_prompt(self, *, ordinary_policy: _ResponsePolicy | None = None) -> str:
+        if (self.conversation_style == "natural"
+                and getattr(self.llm, "local_presentation", False) is True
+                # A completed backend-owned update alone is not a request for
+                # structured model output. Keep every actual machine/memory/
+                # capability obligation in the shared gate; ACT/lean retain
+                # their stricter no-mutation eligibility.
+                and self._ordinary_text_eligible(ordinary_policy,
+                                                allow_completed_state_update=True)):
+            from conversation_style import natural_character_prompt
+            prompt = natural_character_prompt(self.character_prompt, act=self._act_eligible(ordinary_policy))
+            if prompt is not None:
+                return prompt
+        if self._act_eligible(ordinary_policy):
+            from act_presentation import act_character_prompt
+            return act_character_prompt(self.character_prompt) + "\n\n" + response_expression_context(
+                self._current_expression_request())
+        if self._lean_ordinary_eligible(ordinary_policy):
+            from presentation_metadata import lean_ordinary_character_prompt
+            prompt = lean_ordinary_character_prompt(self.character_prompt)
+            if prompt is not None:
+                return prompt
         return self.character_prompt + "\n\n" + response_expression_context(
             self._current_expression_request(),
         )
+
+    def _context_prompt_parts(self, ordinary_policy, companion_context):
+        from context_governor import ContextPlanItem, governor_enabled
+        prompt = self._response_character_prompt(ordinary_policy=ordinary_policy)
+        if not governor_enabled(self._memory_authority):
+            return prompt + ("\n\n" + companion_context if companion_context else ""), ()
+        expression = response_expression_context(self._current_expression_request())
+        optional = []
+        if prompt.endswith("\n\n" + expression):
+            prompt = prompt[:-(len(expression) + 2)]
+            optional.append(ContextPlanItem.block("presentation", "expression_continuity", expression,
+                                                 authority="optional", order=80))
+        if companion_context:
+            optional.append(ContextPlanItem.block("companion_context", "salience", companion_context,
+                                                 authority="optional", order=81))
+        return prompt, tuple(optional)
+
+    def _record_context_plan(self):
+        plan = getattr(self.conversation, "_last_context_plan", None)
+        if plan is None:
+            return
+        # No raw text, source hashes or IDs are emitted by normal diagnostics.
+        development_flight_recorder().mark("context_plan", turn_id=int(self._active_turn_id or 0),
+            **plan.diagnostics)
+        for item in plan.diagnostics.get("items", ()):
+            development_flight_recorder().mark("context_plan_item", turn_id=int(self._active_turn_id or 0),
+                context_owner=item["owner"], context_kind=item["kind"],
+                estimated_tokens=item["estimated_tokens"], source_count=item["source_count"])
+        for item in plan.diagnostics.get("dropped", ()):
+            development_flight_recorder().mark("context_plan_drop", turn_id=int(self._active_turn_id or 0),
+                context_owner=item["owner"], context_kind=item["kind"], reason=item["reason"])
+        if self._impulse_lease is not None and "companion_context" not in plan.diagnostics["included_owners"]:
+            self._release_impulse()  # A budget-excluded opportunity was never offered.
+
+    def _ordinary_companion_context(self, user_message, *, active_truth_scope=None,
+                                   memory_answer_requirement=None, memory_query_decision=None,
+                                   memory_realization=None) -> str:
+        """Salience only; never passed into authority, requirements or realization.
+
+        This is called only by ordinary response assembly, not action decisions,
+        repair, proactive/scene reactions, observer work or canonical persistence.
+        """
+        from companion_context import CompanionContextAssembler, CompanionContextRequest
+        from conversation.temporal_context import clock_local_datetime
+        from memory_query_decision import decide_memory_query
+        decision = memory_query_decision or decide_memory_query(user_message)
+        if (self._memory_authority != "v2" or decision.applicable
+                or bool(getattr(memory_answer_requirement, "triggered", False))
+                or memory_realization is not None):
+            self._last_companion_context_diagnostics = {"suppressed": "authority_query", "emitted_characters": 0}
+            return ""
+        if not self._recent_pulse_enabled and not self._companion_context_sources and self._transient_impulse_store is None:
+            self._last_companion_context_diagnostics = {"suppressed": "disabled", "emitted_characters": 0}
+            return ""
+        scope = active_truth_scope or self.truth_scope_provenance()
+        context_turn = self._impulse_turn_owner
+        turn_key = (f"{self._impulse_session}:{context_turn[0]}" if context_turn is not None
+                    else f"{self._active_turn_id}:{len(self.conversation.messages)}")
+        request = CompanionContextRequest(str(self.character_id), str((scope or {}).get("scope_id") or ""),
+            turn_key,
+            clock_local_datetime(getattr(self.conversation, "_clock", None)))
+        sources = list(self._companion_context_sources)
+        if self._recent_pulse_enabled and self._memory_v2_shadow_writer is not None:
+            from recent_pulse import RecentPulseBuilder
+            sources.insert(0, RecentPulseBuilder(self._memory_v2_shadow_writer, self.conversation))
+        contributions, diagnostics = [], {"recent_pulse_enabled": self._recent_pulse_enabled}
+        for source in sources:
+            try:
+                batch = source.build(request)
+                # Impulses require the transaction owner below, never a raw cue source.
+                contributions.extend(c for c in batch.contributions[:24] if getattr(c, "kind", None) != "transient_impulse")
+                # The only production source currently has fixed content-free keys.
+                if type(source).__name__ == "RecentPulseBuilder":
+                    diagnostics.update(batch.diagnostics)
+            except Exception:
+                diagnostics["source_failed"] = True  # Optional context cannot fail the turn.
+        if self._transient_impulse_store is not None and context_turn is not None:
+            # Only the serialized current generation can lease. Reassembly reuses
+            # the same handle, never spends or offers a second queue item.
+            with self._turn_state_lock:
+                if self._turn_is_current_locked(*context_turn):
+                    try:
+                        if self._impulse_lease is None:
+                            self._impulse_lease = self._transient_impulse_store.lease(request)
+                        if self._impulse_lease is not None:
+                            contributions.insert(0, self._impulse_lease.contribution)
+                            self._last_impulse_diagnostics = dict(self._transient_impulse_store.diagnostics(),
+                                disposition="leased", selected_kind=self._impulse_lease.contribution.payload.category,
+                                priority=self._impulse_lease.contribution.priority, lease_turn=context_turn[0])
+                    except Exception:
+                        self._last_impulse_diagnostics = {"disposition": "store_unavailable"}
+        assembled = CompanionContextAssembler().assemble(contributions, request)
+        if self._impulse_lease is not None and self._impulse_lease.contribution not in assembled.contributions:
+            self._release_impulse()
+        diagnostics.update(assembled.diagnostics)
+        self._last_companion_context_diagnostics = diagnostics
+        development_flight_recorder().mark("companion_context",
+            recent_pulse_enabled=self._recent_pulse_enabled,
+            item_count=diagnostics["item_count"], emitted_characters=len(assembled.block),
+            source_failed=bool(diagnostics.get("source_failed")))
+        return assembled.block
+
+    def _release_impulse(self) -> None:
+        lease = self._impulse_lease
+        if lease is not None:
+            try:
+                self._transient_impulse_store.release(lease)
+                self._last_impulse_diagnostics = {"disposition": "released"}
+            except Exception:
+                self._last_impulse_diagnostics = {"disposition": "release_unavailable"}
+            self._impulse_lease = None
+        self._impulse_receipt_ready = False
+
+    def _prepare_impulse_publication(self, turn_id, cancel_event) -> None:
+        # Caller holds the existing final commit lock; generation/synthesis do not.
+        lease = self._impulse_lease
+        if lease is None:
+            return
+        if (self._impulse_turn_owner != (turn_id, cancel_event)
+                or not self._turn_is_current_locked(turn_id, cancel_event)
+                or str(self.character_id) != lease.contribution.character_id
+                or (self.truth_scope_provenance() or {}).get("scope_id") != lease.contribution.truth_scope_id):
+            self._release_impulse()
+            return
+        try:
+            index = len(self.conversation.messages) - 1
+            self._impulse_receipt_ready = self._transient_impulse_store.prepare_publication(
+                lease, index, self.conversation.messages[index])
+        except Exception:
+            self._impulse_receipt_ready = False
+        if not self._impulse_receipt_ready:
+            self._release_impulse()
+
+    def _publish_impulse(self) -> None:
+        if self._impulse_lease is None or not self._impulse_receipt_ready:
+            return
+        self._impulse_published = True
+        try:
+            consumed = self._transient_impulse_store.published(self._impulse_lease)
+            self._last_impulse_diagnostics = {"disposition": "consumed" if consumed else "receipt_unavailable"}
+        except Exception:
+            # Preserve the prepared receipt for exact canonical reconciliation;
+            # releasing it now could repeat an already published opportunity.
+            self._last_impulse_diagnostics = {"disposition": "receipt_unavailable"}
 
     def _remember_published_expression(self, presentation: ResponsePresentationMetadata | None) -> None:
         """Called only inside the final commit/publication guard, after saving.
@@ -2237,7 +2592,13 @@ class AssistantService:
         memory_answer_requirement: Any = None,
         memory_query_decision: Any = None,
         memory_realization: Any = None,
+        companion_context_allowed: bool = True,
+        ordinary_policy: _ResponsePolicy | None = None,
     ) -> str:
+        owned_turn, owned_cancel = self._active_turn_id, self._active_turn_cancel
+        def request_ready():
+            if owned_turn is not None and owned_cancel is not None and not self._turn_is_current(owned_turn, owned_cancel):
+                raise _TurnCancelled()
         semantic_user_message = current_user_projection or user_message
         continuity_admission = self._admit_current_continuity_context(semantic_user_message)
         self._last_current_continuity_admission = continuity_admission
@@ -2252,9 +2613,13 @@ class AssistantService:
         )
         active_state_context = self._merge_response_policy_context(
             active_state_context, response_policy_context,
+            preserve_whole=governor_enabled(self._memory_authority),
         )
         durable_context = admission.context_block if admission is not None else None
-        character_prompt = self._response_character_prompt()
+        companion_context = self._ordinary_companion_context(semantic_user_message,
+            active_truth_scope=active_truth_scope, memory_answer_requirement=memory_answer_requirement,
+            memory_query_decision=memory_query_decision, memory_realization=memory_realization) if companion_context_allowed else ""
+        character_prompt, optional_context_items = self._context_prompt_parts(ordinary_policy, companion_context)
         self._provider_request_begin()
         development_flight_recorder().mark(
             "provider_request_begin", turn_id=int(self._active_turn_id or 0), generating=True,
@@ -2296,7 +2661,18 @@ class AssistantService:
                     recent_context_policy=self._v2_recent_context_policy,
                     memory_query_decision=memory_query_decision,
                     memory_realization=memory_realization,
+                    request_ready=request_ready,
+                    optional_context_items=optional_context_items,
+                    open_thread_fragments=getattr(continuity_admission, "open_thread_fragments", ()),
+                    context_character_id=str(self.character_id),
+                    temporal_facts=getattr(ordinary_policy, "temporal_facts", None),
+                    context_source_refs={
+                        "active_state_and_response_policy": getattr(continuity_admission, "active_source_refs", ()),
+                        "durable_facts": (("claim:" + admission.admitted_claim_id,) if admission is not None and admission.admitted_claim_id else ()),
+                        "truth_scope": (("scope:" + str(active_truth_scope.get("scope_id")),) if active_truth_scope else ()),
+                    },
                 )
+                self._record_context_plan()
             hygiene_metrics = getattr(self.conversation, "_last_context_hygiene_metrics", None)
             if isinstance(hygiene_metrics, dict) and hygiene_metrics:
                 telemetry = dict(hygiene_metrics)
@@ -2339,6 +2715,7 @@ class AssistantService:
         memory_answer_requirement: Any = None,
         memory_query_decision: Any = None,
         canonicalization_diagnostics: dict[str, int] | None = None,
+        ordinary_policy: _ResponsePolicy | None = None,
     ) -> str | None:
         """Use a provider's optional stream without changing context semantics.
 
@@ -2352,6 +2729,10 @@ class AssistantService:
         if not callable(stream_generate):
             return None
 
+        def context_check():
+            if cancel_event.is_set():
+                raise _TurnCancelled()
+
         semantic_user_message = current_user_projection or user_message
         continuity_admission = self._admit_current_continuity_context(semantic_user_message)
         self._last_current_continuity_admission = continuity_admission
@@ -2359,13 +2740,10 @@ class AssistantService:
         self._last_active_state_context_admission = active_admission
         admission = self._admit_durable_context(semantic_user_message)
         self._last_durable_context_admission = admission
-        provider_budget = getattr(self.llm, "context_budget_chars", None)
-        character_prompt = self._response_character_prompt()
-        if provider_budget is not None:
-            try:
-                provider_budget = max(1, int(provider_budget) - len(character_prompt))
-            except (TypeError, ValueError):
-                provider_budget = None
+        companion_context = self._ordinary_companion_context(semantic_user_message,
+            active_truth_scope=active_truth_scope, memory_answer_requirement=memory_answer_requirement,
+            memory_query_decision=memory_query_decision)
+        character_prompt, optional_context_items = self._context_prompt_parts(ordinary_policy, companion_context)
         active_state_context = (
             continuity_admission.active_state_context
             if continuity_admission is not None and continuity_admission.active_state_context
@@ -2373,11 +2751,11 @@ class AssistantService:
         )
         active_state_context = self._merge_response_policy_context(
             active_state_context, response_policy_context,
+            preserve_whole=governor_enabled(self._memory_authority),
         )
-        from config import V2_AUTHORITY_RECENT_CHARACTERS, V2_AUTHORITY_RECENT_MESSAGES
-        context = self.conversation.build_context(
-            self.memory,
-            user_message,
+        from assistant import build_response_request
+        context, character_prompt = build_response_request(
+            self.llm, self.conversation, self.memory, user_message, character_prompt,
             admitted_truth_scope_context=(continuity_admission.truth_scope_context if continuity_admission else None),
             admitted_active_state_context=active_state_context,
             admitted_open_thread_context=(continuity_admission.open_thread_context if continuity_admission else None),
@@ -2387,21 +2765,28 @@ class AssistantService:
                 if admission is not None else ()
             ),
             active_truth_scope=active_truth_scope,
-            max_context_chars=provider_budget,
             current_user_projection=current_user_projection,
             long_term_memory_authority=self._memory_authority,
             admitted_v2_memory_context=memory_authority_context,
-            recent_message_limit=(
-                V2_AUTHORITY_RECENT_MESSAGES
-                if self._memory_authority == "v2" else None
-            ),
-            recent_character_limit=(
-                V2_AUTHORITY_RECENT_CHARACTERS
-                if self._memory_authority == "v2" else None
-            ),
             recent_context_policy=self._v2_recent_context_policy,
             memory_query_decision=memory_query_decision,
+            memory_answer_requirement=memory_answer_requirement,
+            optional_context_items=optional_context_items,
+            context_check=context_check,
+            open_thread_fragments=getattr(continuity_admission, "open_thread_fragments", ()),
+            context_character_id=str(self.character_id),
+            temporal_facts=getattr(ordinary_policy, "temporal_facts", None),
+            context_source_refs={
+                "active_state_and_response_policy": getattr(continuity_admission, "active_source_refs", ()),
+                "durable_facts": (("claim:" + admission.admitted_claim_id,) if admission is not None and admission.admitted_claim_id else ()),
+                "truth_scope": (("scope:" + str(active_truth_scope.get("scope_id")),) if active_truth_scope else ()),
+            },
         )
+        self._record_context_plan()
+
+        if cancel_event.is_set():
+            raise _TurnCancelled()
+
         hygiene_metrics = getattr(self.conversation, "_last_context_hygiene_metrics", None)
         if isinstance(hygiene_metrics, dict) and hygiene_metrics:
             telemetry = dict(hygiene_metrics)
@@ -2426,6 +2811,11 @@ class AssistantService:
         pending_output: list[str] = []
         presentation_contract_stream: bool | None = None
         contract_dialogue_stream = StreamingResponseDialogue()
+        from act_presentation import ActPrefixStream
+        act_stream = ActPrefixStream() if self._act_eligible(ordinary_policy) else None
+        # A reasoning block can expose a non-outer prefix after canonicalization.
+        # Withhold that debris too, but never use this projection's metadata.
+        act_visible_guard = ActPrefixStream() if act_stream is not None else None
         first_nonspace_seen = False
         first_token_at: float | None = None
         first_visible_at: float | None = None
@@ -2479,7 +2869,12 @@ class AssistantService:
             nonlocal first_sentence_seen, first_character_window_seen
             if not text:
                 return
-            parts.append(text)
+            if act_stream is None:
+                parts.append(text)
+            else:
+                text = act_visible_guard.feed(text)
+                if not text:
+                    return
             if not first_nonspace_seen:
                 pending_output.append(text)
                 stripped = "".join(pending_output).lstrip()
@@ -2528,11 +2923,6 @@ class AssistantService:
         self._provider_request_begin()
         provider_stream = None
         system_prompt = character_prompt
-        if self._memory_authority == "v2" and memory_answer_requirement is not None:
-            from memory_v2_answer_governance import memory_answer_system_prompt
-            system_prompt = memory_answer_system_prompt(
-                character_prompt, memory_answer_requirement,
-            )
         try:
             if request_seed is not None:
                 provider_stream = iter(stream_generate(
@@ -2555,6 +2945,9 @@ class AssistantService:
                     development_flight_recorder().mark(
                         "first_raw_qwen_delta", turn_id=int(self._active_turn_id or 0)
                     )
+                if act_stream is not None:
+                    parts.append(text)  # Fresh raw output for final-only admission.
+                    text = act_stream.feed(text)
                 accept_canonical_output(canonicalizer.feed(text))
         finally:
             close = getattr(provider_stream, "close", None)
@@ -2579,6 +2972,9 @@ class AssistantService:
         )
         self._mark_turn_timing("provider_complete", completed_at)
         accept_canonical_output(canonicalizer.finish())
+        if act_stream is not None:
+            act_stream.finish()
+            act_visible_guard.finish()
         if presentation_contract_stream is True:
             accept_visible_output(contract_dialogue_stream.finish())
         if speech_projection is not None:
@@ -2668,6 +3064,7 @@ class AssistantService:
 
     def _claim_replacement_turn(self) -> tuple[int, threading.Event, bool]:
         """Make this input authoritative and invalidate an older live turn."""
+        self._retire_automatic_expression()
         with self._turn_state_lock:
             previous = self._active_turn_cancel
             replaced = previous is not None
@@ -2685,6 +3082,7 @@ class AssistantService:
 
     def _cancel_active_turn(self) -> bool:
         """Cancel generation without inventing a replacement input yet."""
+        self._retire_automatic_expression()
         with self._turn_state_lock:
             if self._active_turn_cancel is None:
                 return False
@@ -2737,6 +3135,92 @@ class AssistantService:
             if self._active_turn_id == turn_id and self._active_turn_cancel is cancel_event:
                 self._active_turn_cancel = None
 
+    def companion_preferences_snapshot(self) -> dict:
+        worker = self._automatic_expression_worker
+        status = (worker.status if worker is not None else
+                  "CPU classifier starts when automatic expressions are enabled.")
+        if callable(status):
+            status = status()
+        if isinstance(status, dict):
+            status = status.get("detail") or status.get("state", "Unavailable")
+        return {"conversation_style": self.conversation_style,
+                "responsive_speech": self.responsive_speech,
+                "automatic_expressions": self.automatic_expressions,
+                "automatic_expression_status": str(status)[:220]}
+
+    def apply_companion_preferences(self, preferences: dict) -> None:
+        self.conversation_style = preferences["conversation_style"]
+        self.responsive_speech = preferences["responsive_speech"]
+        self.automatic_expressions = preferences["automatic_expressions"]
+        self._retire_automatic_expression()
+        if self.automatic_expressions and self._automatic_expression_worker is None:
+            from automatic_expression import AutomaticExpressionWorker
+            self._automatic_expression_worker = AutomaticExpressionWorker(
+                on_status=lambda text: self._emit("automatic_expression_status", message=text))
+        if self._automatic_expression_worker is not None:
+            self._automatic_expression_worker.set_enabled(self.automatic_expressions)
+
+    def _retire_automatic_expression(self) -> None:
+        with self._automatic_expression_lock:
+            self._automatic_expression_lease = None
+        worker = self._automatic_expression_worker
+        if worker is not None:
+            worker.cancel_pending()
+
+    def _automatic_expression_input(self, parsed, policy) -> str:
+        if not self.automatic_expressions:
+            return ""
+        if parsed.presentation is not None and parsed.presentation.emotion is not None:
+            return ""  # Explicit presentation owns the face, including neutral.
+        realized = policy.memory_realized_response
+        if realized is not None:
+            return realized.reaction  # The historical factual core is never classifier input.
+        # Final accepted prose is a presentation input, not an output-format
+        # obligation. An updated hat or occupied hand must not disable faces.
+        # Memory answer cores and sleep/constrained-speech owners stay excluded.
+        from memory_v2_store.scene_relation_contract import CapabilityEffects
+        effects = policy.effects
+        memory = policy.memory_answer_requirement
+        if (policy.policy_error is not None or policy.authoritative_memory_response is not None
+                or (memory is not None and memory.triggered)
+                or not isinstance(effects, CapabilityEffects)
+                or effects.awareness_mode != "normal" or effects.speech_mode != "normal"):
+            return ""
+        return parsed.dialogue
+
+    def _offer_automatic_expression(self, text, turn_id, cancel_event):
+        """One disposable face proposal after canonical commit and publication."""
+        if not text or cancel_event.is_set() or self._active_turn_id != turn_id:
+            return
+        if self._automatic_expression_worker is None:
+            from automatic_expression import AutomaticExpressionWorker
+            self._automatic_expression_worker = AutomaticExpressionWorker(enabled=True,
+                on_status=lambda text: self._emit("automatic_expression_status", message=text))
+        scope = self.truth_scope_provenance()
+        token = (turn_id, self._turn_generation, str(self.character_id), scope, cancel_event)
+        with self._automatic_expression_lock:
+            self._automatic_expression_lease = token
+        self._automatic_expression_worker.offer(text, token, self._publish_automatic_expression,
+                                                deadline_seconds=2.0)
+
+    def _publish_automatic_expression(self, token, result):
+        with self._automatic_expression_lock:
+            current = (self.automatic_expressions and self._automatic_expression_lease is token
+                       and token[1] == self._turn_generation and token[2] == str(self.character_id)
+                       and not token[4].is_set())
+            if not current:
+                return
+            self._automatic_expression_lease = None
+            proposal = result.proposal
+            development_flight_recorder().mark("automatic_expression", turn_id=int(token[0]),
+                outcome=str(result.reason)[:64], admitted=proposal is not None)
+            if proposal is not None:
+                # No canonical write, second final reply, body gesture, or
+                # metadata-continuity update. Unity still owns manual/state precedence.
+                self._emit("automatic_expression", turn_id=token[0],
+                    presentation={"emotion": proposal.emotion, "intensity": proposal.intensity,
+                                  "has_intensity": True, "origin": "automatic"})
+
     def _scene_reaction_state_is_current(self, reaction: _SceneReaction) -> bool:
         """Check captured scene ownership under the serialized turn boundary."""
         return (
@@ -2753,6 +3237,7 @@ class AssistantService:
         chunk_index: int,
         turn_id: int,
         speech_generation: int,
+        *, committed_stream: bool = False,
     ) -> None:
         with self._speech_generation_lock:
             if speech_generation != self._speech_generation:
@@ -2763,6 +3248,7 @@ class AssistantService:
                 "chunk_index": chunk_index,
                 "turn_id": turn_id,
                 "speech_generation": speech_generation,
+                "committed_stream": committed_stream,
             }
 
     def _announce_stream_speech_chunk(
@@ -2793,11 +3279,17 @@ class AssistantService:
                 self._streaming_speech_queue = None
                 self._pending_stream_speech = None
 
-    def _stream_tts_failed(self, reason: str, speech_generation: int, turn_id: int) -> None:
+    def _stream_tts_failed(self, reason: str, speech_generation: int, turn_id: int, *, queue=None) -> None:
         with self._speech_generation_lock:
             if speech_generation != self._speech_generation:
                 return
-        self._emit("tts_state", state="failed", reason=reason, streamed=True, turn_id=turn_id)
+            playback_id = int(getattr(queue, "playback_id", 0) or 0)
+            with self._tts_state_lock:
+                if self._active_tts_playback_id == playback_id:
+                    self._active_tts_playback_id = 0
+                    self._active_stream_playback = None
+            self._emit("tts_state", state="failed", reason=reason, streamed=True, turn_id=turn_id,
+                       playback_id=playback_id, committed_stream=bool(getattr(queue, "_committed_text", None)))
 
     def _dispatch_direct_speech_with_recovery(
         self,
@@ -2808,6 +3300,24 @@ class AssistantService:
         require_prepared: bool = False,
     ) -> bool | None:
         """Synthesize one governed utterance through the shared resource policy."""
+        if (self.responsive_speech is True
+                and getattr(type(self.tts), "supports_owned_continuous_stream", False) is True):
+            from tts.streaming import StreamingSpeechQueue
+            turn_id = self._active_turn_id
+            with self._speech_generation_lock:
+                if speech_generation != self._speech_generation or cancel_event.is_set():
+                    return None
+                self._set_pending_stream_speech(text, text, 0, turn_id, speech_generation, committed_stream=True)
+                queue = StreamingSpeechQueue(self.tts, committed_text=text, max_chunks=2,
+                    owner_current=lambda: speech_generation == self._speech_generation and not cancel_event.is_set(),
+                    provider_generation_active=self.provider_request_active,
+                    on_chunk_starting=lambda spoken, subtitle, index: self._set_pending_stream_speech(
+                        spoken, subtitle, index, turn_id, speech_generation, committed_stream=True),
+                    on_owned_failure=lambda owner, reason: self._stream_tts_failed(
+                        reason, speech_generation, turn_id, queue=owner),
+                    on_complete=self._streaming_queue_completed)
+                self._streaming_speech_queue = queue
+            return True
         prepare = getattr(self.tts, "prepare_stream_chunk", None)
         start = getattr(self.tts, "start_prepared_chunk", None)
         if not callable(prepare) or not callable(start):
@@ -2852,9 +3362,15 @@ class AssistantService:
         ptt_release_at: float | None = None,
         stt_final_at: float | None = None,
         _scene_reaction: _SceneReaction | None = None,
+        character_id: str | None = None,
+        character_session: str | None = None,
     ) -> TurnResult:
         """Replace any live turn, then run this input through canonical lifecycle."""
         self._assert_character_state_ownership()
+        entry_owner = self.character_binding()
+        if character_session is not None:
+            self.require_character_binding(character_id, character_session)
+            entry_owner = {"character_id": character_id, "character_session": character_session}
         user_message = str(user_message).strip()
         _scene_event = _scene_reaction.event if _scene_reaction is not None else None
 
@@ -2868,42 +3384,48 @@ class AssistantService:
         # never sent through conversational evidence extraction or sleep/
         # scenario interaction parsing a second time.
         policy_decision = None if _scene_event is not None else self.interaction_policy(user_message)
-        if _scene_reaction is None:
-            self._last_interaction_policy = policy_decision
-        configuration_error = self._model_configuration_error() if _scene_reaction is None else None
-        if configuration_error is not None and not (
-            policy_decision is not None and (
-                policy_decision.forced_reply is not None
-                or policy_decision.response_mode is not None
-            )
-        ):
-            self._model_runtime_availability = "unconfigured"
-            self._emit(
-                "error", source="model", code="model_unconfigured",
-                generation_stage="configuration", provider_called=False,
-                message=configuration_error,
-            )
-            self._emit("status", state="ready", message=configuration_error)
-            return TurnResult(user_message=user_message, error=configuration_error)
+        with self._character_binding_lock:
+            self.require_character_binding(**entry_owner)
+            if _scene_reaction is None:
+                self._last_interaction_policy = policy_decision
+            configuration_error = self._model_configuration_error() if _scene_reaction is None else None
+            if configuration_error is not None and not (
+                policy_decision is not None and (
+                    policy_decision.forced_reply is not None
+                    or policy_decision.response_mode is not None
+                )
+            ):
+                self._model_runtime_availability = "unconfigured"
+                self._emit(
+                    "error", source="model", code="model_unconfigured",
+                    generation_stage="configuration", provider_called=False,
+                    message=configuration_error,
+                )
+                self._emit("status", state="ready", message=configuration_error)
+                return TurnResult(user_message=user_message, error=configuration_error)
 
-        if _scene_reaction is None:
-            turn_id, cancel_event, replaced_turn = self._claim_replacement_turn()
-        else:
-            turn_id, cancel_event = _scene_reaction.turn_id, _scene_reaction.cancel_event
-            replaced_turn = False
-        with self._tts_state_lock:
-            playback_active = self._active_tts_playback_id != 0
-        if _scene_reaction is None and (
-            replaced_turn or playback_active or self._streaming_speech_queue is not None
-        ):
-            # New user input owns the output boundary immediately, even while
-            # it waits for the old provider iterator to leave the serialized
-            # canonical-history section.
-            self.stop_speaking(interrupted=True)
+            if _scene_reaction is None:
+                turn_id, cancel_event, replaced_turn = self._claim_replacement_turn()
+            else:
+                turn_id, cancel_event = _scene_reaction.turn_id, _scene_reaction.cancel_event
+                replaced_turn = False
+            with self._tts_state_lock:
+                playback_active = self._active_tts_playback_id != 0
+            if _scene_reaction is None and (
+                replaced_turn or playback_active or self._streaming_speech_queue is not None
+            ):
+                # New user input owns the output boundary immediately, even while
+                # it waits for the old provider iterator to leave the serialized
+                # canonical-history section.
+                self.stop_speaking(interrupted=True)
 
         turn_lock_wait_started_at = time.monotonic()
         self._turn_lock.acquire()
         turn_lock_wait_seconds = time.monotonic() - turn_lock_wait_started_at
+        with self._character_binding_lock:
+            if entry_owner != self.character_binding():
+                self._turn_lock.release()
+                return TurnResult(user_message=user_message, error="interrupted")
 
         canonical_user_index: int | None = None
         canonical_user_message = None
@@ -2919,8 +3441,12 @@ class AssistantService:
         commit_started = False
         response_policy = None
         try:
+            if character_session is not None:
+                self.require_character_binding(character_id, character_session)
             if not self._turn_is_current(turn_id, cancel_event):
                 raise _TurnCancelled()
+            self._impulse_turn_owner = (turn_id, cancel_event)
+            self._impulse_published = False
             self._recover_canonical_observers()
             if not self._turn_is_current(turn_id, cancel_event):
                 raise _TurnCancelled()
@@ -3030,8 +3556,8 @@ class AssistantService:
                             )
                             speech_queue = StreamingSpeechQueue(
                                 self.tts, max_chunks=TTS_CHUNK_QUEUE_MAX,
-                                on_failure=lambda reason: self._stream_tts_failed(
-                                    reason, turn_speech_generation, turn_id
+                                on_owned_failure=lambda owner, reason: self._stream_tts_failed(
+                                    reason, turn_speech_generation, turn_id, queue=owner
                                 ),
                                 on_chunk_submitted=lambda spoken, subtitle, index: self._announce_stream_speech_chunk(
                                     spoken, subtitle, index, turn_id, turn_speech_generation
@@ -3117,6 +3643,14 @@ class AssistantService:
                             applied_before_generation=canonical_user_committed_to_state,
                             application_outcome=str(continuity_result.get("state") or "failed"),
                         )
+                        if not canonical_user_committed_to_state:
+                            # The saved input is retained for existing recovery,
+                            # but neither the preview nor a generic model reply
+                            # can acknowledge an update that did not complete.
+                            # Idempotent ``unchanged`` is a successful observation.
+                            raise _ContinuityMutationUnavailable(
+                                "Your message is saved, but the current-state update could not be completed."
+                            )
                         if continuity_result.get("scope_changed"):
                             generation_truth_scope = self.truth_scope_provenance()
                             post_transition = self._response_policy(user_message)
@@ -3172,10 +3706,11 @@ class AssistantService:
                             memory_answer_requirement=response_policy.memory_answer_requirement,
                             memory_query_decision=response_policy.memory_query_decision,
                             canonicalization_diagnostics=output_canonicalization_diagnostics,
+                            ordinary_policy=response_policy if _scene_event is None else None,
                         )
                     if generated is None:
                         try:
-                            generated = canonicalize_model_output(self._generate_reply(
+                            generated = self._generate_reply(
                                 user_message, active_truth_scope=generation_truth_scope,
                                 response_policy_context=response_policy.context_block,
                                 current_user_projection=response_policy.current_user_projection,
@@ -3183,7 +3718,11 @@ class AssistantService:
                                 memory_answer_requirement=response_policy.memory_answer_requirement,
                                 memory_query_decision=response_policy.memory_query_decision,
                                 memory_realization=response_policy.memory_realization,
-                            ), diagnostics=output_canonicalization_diagnostics)
+                                companion_context_allowed=_scene_event is None,
+                                ordinary_policy=response_policy if _scene_event is None else None,
+                            )
+                            if not (_scene_event is None and self._act_eligible(response_policy)):
+                                generated = canonicalize_model_output(generated, diagnostics=output_canonicalization_diagnostics)
                         except ModelTransportError:
                             if response_policy.memory_realization is None:
                                 raise
@@ -3219,12 +3758,27 @@ class AssistantService:
                     visible_content_present=visible_content_present,
                 )
                 generated = require_visible_model_output(generated)
-                parsed_response: ParsedAssistantResponse = parse_assistant_response(
-                    generated, normalize_presentation_format=bool(
-                        response_policy.memory_answer_requirement is not None
-                        and response_policy.memory_answer_requirement.triggered
-                    ),
-                )
+                if (_scene_event is None and (policy_decision is None or (
+                        policy_decision.forced_reply is None and policy_decision.response_mode is None))
+                        and self._act_eligible(response_policy)):
+                    from act_presentation import parse_fresh_act_response
+                    parsed_response, act_status = parse_fresh_act_response(
+                        generated, diagnostics=output_canonicalization_diagnostics)
+                    development_flight_recorder().mark("act_prefix", turn_id=int(turn_id),
+                                                       outcome=act_status)
+                    # Ambiguous control debris is a bounded output failure, not
+                    # an invitation to spend a repair inference on presentation.
+                    require_visible_model_output(parsed_response.dialogue)
+                else:
+                    parsed_response = parse_assistant_response(
+                        generated, normalize_generated_dialogue=bool(
+                            response_policy.memory_realized_response is None
+                            and (policy_decision is None or policy_decision.forced_reply is None)
+                        ), normalize_presentation_format=bool(
+                            response_policy.memory_answer_requirement is not None
+                            and response_policy.memory_answer_requirement.triggered
+                        ),
+                    )
                 if (response_policy.memory_realized_response is not None
                         and response_policy.memory_realized_response.reaction):
                     parsed_response = replace(parsed_response,
@@ -3278,6 +3832,9 @@ class AssistantService:
                     fallback_used = False
                     fallback_category: str | None = None
                     if not accepted:
+                        # A rejected generation did not receive its opportunity.
+                        # Repairs use the existing dedicated contract, no impulse.
+                        self._release_impulse()
                         if response_policy.memory_realized_response is not None:
                             response_policy = replace(response_policy, memory_realized_response=None)
                             self._last_memory_authority_diagnostics["memory_realization"] = "emergency_safe_response"
@@ -3458,6 +4015,10 @@ class AssistantService:
                                 output_canonicalization_diagnostics.clear()
                                 validated_presentation = parsed_response.presentation
                                 validation_category = "action_application_safe_nonverbal"
+                    if fallback_used or not accepted:
+                        # Late action application/revalidation can replace an
+                        # initially accepted draft too. It did not earn an offer.
+                        self._release_impulse()
                     parsed_response = replace(
                         parsed_response, presentation=validated_presentation,
                     )
@@ -3546,6 +4107,7 @@ class AssistantService:
             }
             canonical_user_committed_to_state = mutation_applied
             if mutation_expected and not mutation_applied:
+                self._release_impulse()
                 # The proposal was safe enough to preview but did not become
                 # authoritative. Suppress any success claim before canonical
                 # assistant persistence, transport publication, or TTS.
@@ -3596,6 +4158,7 @@ class AssistantService:
                     self.conversation.add_assistant_message(reply)
                 else:
                     self.conversation.add_assistant_message(reply, truth_scope=generation_truth_scope)
+                self._prepare_impulse_publication(turn_id, cancel_event)
                 try:
                     self.conversation.save()
                 except ConversationPersistenceError as error:
@@ -3605,6 +4168,7 @@ class AssistantService:
             _timing_log(f"full assistant response ready t={time.monotonic() - turn_started_at:.3f}s")
             self._mark_turn_timing("assistant_response_ready")
             self._remember_published_expression(parsed_response.presentation)
+            automatic_input = self._automatic_expression_input(parsed_response, response_policy)
             self._emit(
                 "assistant_response",
                 content=reply,
@@ -3612,13 +4176,16 @@ class AssistantService:
                 generation_origin=generation_origin,
                 presentation=parsed_response.presentation.to_event_data() if parsed_response.presentation else None,
                 has_presentation=parsed_response.has_presentation_contract,
+                automatic_expression_pending=bool(automatic_input),
             )
+            self._publish_impulse()
             publish_memory = getattr(self._memory_v2_authority, "publish", None)
             authority_turn = getattr(response_policy, "memory_authority_turn", None)
             if (callable(publish_memory) and authority_turn is not None
                     and not (mutation_expected and not mutation_applied)):
                 publish_memory(authority_turn, source_fallback=bool(fallback_used or response_policy.memory_realized_response is not None))
             commit_boundary.close()
+            self._offer_automatic_expression(automatic_input, turn_id, cancel_event)
 
             if speech_queue is not None:
                 speech_queue.close()
@@ -3824,7 +4391,13 @@ class AssistantService:
                 self.report_model_runtime_unavailable()
             message = str(error)
             from memory_v2_authority import MemoryV2AuthorityUnavailable
-            if isinstance(error, MemoryV2AuthorityUnavailable):
+            if isinstance(error, _ContinuityMutationUnavailable):
+                self._emit(
+                    "error", source="current_continuity", message=message,
+                    code="continuity_update_unavailable", recoverable=True,
+                    turn_id=turn_id, provider_called=False,
+                )
+            elif isinstance(error, MemoryV2AuthorityUnavailable):
                 self._emit("error", message=message, code="memory_lookup_unavailable",
                            recoverable=True, turn_id=turn_id)
             else:
@@ -3843,6 +4416,11 @@ class AssistantService:
 
         finally:
             commit_boundary.close()
+            if not self._impulse_published:
+                self._release_impulse()
+            self._impulse_lease = None
+            self._impulse_turn_owner = None
+            self._impulse_receipt_ready = False
             if getattr(response_policy, "memory_authority_turn", None) is None:
                 # Input which never entered memory preparation (for example
                 # scene control or an early failure) still breaks adjacency.
@@ -4064,29 +4642,6 @@ class AssistantService:
                     active_truth_scope=truth_scope,
                     memory_query_decision=proactive_memory_decision,
                 )
-            from config import (
-                V2_AUTHORITY_RECENT_CHARACTERS,
-                V2_AUTHORITY_RECENT_MESSAGES,
-            )
-            context = self.conversation.build_context(
-                _NoProactiveMemory(), "", active_truth_scope=truth_scope,
-                long_term_memory_authority=self._memory_authority,
-                recent_message_limit=(
-                    V2_AUTHORITY_RECENT_MESSAGES
-                    if self._memory_authority == "v2" else None
-                ),
-                recent_character_limit=(
-                    V2_AUTHORITY_RECENT_CHARACTERS
-                    if self._memory_authority == "v2" else None
-                ),
-                recent_context_policy=self._v2_recent_context_policy,
-                memory_query_decision=proactive_memory_decision,
-            )
-            # Exactly one governed reason is last. The model cannot select a
-            # different hidden memory or state as its reason for acting.
-            if capability_policy.context_block:
-                context.append({"role": "system", "content": capability_policy.context_block})
-            context.append({"role": "user", "content": reason_block})
             proactive_system_prompt = self._response_character_prompt()
             if proactive_policy.memory_answer_requirement is not None:
                 from memory_v2_answer_governance import memory_answer_system_prompt
@@ -4094,6 +4649,46 @@ class AssistantService:
                     proactive_system_prompt,
                     proactive_policy.memory_answer_requirement,
                 )
+            if governor_enabled(self._memory_authority):
+                def context_check():
+                    if not self._turn_is_current(turn_id, cancel_event):
+                        raise _TurnCancelled()
+                context = self.conversation.build_context(
+                    _NoProactiveMemory(), reason_block, active_truth_scope=truth_scope,
+                    long_term_memory_authority="v2", context_provider=self.llm,
+                    provider_system_prompt=proactive_system_prompt,
+                    context_character_id=str(self.character_id),
+                    admitted_active_state_context=capability_policy.context_block,
+                    memory_query_decision=proactive_memory_decision,
+                    context_check=context_check,
+                )
+                self._record_context_plan()
+            else:
+                from config import (
+                    V2_AUTHORITY_RECENT_CHARACTERS,
+                    V2_AUTHORITY_RECENT_MESSAGES,
+                )
+                context = self.conversation.build_context(
+                    _NoProactiveMemory(), "", active_truth_scope=truth_scope,
+                    long_term_memory_authority=self._memory_authority,
+                    recent_message_limit=(
+                        V2_AUTHORITY_RECENT_MESSAGES
+                        if self._memory_authority == "v2" else None
+                    ),
+                    recent_character_limit=(
+                        V2_AUTHORITY_RECENT_CHARACTERS
+                        if self._memory_authority == "v2" else None
+                    ),
+                    recent_context_policy=self._v2_recent_context_policy,
+                    memory_query_decision=proactive_memory_decision,
+                )
+                # Exactly one governed reason is last. The model cannot select a
+                # different hidden memory or state as its reason for acting.
+                if capability_policy.context_block:
+                    context.append({"role": "system", "content": capability_policy.context_block})
+                context.append({"role": "user", "content": reason_block})
+            if not self._turn_is_current(turn_id, cancel_event):
+                raise _TurnCancelled()
             self._provider_request_begin()
             try:
                 generated = canonicalize_model_output(
@@ -4103,7 +4698,7 @@ class AssistantService:
                 self._provider_request_end()
             if not self._turn_is_current(turn_id, cancel_event):
                 raise _TurnCancelled()
-            parsed = parse_assistant_response(generated)
+            parsed = parse_assistant_response(generated, normalize_generated_dialogue=True)
             if not parsed.dialogue.strip():
                 record_attempt("empty_output")
                 return TurnResult(user_message="", error="empty_proactive_output")
@@ -4630,12 +5225,15 @@ class AssistantService:
         category: str = "",
         importance: int = 5,
         command_id: str = "",
+        character_session: str | None = None,
     ) -> dict[str, Any]:
         """Apply one narrow semantic edit without bypassing V1/V2 ownership."""
         if not self._turn_lock.acquire(blocking=False):
             raise RuntimeError("Memory editing is unavailable until the current turn is saved.")
         try:
             self._assert_character_state_ownership()
+            if character_session is not None:
+                self.require_character_binding(character_id, character_session)
             if str(character_id or "") != str(self.character_id or ""):
                 raise RuntimeError("Memory editor request belongs to a stale character selection.")
             from memory_viewer import MemoryViewer
@@ -4854,13 +5452,18 @@ class AssistantService:
         action: str,
         expected_revision: str,
         action_token: str = "",
+        character_id: str | None = None,
+        character_session: str | None = None,
     ) -> dict[str, Any]:
         """Apply silent controls or one serialized immersive scene gesture."""
         self._assert_character_state_ownership()
+        if character_session is not None:
+            self.require_character_binding(character_id, character_session)
         if str(action or "") != "interact_scene_relation":
             return self._apply_continuity_control_impl(
                 command_id=command_id, action=action,
                 expected_revision=expected_revision, action_token=action_token,
+                expected_character_id=character_id, expected_character_session=character_session,
             )
         # Reserve ownership before waiting. Never reclaim a new turn after
         # the mandatory save: PTT/replacement during that gap must still win.
@@ -4873,6 +5476,7 @@ class AssistantService:
                     command_id=command_id, action=action,
                     expected_revision=expected_revision, action_token=action_token,
                     wait_for_turn=True, expected_character_id=character_id,
+                    expected_character_session=character_session,
                 )
                 committed = result.pop("_scene_event", None)
                 if committed is not None:
@@ -4990,6 +5594,7 @@ class AssistantService:
         action_token: str = "",
         wait_for_turn: bool = False,
         expected_character_id: str | None = None,
+        expected_character_session: str | None = None,
     ) -> dict[str, Any]:
         """Apply one explicit, retry-safe structured continuity mutation."""
         try:
@@ -5005,6 +5610,9 @@ class AssistantService:
         if not self._turn_lock.acquire(blocking=wait_for_turn):
             raise RuntimeError("Assistant is still processing. Try again when it is ready.")
         try:
+            if expected_character_session is not None:
+                self.require_character_binding(expected_character_id, expected_character_session)
+            self._retire_automatic_expression()
             self._assert_character_state_ownership()
             if expected_character_id is not None and expected_character_id != str(self.character_id):
                 raise RuntimeError("The scene command belongs to a previous character.")
@@ -5280,24 +5888,45 @@ class AssistantService:
 
     def stop_speaking(self, *, interrupted: bool = False) -> None:
         """Immediately invalidate local speech; presentation observes only."""
+        self._retire_automatic_expression()
         started_at = time.monotonic()
+        provider = self.tts
+        conditional_stop = getattr(type(provider), "stop_if_generation", None)
         with self._speech_generation_lock:
             self._speech_generation += 1
+            stopped_speech_generation = self._speech_generation
+            provider_generation = getattr(provider, "playback_generation", None)
+            # Detach the owner while invalidating it. A replacement may start
+            # after this boundary; an older stop must never look up its queue.
+            queue = self._streaming_speech_queue
+            self._streaming_speech_queue = None
+            pending_stream_playback = self._pending_stream_speech
             self._pending_stream_speech = None
-        with self._tts_state_lock:
-            active_playback_id = self._active_tts_playback_id
-            active_stream_playback = self._active_stream_playback
-            self._active_tts_playback_id = 0
-            self._active_stream_playback = None
-        tts_state = getattr(self.tts, "playback_debug_state", None)
+            with self._tts_state_lock:
+                active_playback_id = self._active_tts_playback_id
+                active_stream_playback = self._active_stream_playback
+                self._active_tts_playback_id = 0
+                self._active_stream_playback = None
+        tts_state = getattr(provider, "playback_debug_state", None)
         before = tts_state() if callable(tts_state) else {"active_id": active_playback_id}
         print(f"[AIFren TTS] stop requested; state={before}")
-        queue = self._streaming_speech_queue
-        self._streaming_speech_queue = None
         if queue is not None:
             queue.cancel()
-        invalidated_id = self.tts.stop()
-        playback_id = int(invalidated_id or active_playback_id or 0)
+        if queue is not None and getattr(queue, "owns_continuous_playback", False) is True:
+            # cancel() uses exact-session abort, including a pending first
+            # chunk. A second global stop here could stop a newer reply.
+            playback_id = int(queue.playback_id or active_playback_id or 0)
+        elif callable(conditional_stop) and type(provider_generation) is int:
+            invalidated_id = conditional_stop(provider, provider_generation)
+            if invalidated_id is None:
+                # Idle/naturally retired queues have no exact queue handle.
+                # The captured provider generation still cannot stop a newer
+                # utterance or emit an identity-free stale subtitle stop.
+                return
+            playback_id = int(invalidated_id or active_playback_id or 0)
+        else:
+            invalidated_id = provider.stop()
+            playback_id = int(invalidated_id or active_playback_id or 0)
         print(
             "[AIFren TTS] stop returned; "
             f"id={playback_id}; elapsed={(time.monotonic() - started_at) * 1000:.1f}ms"
@@ -5308,12 +5937,16 @@ class AssistantService:
             "streamed": active_stream_playback is not None,
             "interrupted": bool(interrupted),
         }
-        if active_stream_playback is not None:
+        stream_identity = active_stream_playback or pending_stream_playback
+        if stream_identity is not None:
             event_data.update(
-                chunk_index=active_stream_playback["chunk_index"],
-                turn_id=active_stream_playback["turn_id"],
+                chunk_index=stream_identity["chunk_index"],
+                turn_id=stream_identity["turn_id"],
+                committed_stream=stream_identity.get("committed_stream", False),
             )
-        self._emit("tts_state", **event_data)
+        with self._speech_generation_lock:
+            if stopped_speech_generation == self._speech_generation:
+                self._emit("tts_state", **event_data)
 
     def start_push_to_talk(self, listen_globally: bool = True, binding: str | None = None) -> Any:
         """Enable existing F8 PTT and route its voice events through service events."""
@@ -5335,15 +5968,24 @@ class AssistantService:
 
             ptt_factory = PushToTalk
 
+        owner = self.character_binding()
+        def owned(callback):
+            def guarded(*args, **kwargs):
+                with self._character_binding_lock:
+                    if owner != self.character_binding():
+                        return None
+                    return callback(*args, **kwargs)
+            return guarded
+
         ptt_arguments = (
             self.voice,
             self.tts,
-            self._handle_ptt_transcription,
+            lambda text: self._handle_ptt_transcription(text, expected_binding=owner),
         )
         ptt_keywords = {
-            "on_state": self._handle_ptt_state,
-            "on_tts_interrupt": self._handle_ptt_tts_interrupt,
-            "on_error": self._handle_ptt_error,
+            "on_state": owned(self._handle_ptt_state),
+            "on_tts_interrupt": owned(self._handle_ptt_tts_interrupt),
+            "on_error": owned(self._handle_ptt_error),
         }
         try:
             self._ptt = ptt_factory(
@@ -5431,7 +6073,25 @@ class AssistantService:
         self._emit("error", source="voice", message=str(message))
         self._handle_ptt_state("ready")
 
-    def _handle_ptt_transcription(self, text: str) -> None:
+    def _handle_ptt_transcription(self, text: str, *, expected_binding=None) -> None:
+        owner = expected_binding or self.character_binding()
+        with self._character_binding_lock:
+            if owner != self.character_binding():
+                return None
+            prepared = self._prepare_ptt_transcription(text)
+        if prepared is None:
+            return None
+        text, ptt_release_at, stt_final_at = prepared
+        try:
+            return self.process_text_turn(text, input_source="ptt",
+                ptt_release_at=ptt_release_at, stt_final_at=stt_final_at, **owner)
+        except RuntimeError:
+            if owner != self.character_binding():
+                return None
+            raise
+
+    def _prepare_ptt_transcription(self, text: str):
+        """Publish capture data under the short binding lock; never infer here."""
         stt_final_at = time.monotonic()
         ptt_release_at = self._last_ptt_release_at
         if ptt_release_at is not None:
@@ -5458,12 +6118,33 @@ class AssistantService:
         # may take time to generate/speak, but it must not leave a frontend in
         # the transient "Transcribing" presentation state.
         self._handle_ptt_state("ready")
-        return self.process_text_turn(
-            text,
-            input_source="ptt",
-            ptt_release_at=ptt_release_at,
-            stt_final_at=stt_final_at,
-        )
+        return text, ptt_release_at, stt_final_at
+
+    def prepare_character_maintenance(self) -> None:
+        """Review only an idle, persisted character; never rewrite its archive."""
+        if self._closed:
+            raise RuntimeError("This character runtime is retired.")
+        if not self._turn_lock.acquire(blocking=False):
+            raise RuntimeError("Wait for the current turn before character maintenance.")
+        try:
+            if self._closed:
+                raise RuntimeError("This character runtime is retired.")
+            prepare = getattr(self.conversation, "prepare_maintenance", None)
+            if callable(prepare):
+                initialized_empty = prepare()
+                if initialized_empty:
+                    # Only first-run empty-file initialization changed identity;
+                    # settle its zero-record observer page before inventory.
+                    self._recover_canonical_observers()
+            else:
+                self.conversation.save()  # Alternate injected conversation owner.
+            if self._memory_authority == "v1":
+                save_summary = getattr(self.conversation, "save_summary", None)
+                if callable(save_summary):
+                    save_summary()
+                self.memory.save()
+        finally:
+            self._turn_lock.release()
 
     def save(self) -> None:
         self.conversation.save()
@@ -5474,35 +6155,56 @@ class AssistantService:
             self.memory.save()
 
     def close(self) -> None:
-        close_episode_rollover = getattr(
-            self.conversation, "close_episode_compaction_rollover", None,
-        )
-        if callable(close_episode_rollover):
-            close_episode_rollover()
-        if self._ptt is not None:
-            self._ptt.stop()
-            self._ptt = None
-
-        self.stop_speaking()
-        close_tts = getattr(self.tts, "close", None)
-        if callable(close_tts):
-            close_tts()
+        if self._closed: return
+        self._closed = True
+        # Register the existing shutdown order in reverse. Every owner still
+        # retires if an earlier callback raises; _closed cannot strand a lease
+        # behind an episode/PTT/TTS/store exception and a later no-op close.
         try:
-            self.save()
+            with ExitStack() as cleanup:
+                if self._storage_lease is not None:
+                    cleanup.callback(self._storage_lease.close)
+                if self._memory_v2_shadow_writer is not None:
+                    cleanup.callback(self._memory_v2_shadow_writer.close)
+                if self._memory_v2_authority is not None:
+                    authority = self._memory_v2_authority
+
+                    def close_authority():
+                        try:
+                            authority.close()
+                        except Exception:
+                            pass
+                        finally:
+                            self._memory_v2_authority = None
+
+                    cleanup.callback(close_authority)
+                if self._memory_recall_shadow is not None:
+                    cleanup.callback(self._memory_recall_shadow.close)
+                if self._memory_v2_shadow is not None:
+                    cleanup.callback(self._memory_v2_shadow.close)
+                if self._memory_v2_unsubscribe is not None:
+                    unsubscribe = self._memory_v2_unsubscribe
+                    self._memory_v2_unsubscribe = None
+                    cleanup.callback(unsubscribe)
+                cleanup.callback(self.save)
+                close_tts = getattr(self.tts, "close", None)
+                if callable(close_tts):
+                    cleanup.callback(close_tts)
+                if self._automatic_expression_worker is not None:
+                    cleanup.callback(self._automatic_expression_worker.close)
+                cleanup.callback(self.stop_speaking)
+                if self._ptt is not None:
+                    ptt = self._ptt
+
+                    def close_ptt():
+                        try:
+                            ptt.stop()
+                        finally:
+                            self._ptt = None
+
+                    cleanup.callback(close_ptt)
+                close_episode_rollover = getattr(self.conversation, "close_episode_compaction_rollover", None)
+                if callable(close_episode_rollover):
+                    cleanup.callback(close_episode_rollover)
         finally:
-            if self._memory_v2_unsubscribe is not None:
-                self._memory_v2_unsubscribe()
-                self._memory_v2_unsubscribe = None
-            if self._memory_v2_shadow is not None:
-                self._memory_v2_shadow.close()
-            if self._memory_recall_shadow is not None:
-                self._memory_recall_shadow.close()
-            if self._memory_v2_authority is not None:
-                try:
-                    self._memory_v2_authority.close()
-                except Exception:
-                    pass
-                self._memory_v2_authority = None
-            if self._memory_v2_shadow_writer is not None:
-                self._memory_v2_shadow_writer.close()
             self._canonical_observation_recovery = None

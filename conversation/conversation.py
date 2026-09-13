@@ -1,4 +1,5 @@
 import time
+from character_storage_runtime import continuity_write_scope
 from conversation.persistence import ConversationPersistenceError, load_json, save_json
 from config import RECENT_CONTEXT_MAX_CHARS, RECENT_CONTEXT_MAX_MESSAGES
 from conversation.context_hygiene import ContextHygiene
@@ -20,23 +21,25 @@ from conversation.truth_scope import (
 CONVERSATION_FILE = "conversation.json"
 SUMMARY_FILE = "conversation_summary.json"
 
-RECENT_MESSAGES = RECENT_CONTEXT_MAX_MESSAGES
-SUMMARY_INTERVAL = 20
+# Compatibility-only policies. The normal V2 governor returns before all of
+# these paths, including summary access, fixed recent selection and V1 retrieval.
+V1_RECENT_MESSAGES = RECENT_CONTEXT_MAX_MESSAGES
+V1_SUMMARY_INTERVAL = 20
 
-MAX_MEMORIES = 5
+V1_MAX_MEMORIES = 5
 
 # Approximate character budgets.
 #
 # These are intentionally conservative. They are not exact
 # token counts, but they prevent context from growing without
 # limit.
-MAX_SUMMARY_CHARS = 6000
-MAX_MEMORY_CHARS = 5000
-MAX_RECENT_CHARS = RECENT_CONTEXT_MAX_CHARS
+V1_MAX_SUMMARY_CHARS = 6000
+V1_MAX_MEMORY_CHARS = 5000
+V1_MAX_RECENT_CHARS = RECENT_CONTEXT_MAX_CHARS
 
 # Number of recent messages that should always be preserved
 # before older messages are considered for removal.
-MIN_RECENT_MESSAGES = 6
+V1_MIN_RECENT_MESSAGES = 6
 
 
 # ============================================================
@@ -48,14 +51,14 @@ class ContextManager:
     def __init__(self, *, max_recent_chars=None):
 
         self.max_summary_chars = (
-            MAX_SUMMARY_CHARS
+            V1_MAX_SUMMARY_CHARS
         )
 
         self.max_memory_chars = (
-            MAX_MEMORY_CHARS
+            V1_MAX_MEMORY_CHARS
         )
 
-        self.max_recent_chars = MAX_RECENT_CHARS if max_recent_chars is None else int(max_recent_chars)
+        self.max_recent_chars = V1_MAX_RECENT_CHARS if max_recent_chars is None else int(max_recent_chars)
         if self.max_recent_chars < 1:
             raise ValueError("recent context character budget must be positive")
 
@@ -486,46 +489,76 @@ class Conversation:
     # Saving
     # ========================================================
 
+    def prepare_maintenance(self):
+        """Verify the persisted archive without replacing an unchanged file.
+
+        A review is not a canonical write. Replacing identical bytes changes
+        the observer's file identity and can invalidate the reviewed inventory
+        on its next idle pass. Only a never-saved empty archive is materialized.
+        External changes block this owner until explicit reload, including its
+        later close/save hook; maintenance must not overwrite them.
+        """
+        with continuity_write_scope(self):
+            self._ensure_loaded()
+            try:
+                messages, exists = load_json(
+                    self.conversation_file, [], record_kind="conversation",
+                    allow_missing=not self._archive_exists,
+                )
+                if (exists and self._archive_exists and messages == self.messages
+                        and self._persisted_message_count == len(messages)):
+                    return False
+                if (not exists and not self._archive_exists and not self.messages
+                        and self._persisted_message_count == 0):
+                    self.save()
+                    return True
+                raise ConversationPersistenceError(record_kind="conversation", stage="load")
+            except ConversationPersistenceError as error:
+                self._load_error = error
+                raise
+
     def save(self):
         """Save canonical messages only, reconciling failed pending mutations."""
-        self._ensure_loaded()
-        try:
-            save_json(self.conversation_file, self.messages, record_kind="conversation")
-        except ConversationPersistenceError as error:
-            if error.committed:
-                self._archive_exists = True
-                self._persisted_message_count = len(self.messages)
-            else:
-                # Read only on failure; do not keep a second lifetime archive
-                # in RAM. Preserve the list referenced by V2 context owners.
-                try:
-                    self._reload_messages()
-                except ConversationPersistenceError:
-                    # _reload_messages blocks further use until explicit reload
-                    # succeeds, without replacing either disk or memory data.
-                    raise self._load_error from error
-            raise
-        self._archive_exists = True
-        self._persisted_message_count = len(self.messages)
+        with continuity_write_scope(self):
+            self._ensure_loaded()
+            try:
+                save_json(self.conversation_file, self.messages, record_kind="conversation")
+            except ConversationPersistenceError as error:
+                if error.committed:
+                    self._archive_exists = True
+                    self._persisted_message_count = len(self.messages)
+                else:
+                    # Read only on failure; do not keep a second lifetime archive
+                    # in RAM. Preserve the list referenced by V2 context owners.
+                    try:
+                        self._reload_messages()
+                    except ConversationPersistenceError:
+                        # _reload_messages blocks further use until explicit reload
+                        # succeeds, without replacing either disk or memory data.
+                        raise self._load_error from error
+                raise
+            self._archive_exists = True
+            self._persisted_message_count = len(self.messages)
 
     def save_summary(self):
         """The sole summary write boundary; V2 compatibility data is read-only."""
         if self._memory_authority != "v1":
             return
-        self._ensure_loaded()
-        try:
-            save_json(self.summary_file, self.summary_data, record_kind="summary")
-        except ConversationPersistenceError as error:
-            if not error.committed:
-                try:
-                    self.summary_data, _ = load_json(
-                        self.summary_file, {"summary": "", "summarized_messages": 0},
-                        record_kind="summary",
-                    )
-                except ConversationPersistenceError as load_error:
-                    self._load_error = load_error
-                    raise load_error from error
-            raise
+        with continuity_write_scope(self):
+            self._ensure_loaded()
+            try:
+                save_json(self.summary_file, self.summary_data, record_kind="summary")
+            except ConversationPersistenceError as error:
+                if not error.committed:
+                    try:
+                        self.summary_data, _ = load_json(
+                            self.summary_file, {"summary": "", "summarized_messages": 0},
+                            record_kind="summary",
+                        )
+                    except ConversationPersistenceError as load_error:
+                        self._load_error = load_error
+                        raise load_error from error
+                raise
 
     def set_memory_authority(self, memory_authority):
         if memory_authority not in {"v1", "v2"}:
@@ -618,7 +651,7 @@ class Conversation:
 
     def get_recent_messages(self):
 
-        count_bounded = self.messages[-RECENT_MESSAGES:]
+        count_bounded = self.messages[-V1_RECENT_MESSAGES:]
         return self.context_manager.build_recent_context(count_bounded)
 
     def _recent_context_start_index(self):
@@ -639,7 +672,7 @@ class Conversation:
             started = time.perf_counter()
             memories = memory.get_relevant_memories(
                 user_message,
-                max_memories=MAX_MEMORIES
+                max_memories=V1_MAX_MEMORIES
             )
             # Shadow-mode only: capture IDs/categories, never text or a new
             # ranking.  This is intentionally inert unless the service enables
@@ -693,7 +726,37 @@ class Conversation:
         recent_character_limit=None,
         recent_context_policy=None,
         memory_query_decision=None,
+        context_provider=None,
+        provider_system_prompt="",
+        context_max_output_tokens=None,
+        context_character_id="",
+        optional_context_items=(),
+        open_thread_fragments=(),
+        temporal_facts=None,
+        context_source_refs=None,
+        context_check=None,
     ):
+        from context_governor import governor_enabled
+        if governor_enabled(long_term_memory_authority):
+            from conversation.governed_context import build_governed_context
+            return build_governed_context(
+                self, user_message, provider=context_provider,
+                system_prompt=provider_system_prompt, max_output_tokens=context_max_output_tokens,
+                character_id=context_character_id, optional_items=optional_context_items,
+                thread_fragments=open_thread_fragments, temporal_facts=temporal_facts,
+                admitted_truth_scope_context=admitted_truth_scope_context,
+                admitted_active_state_context=admitted_active_state_context,
+                admitted_open_thread_context=admitted_open_thread_context,
+                admitted_durable_context=admitted_durable_context,
+                admitted_v2_memory_context=admitted_v2_memory_context,
+                active_truth_scope=active_truth_scope,
+                current_user_projection=current_user_projection,
+                memory_query_decision=memory_query_decision,
+                recent_context_policy=recent_context_policy,
+                context_source_refs=context_source_refs,
+                context_check=context_check,
+            )
+        self._last_context_plan = None
 
         semantic_query = (
             str(current_user_projection)
@@ -766,14 +829,7 @@ class Conversation:
         # Get summary
         # ----------------------------------------------------
 
-        summary = (
-            self.summary_data.get(
-                "summary",
-                ""
-            )
-        )
-        if long_term_memory_authority == "v2":
-            summary = ""
+        summary = self.summary_data.get("summary", "") if long_term_memory_authority == "v1" else ""
         active_scope = active_scope_from_provenance(active_truth_scope)
         # The legacy rolling summary has no source-level scope provenance.
         # Once the backend supplies an authoritative scope, scoped raw history
@@ -793,7 +849,7 @@ class Conversation:
                 selector = rollover if rollover is not None else cache
                 episode_selection = selector.select_for_context(
                     self._semantic_context_messages(),
-                    maximum_raw_messages=RECENT_MESSAGES,
+                    maximum_raw_messages=V1_RECENT_MESSAGES,
                     maximum_raw_characters=self.context_manager.max_recent_chars,
                     active_truth_scope=active_truth_scope,
                 )
@@ -811,7 +867,7 @@ class Conversation:
                 self._semantic_context_messages()[episode_selection.raw_start_index:]
             )
         else:
-            raw_recent_messages = list(self._semantic_context_messages()[-RECENT_MESSAGES:])
+            raw_recent_messages = list(self._semantic_context_messages()[-V1_RECENT_MESSAGES:])
         if current_user_projection is not None:
             for index in range(len(raw_recent_messages) - 1, -1, -1):
                 if raw_recent_messages[index].get("role") == "user":
@@ -1148,7 +1204,7 @@ class Conversation:
             summary_end
         ]
 
-        if len(new_messages) < SUMMARY_INTERVAL:
+        if len(new_messages) < V1_SUMMARY_INTERVAL:
 
             return
 
@@ -1181,7 +1237,7 @@ class Conversation:
         previous_summary = (
             self.context_manager.limit_text(
                 previous_summary,
-                MAX_SUMMARY_CHARS
+                V1_MAX_SUMMARY_CHARS
             )
         )
 
@@ -1473,17 +1529,17 @@ Write plain text only.
 
         print(
             f"  Recent message limit: "
-            f"{RECENT_MESSAGES}"
+            f"{V1_RECENT_MESSAGES}"
         )
 
         print(
             f"  Memory limit: "
-            f"{MAX_MEMORIES}"
+            f"{V1_MAX_MEMORIES}"
         )
 
         print(
             f"  Summary interval: "
-            f"{SUMMARY_INTERVAL}"
+            f"{V1_SUMMARY_INTERVAL}"
         )
 
         print(

@@ -176,6 +176,58 @@ namespace AIFren.UnityPoc.Tests.EditMode
                 SubtitleTimingPlan.TokenizeWords(string.Join(" ", pages.Select(DialoguePresentationParser.SpokenText))));
         }
 
+        [TestCase("It is *working*—running smoothly.", "It is working—running smoothly.")]
+        [TestCase("The **pre**fix is intact.", "The prefix is intact.")]
+        [TestCase("The end**ing** is intact.", "The ending is intact.")]
+        [TestCase("A **well**-**known** name.", "A well-known name.")]
+        [TestCase("Use (**that**) label.", "Use (that) label.")]
+        [TestCase("A **word**. Another **word**!", "A word. Another word!")]
+        [TestCase("One **two three four** five.", "One two three four five.")]
+        [TestCase("*nods* Keep **this**—not that.", "Keep this—not that.")]
+        [TestCase("Keep **this** — separate.", "Keep this — separate.")]
+        [TestCase("**That**'s fine.", "That's fine.")]
+        public void EmphasisBoundariesNeverCreateOrMergeSpokenWords(string raw, string expectedSpoken)
+        {
+            Assert.AreEqual(expectedSpoken, DialoguePresentationParser.SpokenText(raw));
+            foreach (int maximumWords in new[] { 1, 2, 3, 28 })
+            {
+                List<string> pages = SubtitlePagination.Split(
+                    DialoguePresentationParser.SubtitleSourceText(raw), maximumWords);
+                List<SubtitlePageWordRange> ranges = SubtitleTimingPlan.BuildPageWordRanges(
+                    pages, DialoguePresentationParser.SpokenText);
+                Assert.IsTrue(SubtitleTimingPlan.TryValidatePagesMatchCanonicalText(
+                    expectedSpoken, pages, ranges, DialoguePresentationParser.SpokenText, out string error), error);
+                CollectionAssert.AreEqual(SubtitleTimingPlan.TokenizeWords(expectedSpoken),
+                    SubtitleTimingPlan.TokenizeWords(string.Join(" ", pages.Select(DialoguePresentationParser.SpokenText))));
+            }
+        }
+
+        [TestCase("It is **working**—running smoothly.", "<i>working</i>—running")]
+        [TestCase("The **pre**fix is intact.", "<i>pre</i>fix")]
+        [TestCase("The end**ing** is intact.", "end<i>ing</i>")]
+        [TestCase("A **well**-**known** name.", "<i>well</i>-<i>known</i>")]
+        [TestCase("Use (**that**) label.", "(<i>that</i>)")]
+        public void AttachedFragmentsKeepOnlyTheirOriginalLettersEmphasized(string raw, string expectedFragment)
+        {
+            List<string> pages = SubtitlePagination.Split(DialoguePresentationParser.SubtitleSourceText(raw), 2);
+            StringAssert.Contains(expectedFragment,
+                string.Join(" ", pages.Select(DialoguePresentationParser.FormatSubtitleText)));
+        }
+
+        [Test]
+        public void CanonicalOwnershipStillRejectsAnInventedBoundaryOrAlteredAttachedWord()
+        {
+            const string spoken = "It is working—running smoothly.";
+            foreach (string corrupt in new[] { "It is **working** —running smoothly.", "It is **working**—walking smoothly." })
+            {
+                List<string> pages = new List<string> { corrupt };
+                var ranges = SubtitleTimingPlan.BuildPageWordRanges(pages, DialoguePresentationParser.SpokenText);
+                Assert.IsFalse(SubtitleTimingPlan.TryValidatePagesMatchCanonicalText(
+                    spoken, pages, ranges, DialoguePresentationParser.SpokenText, out string error));
+                Assert.IsNotEmpty(error);
+            }
+        }
+
         [Test]
         public void LayoutFitPredicateReducesPagesAndNeverReabsorbsAnOverflowingOrphan()
         {

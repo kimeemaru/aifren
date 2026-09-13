@@ -23,8 +23,9 @@ ignored local inputs with their own licenses. MiniLM expects an installed
 are installed separately by setup, not bundled in the source repository.
 
 The loopback endpoint defaults to `ws://127.0.0.1:8765`. With no character files,
-startup creates a local registry and uses the generic companion definition; it
-does not need a tracked conversation. Missing provider configuration is recoverable
+startup creates local application metadata and offers character creation; it
+does not need a tracked conversation. Deleting the last identity leaves an empty
+library, not a recreated legacy timeline. Missing provider configuration is recoverable
 and Settings remains available. Configure a local model or your own online provider
 credentials through Settings. Never commit the resulting configuration or data.
 
@@ -138,3 +139,61 @@ settings, credentials, character records, generated speech, screenshots or logs.
 Windows/package helpers remain preliminary; source validation is not a certified
 portable runtime or 1.0 release. Review [distribution boundaries](DISTRIBUTION_ASSET_MANIFEST.md)
 before bundling dependencies or user-supplied material.
+
+## Current controls and storage
+
+[Delivery settings](NATURAL_COMPANION_DESIGN.md) use Save/Cancel: Roleplay default,
+responsive speech on, ACT preview and automatic CPU expressions off. Natural is
+selectable guidance with known narration/question limitations. Install optional
+expression dependencies/model explicitly; no turn silently downloads weights.
+
+Settings > Character > Manage previews one name/UUID/revision and operation scope.
+New characters use character-local continuity. Existing legacy layouts require
+confirmed selected migration; the tool verifies original records and reports retained
+copies. Retained-copy cleanup is a separate confirmed operation. Reset keeps profile,
+avatar/framing and preferences while replacing learned continuity; Delete removes
+owned identity/preferences but preserves shared assets. Interrupted work remains
+explicit/resumable. Never use file disappearance as permission to restore a timeline.
+
+The future V1/legacy-tool retirement gate is in PROJECT.md. Migration alone does
+not confirm retained-copy cleanup. Preserve valid V1-origin records in V2, canonical
+history, ordinary management/recovery and future schema upgrades during retirement.
+
+## Separate application source and existing runtime data
+
+The launcher loads its ignored `.env` before starting the backend. Supported local
+choices can keep resources/data in place when changing source checkout:
+
+```bash
+AIFREN_PYTHON=/path/to/existing-environment/bin/python
+AIFREN_RESOURCE_ROOT=/path/to/existing-resources
+AIFREN_DATA_ROOT=/path/to/existing-application-data
+```
+
+Paths are examples, not required directories. This does not migrate or clone data.
+The selected interpreter supplies dependencies; backend/scripts and Unity inputs
+remain in the active checkout. Do not resolve a venv Python symlink to the system
+interpreter. Avoid PYTHONPATH entries pointing at another application implementation.
+Reinstall the existing developer desktop entry from the new checkout to retarget
+both actions together. Keep machine-specific configuration outside commits.
+
+The governor's default complete-request target is 4,608 tokens, independent of
+16,384 default managed capacity. It is a measured deployment starting point, not a
+universal optimum. Mandatory/final local content token counts use estimated framing;
+without tokenization the conservative labelled path remains. Required overflow is
+visible. `AIFREN_CONTEXT_GOVERNOR=0` changes composition for one process only; it
+does not change memory authority. No model allocation/output limit is reduced.
+
+## Forward development
+
+This repository is the active application source. Commit source, synthetic
+regressions and necessary docs together. Use a branch for incomplete work and land
+completed reviewed slices on main. Check privacy across every outgoing commit as
+well as staged files. Never include runtime/private QA material, assets without
+permission, credentials or local configuration. Historical internal archives remain
+archives, not a second application branch to export periodically.
+
+Run targeted checks while developing and the affected final suite once when stable.
+Keep reports outside Git. Unchanged evidence can be reused only for unchanged owners.
+The reset/switch blank-panel issue remains a known intermittent report; do not waive
+session fences or claim a passing synthetic scenario fixes an unreproduced incident.

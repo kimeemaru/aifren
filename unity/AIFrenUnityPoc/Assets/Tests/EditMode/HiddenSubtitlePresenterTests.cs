@@ -110,8 +110,8 @@ namespace AIFren.UnityPoc.Tests.EditMode
         {
             internal bool Renderable; internal float Alpha; internal int ClearCount;
             internal readonly List<string> Prepared = new List<string>();
-            public void Preload(string page) { Prepared.Add("preload:" + page); }
-            public void ShowPage(string page, int shownWords) { Prepared.Add(page + "|" + shownWords); }
+            public void Preload(SubtitlePage page) { Prepared.Add("preload:" + page.SourceText); }
+            public void ShowPage(SubtitlePage page, int shownWords) { Prepared.Add(page.SourceText + "|" + shownWords); }
             public void SetRenderable(bool value) { Renderable = value; }
             public void SetAlpha(float value) { Alpha = value; }
             public void Clear() { ClearCount++; }

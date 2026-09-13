@@ -153,7 +153,7 @@ class CompanionServiceTests(unittest.TestCase):
         diag=self.service._last_memory_authority_diagnostics
         self.assertEqual('grounded_core_plus_reaction',diag['memory_realization'])
         self.assertFalse(diag['repair_attempted']);self.assertFalse(diag['fallback_used'])
-        self.assertIn('ONLY an optional short present-moment',self.llm.calls[-1][1])
+        self.assertIn('ONLY one optional present reaction choice',self.llm.calls[-1][1])
         self.assertNotIn('[Authoritative memory answer brief]',self.llm.calls[-1][1])
 
     def test_only_accepted_reaction_metadata_publishes_and_provider_cap_is_local(self):

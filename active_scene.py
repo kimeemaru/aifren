@@ -774,8 +774,8 @@ class _Builder:
         remove = re.fullmatch(
             r"(?:i )?remove (?:the )?(?P<item>" + atom + r") from " + target, text, re.I)
         establish = re.fullmatch(
-            r"(?:(?:i )?(?:put|place|apply|attach) |(?:you are wearing|i am wearing) )"
-            r"(?P<item>" + atom + r") (?:on|to) " + target, text, re.I)
+            r"(?:(?:i )?(?:put|place|apply|attach|slip|slide) |(?:you are wearing|i am wearing) )"
+            r"(?P<item>" + atom + r") (?:on|onto|to) " + target, text, re.I)
         cover = re.fullmatch(
             r"(?P<item>" + atom + r") (?:covers|is covering) " + target
             + r"(?P<effect> and (?:prevents|blocks) (?P<effect_owner>your|my) sight)?", text, re.I)

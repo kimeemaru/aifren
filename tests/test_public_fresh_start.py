@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from assistant_service import AssistantService
+from character_registry import CharacterRegistry
 from test_assistant_service_v2_authority import _LLM, _TTS
 from test_character_memory_v2_shadow import _Embedding
 from test_memory_v2_embeddings import ToyEmbeddingProvider
@@ -39,15 +40,44 @@ class PublicFreshStartTests(unittest.TestCase):
                 if mature:
                     Path('conversation.json').write_text(json.dumps(records))
                     Path('memories.json').write_text('[]')
+                    profile=Path('characters/default');profile.mkdir(parents=True)
+                    (profile/'character.json').write_text('{"name":"AIFren"}')
+                    (profile/'personality.md').write_text('Synthetic legacy companion.')
+                else:
+                    registry=CharacterRegistry(directory)
+                    created=registry.create('Public Companion',personality='Synthetic companion.')
+                    registry.select(created.character_id)
+                    self.assertEqual('local',created.storage_layout)
                 before = Path('conversation.json').read_bytes() if mature else None
                 service = AssistantService.create_default()
                 try:
                     self.assertEqual('v2',service.memory_authority_status()['mode'])
-                    self.assertEqual('AIFren',service.character['name'])
+                    self.assertEqual('AIFren' if mature else 'Public Companion',service.character['name'])
                     if mature: self.assertEqual(before,Path('conversation.json').read_bytes())
                     self.assertEqual(records,service.conversation.messages)
                     self.assertIsNotNone(service._memory_v2_shadow_writer)
                     self.assertTrue(Path('characters/registry.json').is_file())
-                    self.assertFalse(Path('characters/default/character.json').exists())
+                    self.assertEqual(mature,Path('characters/default/character.json').exists())
                 finally: service.close()
                 for spy in spies: spy.assert_not_called()
+
+    def test_missing_legacy_profile_stays_visible_without_recreating_or_overwriting_data(self):
+        from backend_host import AIFrenWebSocketHost
+        from character_registry import CharacterStorageError
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); canonical=root/'conversation.json'
+            canonical.write_text('[{"role":"user","content":"Synthetic retained record."}]')
+            original=canonical.read_bytes();registry=CharacterRegistry(root)
+            # Normal adapter catches the selected factory's missing-directory failure;
+            # it must retain manager access instead of inventing a replacement timeline.
+            host=AIFrenWebSocketHost(application_dir=root,
+                service_factory=lambda: (_ for _ in ()).throw(CharacterStorageError('Missing profile')))
+            service=host._create_service_or_management()
+            self.assertTrue(service.storage_unavailable)
+            self.assertEqual('storage_unavailable',host._status['state'])
+            self.assertEqual(original,canonical.read_bytes())
+            self.assertFalse((root/'characters/default').exists())
+            fresh=registry.create('New Companion',personality='Synthetic fresh character.')
+            self.assertEqual('local',fresh.storage_layout)
+            self.assertEqual([],json.loads(registry.runtime_paths(fresh.character_id)['conversation'].read_text()))
+            self.assertEqual(original,canonical.read_bytes())

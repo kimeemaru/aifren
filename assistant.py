@@ -1,4 +1,5 @@
 import json
+from contextlib import ExitStack
 import threading
 
 from character_registry import CharacterRegistry
@@ -127,64 +128,73 @@ def initialize(*, prepare_v1_memory=None):
 
     registry = CharacterRegistry(".")
     active_character = registry.active()
-    paths = registry.runtime_paths(active_character.character_id)
+    paths = registry.assert_storage_ready(active_character.character_id)
 
-    memory = Memory(llm, memory_file=str(paths["memory"]))
+    from character_storage_runtime import acquire_runtime_lease
+    storage_lease = acquire_runtime_lease(registry, active_character.character_id)
+    with ExitStack() as setup:
+        setup.callback(storage_lease.close)
+        memory = Memory(llm, memory_file=str(paths["memory"]))
+        memory.continuity_write_guard = storage_lease.assert_current
 
-    # --------------------------------------------------------
-    # Upgrade older memories with embeddings.
-    # --------------------------------------------------------
+        # --------------------------------------------------------
+        # Upgrade older memories with embeddings.
+        # --------------------------------------------------------
 
-    if prepare_v1_memory:
-        memory.generate_missing_embeddings()
+        if prepare_v1_memory:
+            memory.generate_missing_embeddings()
 
-    # --------------------------------------------------------
-    # Upgrade older memories with keyword/concept metadata.
-    # --------------------------------------------------------
+        # --------------------------------------------------------
+        # Upgrade older memories with keyword/concept metadata.
+        # --------------------------------------------------------
 
-    if prepare_v1_memory:
-        memory.generate_missing_metadata()
+        if prepare_v1_memory:
+            memory.generate_missing_metadata()
 
-    conversation = Conversation(
-        llm,
-        conversation_file=str(paths["conversation"]),
-        summary_file=str(paths["summary"]),
-        memory_authority="v1" if prepare_v1_memory else "v2",
-    )
-
-    # --------------------------------------------------------
-    # Local voice input
-    # --------------------------------------------------------
-
-    voice = VoiceInput()
-    tts = TextToSpeech()
-
-    character, personality = load_character(paths["character"], paths["personality"])
-    # Runtime-only identity annotation.  It is never written back into the
-    # legacy character config and is separate from avatar/voice choices.
-    character = dict(character)
-    character["_character_id"] = active_character.character_id
-    character["_display_name"] = active_character.display_name
-
-    character_prompt = (
-        build_character_prompt(
-            character,
-            personality
+        conversation = Conversation(
+            llm,
+            conversation_file=str(paths["conversation"]),
+            summary_file=str(paths["summary"]),
+            memory_authority="v1" if prepare_v1_memory else "v2",
         )
-    )
-    
-    ui_sound = None
 
-    return (
-        llm,
-        memory,
-        conversation,
-        voice,
-        character,
-        character_prompt,
-        tts,
-        ui_sound
-    )
+        conversation._storage_lease = storage_lease
+        conversation.continuity_write_guard = storage_lease.assert_current
+
+        # --------------------------------------------------------
+        # Local voice input
+        # --------------------------------------------------------
+
+        voice = VoiceInput()
+        tts = TextToSpeech()
+
+        character, personality = load_character(paths["character"], paths["personality"])
+        # Runtime-only identity annotation.  It is never written back into the
+        # legacy character config and is separate from avatar/voice choices.
+        character = dict(character)
+        character["_character_id"] = active_character.character_id
+        character["_display_name"] = active_character.display_name
+
+        character_prompt = (
+            build_character_prompt(
+                character,
+                personality
+            )
+        )
+    
+        ui_sound = None
+
+        setup.pop_all()  # Successful caller now owns the lifetime lease.
+        return (
+            llm,
+            memory,
+            conversation,
+            voice,
+            character,
+            character_prompt,
+            tts,
+            ui_sound
+        )
 
 
 # ============================================================
@@ -327,7 +337,7 @@ def handle_memory_command(
 # Generate Response
 # ============================================================
 
-def generate_response(
+def build_response_request(
     llm,
     conversation,
     memory,
@@ -346,6 +356,12 @@ def generate_response(
     recent_context_policy=None,
     memory_query_decision=None,
     memory_realization=None,
+    optional_context_items=(),
+    open_thread_fragments=(),
+    context_character_id="",
+    temporal_facts=None,
+    context_source_refs=None,
+    context_check=None,
 ):
 
     from config import (
@@ -356,10 +372,18 @@ def generate_response(
     if recent_context_policy is None:
         recent_context_policy = V2_AUTHORITY_RECENT_POLICY
 
+    system_prompt = character_prompt
+    if long_term_memory_authority == "v2" and memory_answer_requirement is not None:
+        from memory_v2_answer_governance import memory_answer_system_prompt
+        system_prompt = memory_answer_system_prompt(character_prompt, memory_answer_requirement)
+    if memory_realization is not None:
+        from companion_memory_realizer import reaction_system_prompt
+        system_prompt = reaction_system_prompt(character_prompt, memory_realization)
+
     provider_budget = getattr(llm, "context_budget_chars", None)
     if provider_budget is not None:
         try:
-            provider_budget = max(1, int(provider_budget) - len(character_prompt))
+            provider_budget = max(1, int(provider_budget) - len(system_prompt))
         except (TypeError, ValueError):
             provider_budget = None
     context = conversation.build_context(
@@ -385,25 +409,33 @@ def generate_response(
         ),
         recent_context_policy=recent_context_policy,
         memory_query_decision=memory_query_decision,
+        context_provider=llm,
+        provider_system_prompt=system_prompt,
+        context_max_output_tokens=64 if memory_realization is not None else None,
+        context_character_id=context_character_id,
+        optional_context_items=optional_context_items,
+        open_thread_fragments=open_thread_fragments,
+        temporal_facts=temporal_facts,
+        context_source_refs={**(context_source_refs or {}), "memory_v2": tuple(
+            item.evidence_id for item in getattr(memory_answer_requirement, "evidence", ()))},
+        context_check=context_check,
     )
-    system_prompt = character_prompt
-    if long_term_memory_authority == "v2" and memory_answer_requirement is not None:
-        from memory_v2_answer_governance import memory_answer_system_prompt
-        system_prompt = memory_answer_system_prompt(
-            character_prompt, memory_answer_requirement,
-        )
-    if memory_realization is not None:
-        from companion_memory_realizer import reaction_system_prompt
-        system_prompt = reaction_system_prompt(character_prompt, memory_realization)
-        # Optional reaction only: a request-local output cap, not saved sampling
-        # or normal-reply length. Partial/malformed output is simply discarded.
+    return context, system_prompt
+
+
+def generate_response(llm, conversation, memory, user_message, character_prompt, **admissions):
+    request_ready = admissions.pop("request_ready", None)
+    if request_ready is not None:
+        admissions["context_check"] = request_ready
+    context, system_prompt = build_response_request(
+        llm, conversation, memory, user_message, character_prompt, **admissions)
+    if request_ready is not None:
+        request_ready()
+    if admissions.get("memory_realization") is not None:
         bounded = getattr(llm, "generate_bounded", None)
         if callable(bounded):
             return bounded(context, system_prompt, max_output_tokens=64)
-    return llm.generate(
-        context,
-        system_prompt
-    )
+    return llm.generate(context, system_prompt)
 
 import time
 

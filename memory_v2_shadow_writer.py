@@ -7,6 +7,7 @@ reported without rolling back or invalidating the canonical JSON record.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 from datetime import datetime, timezone
 import hashlib
@@ -108,21 +109,57 @@ class MemoryV2ShadowWriter:
         self.character_id = str(character_id)
         self.display_name = str(display_name)
         self.memory_file = Path(memory_file).resolve()
-        if database_path is None:
-            from development_staged_runtime import development_staged_database_path
-            database_path = (
-                development_staged_database_path(self.application_dir, self.character_id)
-                or default_v2_path(self.application_dir)
-            )
-        self.database_path = Path(database_path).resolve()
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self.store = MemoryV2Store(str(self.database_path))
-        self.last_error: str | None = None
-        self._embedding_provider = None
-        self._working_recall = WorkingRecallCache()
+        self.runtime_lease = None
+        self.storage_layout = "legacy_shared"
+        self.timeline_generation = "legacy"
+        self.source_namespace = None
+        # Every acquired owner is provisional until the constructor completes.
+        # Path validation and later cache setup can fail after lease admission.
+        with ExitStack() as setup:
+            registry_path = self.application_dir / "characters" / "registry.json"
+            if registry_path.exists():
+                from character_registry import CharacterRegistry, CharacterStorageError
+                registry = CharacterRegistry(self.application_dir)
+                selected = registry.get(self.character_id)
+                if selected is None:
+                    raise CharacterStorageError("Character is absent from the storage registry")
+                from character_storage_runtime import acquire_runtime_lease
+                self.runtime_lease = acquire_runtime_lease(registry, self.character_id)
+                setup.callback(self.runtime_lease.close)
+                paths = self.runtime_lease.paths
+                self.storage_layout = selected.storage_layout
+                self.timeline_generation = selected.timeline_generation
+                self.source_namespace = registry.canonical_namespace(self.character_id)
+                if selected.storage_layout == "local":
+                    if database_path is not None and Path(database_path).resolve() != paths["memory_v2"]:
+                        raise CharacterStorageError("Local character cannot select a different continuity database")
+                    if self.memory_file != paths["memory"]:
+                        raise CharacterStorageError("Character compatibility memory path does not match its owner")
+                    database_path = paths["memory_v2"]
+                elif database_path is None:
+                    from development_staged_runtime import development_staged_database_path
+                    database_path = development_staged_database_path(self.application_dir, self.character_id) or paths["memory_v2"]
+            if database_path is None:
+                # Low-level unregistered synthetic/compatibility owners only.
+                # The normal factory always resolves an explicit registry entry.
+                from development_staged_runtime import development_staged_database_path
+                database_path = development_staged_database_path(self.application_dir, self.character_id) or default_v2_path(self.application_dir)
+            self.database_path = Path(database_path).resolve()
+            self.database_path.parent.mkdir(parents=True, exist_ok=True)
+            self.store = MemoryV2Store(str(self.database_path))
+            setup.callback(self.store.close)
+            if self.runtime_lease is not None:
+                self.store.continuity_write_guard = self.runtime_lease.assert_current
+            self.last_error: str | None = None
+            self._embedding_provider = None
+            self._working_recall = WorkingRecallCache()
+            setup.pop_all()
 
     def reconcile(self) -> dict[str, Any]:
         """Idempotently catch up after a crash, rebuild, or disabled observer."""
+        if self.storage_layout == "local":
+            return {"state": "ok", "imported": 0, "unchanged": 0, "superseded": 0,
+                    "skipped": 0, "errors": [], "reason": "local_character_no_implicit_legacy_import"}
         try:
             result = import_v1_memories(
                 self.store,
@@ -826,6 +863,8 @@ class MemoryV2ShadowWriter:
 
     def _favorite_color_v1_predecessor(self) -> dict[str, Any] | None:
         """Return exactly one safe, current, imported V1 favorite-color value."""
+        if self.storage_layout == "local":
+            return None
         try:
             from durable_fact_curation import extract_v1_favorite_color_memory
 
@@ -1188,6 +1227,8 @@ class MemoryV2ShadowWriter:
         )
 
     def _canonical_source_reference(self, conversation_file: str | Path, index: int) -> str:
+        if self.source_namespace:
+            return f"{self.source_namespace}#{index}"
         source = Path(conversation_file).resolve()
         try:
             relative = source.relative_to(self.application_dir)
@@ -1526,4 +1567,8 @@ class MemoryV2ShadowWriter:
         return [mapping[value] for value in v1_ids if value in mapping]
 
     def close(self) -> None:
-        self.store.close()
+        if getattr(self, "_closed", False): return
+        self._closed = True
+        try: self.store.close()
+        finally:
+            if self.runtime_lease is not None: self.runtime_lease.close()

@@ -190,8 +190,13 @@ class AssistantOuterParentheticalActionNormalizer:
         return _single_star_is_emote(candidate, start, end, content)
 
     def _next_unescaped_star(self) -> int:
+        value = self._history + self._buffer
+        literals = _literal_spans(value, include_unclosed=True)
         for index, character in enumerate(self._buffer):
             if character != "*":
+                continue
+            absolute = len(self._history) + index
+            if any(start <= absolute < end for start, end, _complete in literals):
                 continue
             prefix = self._history + self._buffer[:index]
             backslashes = len(prefix) - len(prefix.rstrip("\\"))
@@ -228,7 +233,7 @@ class AssistantParentheticalActionNormalizer:
         output: list[str] = []
         for character in str(raw or ""):
             if not self._inside_parenthetical:
-                if character == "(":
+                if character == "(" and not _unclosed_literal(self._history):
                     self._inside_parenthetical = True
                     self._parenthetical = character
                     self._nested = False
@@ -277,6 +282,7 @@ class AssistantParentheticalActionNormalizer:
                 return explicit_action
         if (not self._nested and not self._started_inside_action
                 and self._started_at_action_boundary
+                and "*" not in content
                 and is_high_confidence_parenthetical_action(content)):
             return "*" + content.strip() + "*"
         return self._parenthetical
@@ -292,6 +298,17 @@ def normalize_generated_parenthetical_actions(raw: object) -> str:
     return normalizer.feed(raw) + normalizer.finish()
 
 
+def normalize_generated_dialogue_actions(raw: object) -> str:
+    """Normalize fresh decoded dialogue, never an entire transport envelope.
+
+    The caller must own fresh assistant output. Historical/canonical strings
+    and backend-owned memory cores do not pass through this normalization.
+    """
+    outer = AssistantOuterParentheticalActionNormalizer()
+    rendered = outer.feed(raw) + outer.finish()
+    return normalize_generated_parenthetical_actions(rendered)
+
+
 def _canonical_parenthesized_star_action(
     content: object,
     *,
@@ -301,14 +318,17 @@ def _canonical_parenthesized_star_action(
 
     Parentheses remain ordinary prose.  This accepts only the malformed model
     shape ``( *physical action* )``: the entire parenthetical must be one
-    single-star span, with no nested markers or surrounding prose.
+    single-star action span, with no surrounding prose. Formatting inside an
+    already-owned outer action retains that owner; adding another pair of
+    stars would incorrectly turn the whole action into spoken emphasis.
     """
     value = str(content or "").strip()
     if (len(value) < 3 or not value.startswith("*") or not value.endswith("*")
             or value.startswith("**") or value.endswith("**")):
         return None
     action = value[1:-1].strip()
-    if (not action or "*" in action or not any(character.isalpha() for character in action)
+    if (not action or not any(character.isalpha() for character in action)
+            or _find_marker_end(value, 1, 1) != len(value) - 1
             or not (
                 is_high_confidence_parenthetical_action(action)
                 # The canonical single-star form is itself an RP action when
@@ -708,6 +728,13 @@ class SemanticSpeechGrouper:
 
 
 def _stable_prefix_length(value: str, *, final: bool = False) -> int:
+    if not final:
+        # A split quote/code delimiter or escape cannot lose its ownership
+        # when a plain prefix is released. Retain the literal from its opener,
+        # then release it whole once the closing delimiter is available.
+        for start, _end, complete in _literal_spans(value, include_unclosed=True):
+            if not complete:
+                return min(start, _stable_prefix_length(value[:start], final=final))
     cursor = 0
     while cursor < len(value):
         start, marker_length = _find_marker_start(value, cursor)
@@ -716,6 +743,8 @@ def _stable_prefix_length(value: str, *, final: bool = False) -> int:
             # whether it begins single- or double-marker semantics.
             trailing = len(value) - 1
             if trailing >= cursor and value[trailing] == "*" and not _is_escaped(value, trailing):
+                return trailing
+            if not final and trailing >= cursor and value[trailing] == "\\":
                 return trailing
             return len(value)
         end = _find_marker_end(
@@ -745,8 +774,11 @@ def _single_star_is_emote(value: str, start: int, end: int, content: str) -> boo
 
 
 def _find_marker_start(value: str, offset: int) -> tuple[int, int]:
+    literals = _literal_spans(value)
     for index in range(offset, len(value)):
         if value[index] != "*" or _is_escaped(value, index):
+            continue
+        if any(start <= index < end for start, end, _complete in literals):
             continue
         double = (
             index + 1 < len(value) and value[index + 1] == "*"
@@ -774,8 +806,11 @@ def _find_marker_end(
     *,
     allow_trailing_single_close: bool = True,
 ) -> int:
+    literals = _literal_spans(value)
     for index in range(offset, len(value)):
         if value[index] != "*" or _is_escaped(value, index):
+            continue
+        if any(start <= index < end for start, end, _complete in literals):
             continue
         if marker_length == 2:
             if (
@@ -829,6 +864,55 @@ def _find_nested_single_end(value: str, offset: int) -> int:
 
 def _is_escaped(value: str, index: int) -> bool:
     return index > 0 and value[index - 1] == "\\"
+
+
+def _literal_spans(value: str, *, include_unclosed: bool = False) -> tuple[tuple[int, int, bool], ...]:
+    """Closed code/quotation spans are data, never fresh RP instructions.
+
+    This is delimiter ownership only. It does not infer reported speech from
+    prose or change the words/markup inside a literal. An apostrophe adjacent
+    to a word on its left is not an opening quotation (``don't``/``users'``).
+    """
+    spans: list[tuple[int, int, bool]] = []
+    cursor = 0
+    pairs = {'"': '"', "'": "'", "“": "”", "‘": "’"}
+    while cursor < len(value):
+        marker = value[cursor]
+        if (_is_escaped(value, cursor) or marker not in (*pairs, "`")
+                or (marker in {"'", "‘"} and cursor > 0 and value[cursor - 1].isalnum())):
+            cursor += 1
+            continue
+        width = 1
+        if marker == "`":
+            while cursor + width < len(value) and value[cursor + width] == "`":
+                width += 1
+        closing = "`" * width if marker == "`" else pairs[marker]
+        search = cursor + width
+        end = -1
+        while search < len(value):
+            candidate = value.find(closing, search)
+            if candidate < 0:
+                break
+            after = candidate + len(closing)
+            if (_is_escaped(value, candidate)
+                    or (marker == "`" and ((candidate > 0 and value[candidate - 1] == "`")
+                                           or (after < len(value) and value[after] == "`")))
+                    or (marker in {"'", "‘"} and after < len(value) and value[after].isalnum())):
+                search = candidate + 1
+                continue
+            end = after
+            break
+        if end < 0:
+            if include_unclosed:
+                spans.append((cursor, len(value), False))
+            break
+        spans.append((cursor, end, True))
+        cursor = end
+    return tuple(spans)
+
+
+def _unclosed_literal(value: str) -> bool:
+    return any(not complete for _start, _end, complete in _literal_spans(value, include_unclosed=True))
 
 
 def _is_double_star(value: str, index: int) -> bool:

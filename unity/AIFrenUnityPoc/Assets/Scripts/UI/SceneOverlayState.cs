@@ -147,6 +147,10 @@ namespace AIFren.UnityPoc.UI
             }
             if (effect == "mobility_constraint")
                 return target + " movement constrained — " + cause;
+            if (predicate == "located on")
+                // The backend owns the complete description, including locus.
+                // Do not infer a body facet or append the location a second time.
+                return target + " — " + cause;
             return string.Empty;
         }
 

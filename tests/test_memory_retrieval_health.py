@@ -569,7 +569,8 @@ class MemoryRetrievalHealthTests(unittest.TestCase):
                     self.assertEqual("snapshot", (await receive())["type"])
                     for failed in (True, False):
                         self.embedding.failed = failed
-                        await client.send(json.dumps({"command": "submit_text", "text": "Do you remember my telescope?"}))
+                        await client.send(json.dumps({"command": "submit_text", "text": "Do you remember my telescope?",
+                                                      **host.service.character_binding()}))
                         events = []
                         for _ in range(60):
                             message = await receive()

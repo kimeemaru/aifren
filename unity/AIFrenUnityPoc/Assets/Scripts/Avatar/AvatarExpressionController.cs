@@ -10,6 +10,9 @@ using UnityEngine.UI;
 
 namespace AIFren.UnityPoc.Avatar
 {
+    // An in-process presentation handle, never a backend emotional state.
+    internal sealed class AutomaticExpressionLease { }
+
     public enum AvatarExpressionCategory
     {
         Emotion,
@@ -54,6 +57,8 @@ namespace AIFren.UnityPoc.Avatar
     public sealed class AvatarExpressionController : MonoBehaviour
     {
         private const float BlendSeconds = .20f;
+        internal const float AutomaticHoldSeconds = 8f;
+        internal const float AutomaticCompletionDwellSeconds = .35f;
         private readonly List<AvatarExpressionCapability> capabilities = new List<AvatarExpressionCapability>();
         private Vrm10Instance instance;
         private Vrm10RuntimeExpression runtime;
@@ -62,6 +67,16 @@ namespace AIFren.UnityPoc.Avatar
         private float activeWeight;
         private float targetWeight;
         private float incomingWeight;
+        private AvatarExpressionCapability semanticTarget;
+        private float semanticWeight;
+        private AutomaticExpressionLease automaticLease;
+        private float automaticExpiresAt;
+        private readonly Dictionary<AvatarExpressionCapability, float> weights = new Dictionary<AvatarExpressionCapability, float>();
+        private readonly List<AvatarExpressionCapability> blendKeys = new List<AvatarExpressionCapability>();
+        public bool ManualOverride { get; private set; }
+        public int TargetRevision { get; private set; }
+        internal bool HasAutomaticExpression => automaticLease != null;
+        internal float AutomaticExpiresAt => automaticExpiresAt;
 
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
         private void OnEnable() => AvatarQaVisibility.Changed += RefreshQaOverlay;
@@ -78,7 +93,8 @@ namespace AIFren.UnityPoc.Avatar
         public float ActiveIntensity => activeWeight;
         internal bool OwnsPreset(ExpressionPreset preset) =>
             (active != null && active.Key.Preset == preset && activeWeight > .001f) ||
-            (target != null && target.Key.Preset == preset && targetWeight > .001f);
+            (target != null && target.Key.Preset == preset && targetWeight > .001f) ||
+            weights.Any(item => item.Key.Key.Preset == preset && item.Value > .001f);
         public bool HasActiveExpression => active != null && (activeWeight > .001f || targetWeight > .001f);
 
         public void Configure(GameObject avatar)
@@ -110,6 +126,7 @@ namespace AIFren.UnityPoc.Avatar
         {
             if (runtime != null)
             {
+                foreach (var entry in weights) runtime.SetWeight(entry.Key.Key, 0f);
                 if (active != null) runtime.SetWeight(active.Key, 0f);
                 if (target != null && target != active) runtime.SetWeight(target.Key, 0f);
             }
@@ -118,7 +135,10 @@ namespace AIFren.UnityPoc.Avatar
             active = null;
             target = null;
             activeWeight = targetWeight = incomingWeight = 0f;
+            semanticTarget = null; semanticWeight = 0f;
+            ForgetAutomaticExpression();
             capabilities.Clear();
+            weights.Clear(); ManualOverride = false;
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             qaSelection = -1;
             RefreshQaOverlay();
@@ -136,19 +156,92 @@ namespace AIFren.UnityPoc.Avatar
         /// <summary>Applies one available standard UniVRM preset without exposing concrete keys to callers.</summary>
         public bool TrySetPresetExpression(ExpressionPreset preset, float intensity)
         {
+            if (ManualOverride) return false;
             AvatarExpressionCapability capability = capabilities.Find(item =>
                 item.Key.Preset == preset && item.CanApplyAsPersistentExpression);
             if (capability == null) return false;
-            SetExpression(capability, intensity);
+            if (runtime == null || !Finite(intensity)) return false;
+            SetSemanticTarget(capability, intensity);
             return true;
         }
 
         public void SetExpression(AvatarExpressionCapability capability, float intensity)
         {
+            if (runtime == null || capability == null || !capability.CanApplyAsPersistentExpression
+                || !capabilities.Contains(capability) || float.IsNaN(intensity) || float.IsInfinity(intensity)) return;
+            ManualOverride = true;
+            SetSemanticTarget(capability, intensity);
+        }
+
+        private void SetSemanticTarget(AvatarExpressionCapability capability, float intensity)
+        {
+            // Explicit and manual requests replace the base. An old optional
+            // cleanup must never restore over either of those newer owners.
+            ForgetAutomaticExpression();
+            semanticTarget = capability; semanticWeight = Mathf.Clamp01(intensity);
+            SetTarget(capability, intensity);
+        }
+
+        internal bool TrySetAutomaticPresetExpression(ExpressionPreset preset, float intensity,
+            AutomaticExpressionLease lease, float now)
+        {
+            if (ManualOverride || runtime == null || lease == null || !Finite(now)
+                || !Finite(intensity) || intensity < 0f || intensity > 1f) return false;
+            AvatarExpressionCapability capability = capabilities.Find(item =>
+                item.Key.Preset == preset && item.CanApplyAsPersistentExpression);
+            if (capability == null) return false;
+            automaticLease = lease; automaticExpiresAt = now + AutomaticHoldSeconds;
+            // SetTarget already preserves weights and ignores an equivalent
+            // target. Renewal changes the lease, not the blend's starting point.
+            SetTarget(capability, intensity);
+            return true;
+        }
+
+        internal bool TrySetAutomaticNeutral(AutomaticExpressionLease lease, float now)
+        {
+            if (ManualOverride || runtime == null || lease == null || !Finite(now)) return false;
+            automaticLease = lease; automaticExpiresAt = now + AutomaticHoldSeconds;
+            ClearTarget(); return true;
+        }
+
+        internal bool RetireAutomaticExpression(AutomaticExpressionLease lease)
+        {
+            if (lease == null || !ReferenceEquals(automaticLease, lease)) return false;
+            ForgetAutomaticExpression();
+            // Release just the optional layer through the existing crossfade.
+            // No synthetic neutral request and no procedural channel writes.
+            if (semanticTarget == null) ClearTarget();
+            else SetTarget(semanticTarget, semanticWeight);
+            return true;
+        }
+
+        internal bool FinishAutomaticExpression(AutomaticExpressionLease lease, float now)
+        {
+            if (lease == null || !ReferenceEquals(automaticLease, lease) || !Finite(now)) return false;
+            automaticExpiresAt = Mathf.Min(automaticExpiresAt, now + AutomaticCompletionDwellSeconds);
+            return true;
+        }
+
+        internal bool ExpireAutomaticExpression(AutomaticExpressionLease lease, float now)
+        {
+            if (lease == null || !ReferenceEquals(automaticLease, lease) || !Finite(now)
+                || now < automaticExpiresAt) return false;
+            return RetireAutomaticExpression(lease);
+        }
+
+        private void ForgetAutomaticExpression() { automaticLease = null; automaticExpiresAt = 0f; }
+        private static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
+
+        private void SetTarget(AvatarExpressionCapability capability, float intensity)
+        {
             if (runtime == null || capability == null || !capability.CanApplyAsPersistentExpression || !capabilities.Contains(capability)) return;
-            if (target != capability) incomingWeight = 0f;
+            if (float.IsNaN(intensity) || float.IsInfinity(intensity)) return;
+            intensity = Mathf.Clamp01(intensity);
+            if (target == capability && Mathf.Approximately(targetWeight, intensity)) return;
+            TargetRevision++;
+            if (!weights.ContainsKey(capability)) weights[capability] = 0f;
             target = capability;
-            targetWeight = Mathf.Clamp01(intensity);
+            targetWeight = intensity;
             if (active == null)
             {
                 active = capability;
@@ -162,7 +255,21 @@ namespace AIFren.UnityPoc.Avatar
 
         public void ClearExpression()
         {
-            if (runtime != null && target != null && target != active) runtime.SetWeight(target.Key, 0f);
+            ManualOverride = false;
+            semanticTarget = null; semanticWeight = 0f; ForgetAutomaticExpression();
+            ClearTarget();
+        }
+
+        public bool ClearSemanticExpression()
+        {
+            if (ManualOverride) return false;
+            semanticTarget = null; semanticWeight = 0f; ForgetAutomaticExpression();
+            ClearTarget(); return true;
+        }
+
+        private void ClearTarget()
+        {
+            if (target != null || targetWeight != 0f) TargetRevision++;
             target = null;
             targetWeight = 0f;
             incomingWeight = 0f;
@@ -174,6 +281,7 @@ namespace AIFren.UnityPoc.Avatar
 
         private void Update()
         {
+            ExpireAutomaticExpression(automaticLease, Time.unscaledTime);
             TickBlend(Time.unscaledDeltaTime);
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             UpdateQaInput();
@@ -183,31 +291,21 @@ namespace AIFren.UnityPoc.Avatar
         private void TickBlend(float deltaTime)
         {
             if (runtime == null || active == null) return;
-            if (target == active)
+            // Retarget from every currently blended semantic weight. A new
+            // target during a crossfade cannot strand or abruptly zero the old
+            // incoming preset. Procedural mouth/blink/gaze are never in this map.
+            blendKeys.Clear(); blendKeys.AddRange(weights.Keys);
+            foreach (var key in blendKeys)
             {
-                activeWeight = AvatarExpressionMath.BlendWeight(activeWeight, targetWeight, deltaTime, BlendSeconds);
-                runtime.SetWeight(active.Key, activeWeight);
-                return;
+                float value = AvatarExpressionMath.BlendWeight(weights[key], key == target ? targetWeight : 0f, deltaTime, BlendSeconds);
+                runtime.SetWeight(key.Key, value);
+                if (key != target && value <= .001f) weights.Remove(key);
+                else weights[key] = value;
             }
-
-            activeWeight = AvatarExpressionMath.BlendWeight(activeWeight, 0f, deltaTime, BlendSeconds);
-            runtime.SetWeight(active.Key, activeWeight);
-            if (target == null)
-            {
-                if (activeWeight <= .001f)
-                {
-                    runtime.SetWeight(active.Key, 0f);
-                    active = null;
-                }
-                return;
-            }
-            incomingWeight = AvatarExpressionMath.BlendWeight(incomingWeight, targetWeight, deltaTime, BlendSeconds);
-            runtime.SetWeight(target.Key, incomingWeight);
-            if (activeWeight > .001f || incomingWeight + .001f < targetWeight) return;
-            runtime.SetWeight(active.Key, 0f);
-            active = target;
-            activeWeight = incomingWeight;
-            target = active;
+            if (target != null) active = target;
+            activeWeight = active != null && weights.TryGetValue(active, out float weight) ? weight : 0f;
+            incomingWeight = activeWeight;
+            if (target == null && weights.Count == 0) active = null;
         }
 
 #if UNITY_EDITOR || DEVELOPMENT_BUILD

@@ -105,6 +105,8 @@ _SAFE_STRING_KEYS = {
     "repair_disposition", "code", "generation_stage", "generation_output_state",
     "retrieval_health", "retrieval_error_stage", "retrieval_error_code",
     "memory_realization", "reaction_status",
+    "capacity_source", "counting_method", "episode_compression", "context_owner", "context_kind",
+    "performance_profile", "candidate_cost_method",
 }
 _SAFE_NUMBER_KEYS = {
     "turn_id", "playback_id", "chunk_index", "pid", "unity_pid", "frame",
@@ -116,6 +118,15 @@ _SAFE_NUMBER_KEYS = {
     "ptt_post_release_age_seconds", "seed", "temperature", "top_p", "top_k",
     "min_p", "presence_penalty", "repeat_penalty",
     "context_hygiene_candidates", "context_hygiene_suppressed",
+    "capacity_tokens", "output_reserve_tokens", "framing_reserve_tokens", "input_budget_tokens",
+    "mandatory_tokens", "continuity_budget_tokens", "final_tokens", "headroom_tokens", "tokenizer_calls",
+    "recent_messages", "recent_exchanges", "recent_characters", "dropped_count", "duplicate_items",
+    "temporal_duplicate_removed", "temporal_duplicate_characters", "hygiene_suppressed", "hygiene_removed_characters",
+    "history_assistant_count", "history_leading_action_count", "history_closing_question_count", "history_long_reply_count",
+    "estimated_tokens", "source_count",
+    "final_request_characters",
+    "operating_target_tokens", "effective_target_tokens", "target_headroom_tokens",
+    "verification_corrections", "tokenizer_ms", "planning_ms", "context_preparation_ms", "episode_selection_ms",
     "context_hygiene_assistant_only_suppressed", "exchange_candidates",
     "exchange_pairs_suppressed",
     "context_hygiene_user_echo_count", "context_hygiene_self_redundancy_count",
@@ -163,6 +174,8 @@ _SAFE_NUMBER_KEYS = {
     "memory_supported_slots", "memory_missing_slots", "memory_unavailable_slots",
 }
 _SAFE_BOOL_KEYS = {
+    "memory_contained", "history_work_ceiling_reached",
+    "mandatory_above_target",
     "active", "generating", "synthesizing", "playing", "loaded", "listening",
     "transcribing", "cancelled", "streamed",
     "ptt_worker_alive", "ptt_recording", "ptt_listening", "ptt_transcribing",

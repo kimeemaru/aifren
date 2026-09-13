@@ -13,6 +13,7 @@ import json
 import os
 import time
 import uuid
+from contextvars import ContextVar
 from datetime import datetime
 from dataclasses import dataclass, field
 from collections import deque
@@ -23,7 +24,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from assistant_service import AssistantEvent, AssistantService, canonical_message_identity
-from character_registry import CharacterRegistry, CharacterRegistryError
+from character_registry import CharacterRegistry, CharacterRegistryError, CharacterStorageError
 from development_flight_recorder import development_flight_recorder, valid_capture_id
 from local_model_runtime import LocalModelRuntime
 from runtime_layout import initialize_data_root, resolve_runtime_roots
@@ -121,6 +122,11 @@ class AIFrenWebSocketHost:
         self._console_lines: deque[str] = deque(maxlen=250)
         self._diagnostic_log_path = self.application_dir / "logs" / "runtime_diagnostics.log"
         self._character_registry: Optional[CharacterRegistry] = None
+        self._character_operations = None
+        self._command_request_id = ContextVar("command_request_id", default="")
+        self._character_generation = 0
+        self._character_switching = False
+        self._command_owner = ContextVar("character_command_owner", default=None)
         self._local_model_runtime: Optional[LocalModelRuntime] = local_model_runtime
         self._local_model_tasks: set[asyncio.Task] = set()
         self._model_operation: _ModelOperation | None = None
@@ -185,7 +191,7 @@ class AIFrenWebSocketHost:
         self._character_registry = CharacterRegistry(self.application_dir)
 
         if self._service is None:
-            self._service = self._service_factory()
+            self._service = self._create_service_or_management()
 
         self._loop = asyncio.get_running_loop()
         self._shutdown_requested = asyncio.Event()
@@ -295,6 +301,17 @@ class AIFrenWebSocketHost:
                         self._log(f"PTT disconnect release failed: {type(error).__name__}")
 
     async def _handle_command(self, websocket, raw_message: Any) -> None:
+        # Async command tasks inherit their immutable request owner. A delayed
+        # failure must not be relabelled as belonging to a later selection.
+        token = self._command_owner.set(None)
+        request_token = self._command_request_id.set("")
+        try:
+            await self._dispatch_command(websocket, raw_message)
+        finally:
+            self._command_owner.reset(token)
+            self._command_request_id.reset(request_token)
+
+    async def _dispatch_command(self, websocket, raw_message: Any) -> None:
         if not isinstance(raw_message, str):
             await self._send_command_error(
                 websocket,
@@ -321,10 +338,36 @@ class AIFrenWebSocketHost:
             )
             return
 
+        request_id = command_data.get("request_id")
+        if isinstance(request_id, str) and len(request_id) <= 128:
+            self._command_request_id.set(request_id)
         command = command_data.get("command")
         if self._stopping:
             await self._send_command_error(websocket, "backend_stopping", "Backend is shutting down.")
             return
+
+        binding = {}
+        if command in {"submit_text", "continuity_control", "memory_view_query",
+                       "memory_view_detail", "memory_view_mutate", "ptt_press",
+                       "ptt_release", "stop_tts"}:
+            self._command_owner.set({
+                "character_id": str(command_data.get("character_id") or ""),
+                "character_session": str(command_data.get("character_session") or ""),
+                "character_generation": self._character_generation,
+            })
+            checker = getattr(self.service, "require_character_binding", None)
+            if callable(checker):
+                try:
+                    if self._character_switching:
+                        raise RuntimeError("Character selection is changing. Wait for its snapshot.")
+                    checker(command_data.get("character_id"), command_data.get("character_session"))
+                    binding = {"character_id": command_data["character_id"],
+                               "character_session": command_data["character_session"]}
+                except RuntimeError as error:
+                    await self._send_command_error(websocket, "stale_character_control", str(error))
+                    return
+
+        reply_owner = {**binding, "character_generation": self._character_generation}
 
         if command == "development_flight_recorder_start":
             unity_pid = command_data.get("unity_pid")
@@ -454,7 +497,7 @@ class AIFrenWebSocketHost:
                         "warning": f"Memory Viewer failed safely ({type(error).__name__}).",
                     }
             await self._send_json(websocket, {
-                "type": "event", "event": {"type": "memory_view_page", "data": {
+                "type": "event", **reply_owner, "event": {"type": "memory_view_page", "data": {
                     "request_id": request_id, "memory_page": page,
                 }},
             })
@@ -516,7 +559,7 @@ class AIFrenWebSocketHost:
                         "warning": f"Memory detail failed safely ({type(error).__name__}).",
                     }
             await self._send_json(websocket, {
-                "type": "event", "event": {"type": "memory_view_detail", "data": {
+                "type": "event", **reply_owner, "event": {"type": "memory_view_detail", "data": {
                     "request_id": request_id, "memory_detail": detail,
                 }},
             })
@@ -558,6 +601,7 @@ class AIFrenWebSocketHost:
                         mutation, character_id=character_id, action=action,
                         record_id=record_id, content=content, category=category,
                         importance=importance, command_id=command_id,
+                        **({"character_session": binding["character_session"]} if binding else {}),
                     )
                 except Exception as error:
                     result = {
@@ -567,7 +611,7 @@ class AIFrenWebSocketHost:
             result = dict(result)
             result.update(request_id=request_id, command_id=command_id, character_id=character_id)
             await self._send_json(websocket, {
-                "type": "event", "event": {
+                "type": "event", **reply_owner, "event": {
                     "type": "memory_view_mutation_result", "data": result,
                 },
             })
@@ -596,7 +640,7 @@ class AIFrenWebSocketHost:
                     command_id=command_id,
                     action=action,
                     expected_revision=expected_revision,
-                    action_token=action_token,
+                    action_token=action_token, **binding,
                 ))
                 self._turn_tasks.add(task)
                 task.add_done_callback(self._turn_tasks.discard)
@@ -607,7 +651,7 @@ class AIFrenWebSocketHost:
                     command_id=command_id,
                     action=action,
                     expected_revision=expected_revision,
-                    action_token=action_token,
+                    action_token=action_token, **binding,
                 )
             except ValueError as error:
                 await self._send_command_error(websocket, "invalid_continuity_control", str(error))
@@ -616,7 +660,7 @@ class AIFrenWebSocketHost:
                 await self._send_command_error(websocket, "stale_continuity_control", str(error))
                 return
             await self._send_json(websocket, {
-                "type": "event",
+                "type": "event", **reply_owner,
                 "event": {"type": "continuity_control_result", "data": self._json_safe(result)},
             })
             return
@@ -639,11 +683,45 @@ class AIFrenWebSocketHost:
                 )
                 return
             try:
-                self._registry().create(display_name, personality=personality)
-            except CharacterRegistryError as error:
-                await self._send_command_error(websocket, "character_create_failed", str(error))
+                created = self._registry().create(display_name, personality=personality, request_id=self._command_request_id.get())
+            except (CharacterRegistryError,OSError) as error:
+                await self._send_command_error(websocket, "character_create_failed", str(error) if isinstance(error,CharacterRegistryError)
+                    else "Character creation could not finish its owned files. Your form is kept; review character status before retrying.")
+                return
+            await self._send_json(websocket, {"type":"event", "event":{"type":"character_created", "data":{
+                "character_id":created.character_id,"display_name":created.display_name,"request_id":self._command_request_id.get()}}})
+            if getattr(self.service, "storage_unavailable", False) and self._registry().active_or_none() == created:
+                # The empty-library shell is a real retired binding. Publish
+                # the same generation transition used by ordinary selection;
+                # a new service at its old generation is correctly rejected
+                # by the client's stale-character fence.
+                await self._select_character(websocket, created.character_id)
                 return
             await self._send_snapshot(websocket)
+            return
+
+        if command in {"character_operation_preview", "character_operation_confirm", "open_character_folder"}:
+            if self._character_switching:
+                await self._send_command_error(websocket,"character_operation_failed","Character selection is changing. Wait for its snapshot.")
+                return
+            try:
+                identity = str(command_data.get("character_id") or "")
+                registry = self._registry()
+                if command == "open_character_folder":
+                    directory = registry.owned_directory(identity)
+                    if not directory.is_dir(): raise CharacterStorageError("Character folder is missing; use storage recovery.")
+                    await self._send_json(websocket,{"type":"event","event":{"type":"character_folder","data":{
+                        "character_id":identity,"folder_path":str(directory)}}})
+                elif command == "character_operation_preview":
+                    await self._prepare_character_operation_preview(identity)
+                    preview = await asyncio.to_thread(self._operations().preview,identity,str(command_data.get("action") or ""))
+                    await self._send_json(websocket,{"type":"event","event":{"type":"character_operation_preview","data":preview}})
+                else:
+                    await self._confirm_character_operation(websocket,command_data)
+            except (CharacterRegistryError, ValueError, RuntimeError,OSError) as error:
+                await self._send_command_error(websocket,
+                    "character_folder_failed" if command=="open_character_folder" else "character_operation_failed", str(error) if not isinstance(error,OSError)
+                    else "Character storage is unavailable. No completed operation was reported; review its current status.")
             return
 
         if command == "select_character":
@@ -715,13 +793,13 @@ class AIFrenWebSocketHost:
                 )
                 return
 
-            task = asyncio.create_task(self._run_text_turn(text))
+            task = asyncio.create_task(self._run_text_turn(text, **binding))
             self._turn_tasks.add(task)
             task.add_done_callback(self._turn_tasks.discard)
             return
 
         if command == "stop_tts":
-            self.service.stop_speaking()
+            self.service.stop_speaking(interrupted=True)
             return
 
         if command == "ptt_press":
@@ -778,6 +856,47 @@ class AIFrenWebSocketHost:
                 return
 
             self.service.set_tts_volume(volume)
+            return
+
+        if command == "set_companion_preferences":
+            if not self.service.can_reconfigure_model():
+                await self._send_command_error(websocket, "companion_preferences_busy",
+                                               "Wait for the current reply, then save these preferences.")
+                return
+            try:
+                from model_settings import set_companion_preferences
+                preferences = set_companion_preferences(**{key: command_data[key] for key in
+                    ("conversation_style", "responsive_speech", "automatic_expressions") if key in command_data})
+                self.service.apply_companion_preferences(preferences)
+            except (TypeError, ValueError):
+                await self._send_command_error(websocket, "invalid_companion_preferences", "Invalid companion preferences.")
+                return
+            except Exception:
+                await self._send_command_error(websocket, "companion_preferences_failed", "Could not save companion preferences.")
+                return
+            await self._send_json(websocket, {"type": "companion_preferences",
+                                            "data": self.service.companion_preferences_snapshot()})
+            return
+
+        if command == "set_explicit_avatar_cues":
+            enabled = command_data.get("explicit_avatar_cues")
+            if not isinstance(enabled, bool):
+                await self._send_command_error(websocket, "invalid_avatar_cues", "Avatar cues require true or false.")
+                return
+            if not self.service.can_reconfigure_model():
+                await self._send_command_error(websocket, "avatar_cues_busy", "Wait for the current reply, then save avatar cues.")
+                return
+            try:
+                from model_settings import set_explicit_avatar_cues
+                set_explicit_avatar_cues(enabled)
+                self.service.explicit_avatar_cues = enabled
+            except Exception:
+                await self._send_command_error(websocket, "avatar_cues_failed", "Could not save avatar cues.")
+                return
+            # A presentation preference acknowledgement must not reapply a
+            # character snapshot (which owns its own state/face restoration).
+            await self._send_json(websocket, {"type": "avatar_cues_settings",
+                                            "data": {"explicit_avatar_cues": enabled}})
             return
 
         if command == "set_kokoro_early_speech":
@@ -1011,10 +1130,10 @@ class AIFrenWebSocketHost:
             f"Unknown command: {command!r}.",
         )
 
-    async def _run_text_turn(self, text: str) -> None:
+    async def _run_text_turn(self, text: str, **binding) -> None:
         # The service owns turn serialization.  Running it outside the receive
         # loop keeps snapshot, stop, and volume commands responsive.
-        await asyncio.to_thread(self.service.process_text_turn, text)
+        await asyncio.to_thread(self.service.process_text_turn, text, **binding)
 
     async def _run_continuity_control(
         self,
@@ -1024,15 +1143,17 @@ class AIFrenWebSocketHost:
         action: str,
         expected_revision: str,
         action_token: str,
+        **binding,
     ) -> None:
         """Run an immersive scene gesture without blocking socket input."""
+        reply_owner = {**binding, "character_generation": self._character_generation}
         try:
             result = await asyncio.to_thread(
                 self.service.apply_continuity_control,
                 command_id=command_id,
                 action=action,
                 expected_revision=expected_revision,
-                action_token=action_token,
+                action_token=action_token, **binding,
             )
         except ValueError as error:
             await self._send_command_error(websocket, "invalid_continuity_control", str(error))
@@ -1041,7 +1162,7 @@ class AIFrenWebSocketHost:
             await self._send_command_error(websocket, "stale_continuity_control", str(error))
             return
         await self._send_json(websocket, {
-            "type": "event",
+            "type": "event", **reply_owner,
             "event": {"type": "continuity_control_result", "data": self._json_safe(result)},
         })
 
@@ -1148,6 +1269,10 @@ class AIFrenWebSocketHost:
             try:
                 from llm.llm import create_llm
                 self.service.replace_llm(create_llm())
+                if (result.get("ownership") == "managed"
+                        and result.get("active_model") == getattr(self.service.llm, "model", None)):
+                    from llm.local_template import installed_policy_role
+                    self.service.llm.application_policy_role = installed_policy_role(self.service.llm.model)
                 if getattr(getattr(self.service, "llm", None), "is_available", True) is False:
                     raise RuntimeError("Local adapter is unavailable")
                 report = getattr(self.service, "report_model_runtime_available", None)
@@ -1186,21 +1311,122 @@ class AIFrenWebSocketHost:
             self._character_registry = CharacterRegistry(self.application_dir)
         return self._character_registry
 
+    def _create_service_or_management(self):
+        from character_unavailable import CharacterUnavailableService
+        from conversation.conversation import ConversationPersistenceError
+        selected=self._registry().active_or_none()
+        if selected is None:
+            self._status={"state":"character_required","message":"Create a character in Settings > Character."}
+            return CharacterUnavailableService()
+        try:
+            self._registry().assert_storage_ready(selected.character_id)
+            return self._service_factory()
+        except (CharacterStorageError, ConversationPersistenceError) as error:
+            self._status={"state":"storage_unavailable","message":str(error)}
+            return CharacterUnavailableService(selected,str(error))
+        except Exception as error:
+            # A failed provider/runtime setup after maintenance must not revive
+            # the retired service or strand the manager in a switching state.
+            message="The selected character could not start. Its stored data was kept; select it again after resolving the runtime problem."
+            self._log(f"Character runtime setup failed: {type(error).__name__}")
+            self._status={"state":"storage_unavailable","message":message}
+            return CharacterUnavailableService(selected,message)
+
+    def _operations(self):
+        if self._character_operations is None:
+            from character_operations import CharacterOperationService
+            self._character_operations=CharacterOperationService(self._registry())
+        return self._character_operations
+
+    async def _reload_managed_character(self, websocket):
+        if self._unsubscribe is not None: self._unsubscribe()
+        self._service=await asyncio.to_thread(self._create_service_or_management)
+        self._unsubscribe=self.service.subscribe(self._on_service_event)
+        self._voice_state="ready"
+        if not getattr(self.service,"storage_unavailable",False): self._status={"state":"ready","message":"Ready"}
+
+    async def _confirm_character_operation(self, websocket, command):
+        identity=str(command.get("character_id") or "")
+        if self._turn_tasks:
+            raise CharacterStorageError("Wait for the current turn to finish before character maintenance.")
+        await asyncio.to_thread(self._operations().validate_confirmation, token=command.get("token"),
+            character_id=identity,revision=command.get("revision"))
+        active=self._registry().active_or_none()
+        affects_current=active is not None and active.character_id==identity
+        self._character_switching=True
+        self._character_generation+=1
+        target=identity if affects_current else str(getattr(self.service,"character_id","") or "no-character")
+        await self._send_json(websocket,{"type":"event","character_id":target,"character_session":"",
+            "character_generation":self._character_generation,"event":{"type":"character_switching","data":{}}})
+        proactive=self._proactive_task
+        if proactive is not None:
+            proactive.cancel();await asyncio.gather(proactive,return_exceptions=True);self._proactive_task=None
+        closed=False
+        try:
+            if affects_current:
+                await asyncio.to_thread(self.service.prepare_character_switch)
+                if not await asyncio.to_thread(self.service.wait_for_character_switch_idle,30):
+                    raise CharacterStorageError("Character is still busy. Try again after it stops.")
+                # Even failed retirement must not leave a half-closed service
+                # reachable under the current character label.
+                closed=True
+                await asyncio.to_thread(self.service.close)
+            result=await asyncio.to_thread(self._operations().execute,token=command.get("token"),
+                character_id=identity,revision=command.get("revision"))
+            await self._send_json(websocket,{"type":"event","event":{"type":"character_operation_result","data":result}})
+        finally:
+            try:
+                if closed:
+                    await self._reload_managed_character(websocket)
+            finally:
+                self._character_switching=False
+                await self._send_snapshot(websocket)
+                if proactive is not None and self._running and not self._stopping and not getattr(self.service,"storage_unavailable",False):
+                    self._proactive_task=asyncio.create_task(self._proactive_loop())
+
+    async def _prepare_character_operation_preview(self, identity):
+        # Verify the selected runtime's persisted snapshot before inventory.
+        # A redundant save must not change the file identity and provoke an
+        # idle observer update that invalidates this very review.
+        if str(getattr(self.service,"character_id","")) != identity or getattr(self.service,"storage_unavailable",False):
+            return
+        if self._turn_tasks or getattr(self.service,"character_switch_busy",lambda:False)():
+            raise CharacterStorageError("Wait for the current turn before reviewing character maintenance.")
+        prepare = getattr(self.service,"prepare_character_maintenance",self.service.save)
+        await asyncio.to_thread(prepare)
+
     async def _select_character(self, websocket, character_id: str) -> None:
         """Atomically rebind character-owned state on the existing runtime."""
+        if self._character_switching:
+            await self._send_command_error(websocket, "character_switch_busy", "Character selection is already changing.")
+            return
         registry = self._registry()
         try:
-            previous = registry.active()
+            previous = registry.active_or_none()
             selected = registry.get(character_id)
         except CharacterRegistryError as error:
             await self._send_command_error(websocket, "character_select_failed", str(error))
+            await self._send_snapshot(websocket)
             return
         if selected is None:
             await self._send_command_error(websocket, "unknown_character", "The selected character no longer exists.")
-            return
-        if selected.character_id == previous.character_id:
             await self._send_snapshot(websocket)
             return
+        if (previous is not None and selected.character_id == previous.character_id
+                and not getattr(self.service, "storage_unavailable", False)):
+            await self._send_snapshot(websocket)
+            return
+
+        # Retire outgoing controls before waiting for synthesis/observers.
+        # A failed switch settles back to a fresh snapshot of the old owner.
+        self._character_switching = True
+        self._character_generation += 1
+        await self._send_json(websocket, {
+            "type": "event", "character_id": selected.character_id,
+            "character_session": "", "character_generation": self._character_generation,
+            "event": {"type": "character_switching", "data": {
+                "character_id": selected.character_id, "character_session": "",
+                "character_generation": self._character_generation}}})
 
         proactive_was_running = self._proactive_task is not None
         if self._proactive_task is not None:
@@ -1211,8 +1437,16 @@ class AIFrenWebSocketHost:
         prepare = getattr(self.service, "prepare_character_switch", None)
         wait_idle = getattr(self.service, "wait_for_character_switch_idle", None)
         if callable(prepare):
-            await asyncio.to_thread(prepare)
-            if callable(wait_idle) and not await asyncio.to_thread(wait_idle, 30.0):
+            try:
+                await asyncio.to_thread(prepare)
+                self._voice_state = "ready"
+                idle = not callable(wait_idle) or await asyncio.to_thread(wait_idle, 30.0)
+            except Exception as error:
+                idle = False
+                self._log(f"Character quiescence failed: {type(error).__name__}")
+            if not idle:
+                self._character_switching = False
+                await self._send_snapshot(websocket)
                 if proactive_was_running and self._running and not self._stopping:
                     self._proactive_task = asyncio.create_task(self._proactive_loop())
                 await self._send_command_error(
@@ -1227,6 +1461,8 @@ class AIFrenWebSocketHost:
         else:
             busy = getattr(self.service, "character_switch_busy", None)
             if self._turn_tasks or (callable(busy) and busy()):
+                self._character_switching = False
+                await self._send_snapshot(websocket)
                 if proactive_was_running and self._running and not self._stopping:
                     self._proactive_task = asyncio.create_task(self._proactive_loop())
                 await self._send_command_error(
@@ -1236,7 +1472,6 @@ class AIFrenWebSocketHost:
                 return
 
         try:
-            registry.select(selected.character_id)
             switch_state = getattr(self.service, "switch_character_state", None)
             if callable(switch_state):
                 await asyncio.to_thread(
@@ -1245,15 +1480,20 @@ class AIFrenWebSocketHost:
                     display_name=selected.display_name,
                     runtime_paths=registry.runtime_paths(selected.character_id),
                     application_dir=self.application_dir,
+                    publish_selection=lambda: registry.select(selected.character_id),
                 )
                 replacement = None
             else:
+                registry.select(selected.character_id)
                 # Compatibility seam for injected alternate/test services.
-                replacement = await asyncio.to_thread(self._service_factory)
+                replacement = await asyncio.to_thread(self._create_service_or_management)
         except Exception as error:
             # Preserve the already-running service and revert the durable
             # selection if a replacement cannot initialize.
-            registry.select(previous.character_id)
+            if previous is not None and str(getattr(self.service, "character_id", previous.character_id)) == previous.character_id:
+                registry.select(previous.character_id)
+            self._character_switching = False
+            await self._send_snapshot(websocket)
             self._log(f"Character switch failed: {type(error).__name__}")
             await self._send_command_error(websocket, "character_switch_failed", "Could not load the selected character.")
             if proactive_was_running and self._running and not self._stopping:
@@ -1270,7 +1510,10 @@ class AIFrenWebSocketHost:
             except Exception as error:
                 self._log(f"Retired character service cleanup failed: {type(error).__name__}")
 
-        self._status = {"state": "ready", "message": "Ready"}
+        self._character_switching = False
+        self._voice_state = "ready"
+        if not getattr(self.service, "storage_unavailable", False):
+            self._status = {"state": "ready", "message": "Ready"}
         self._provider_ready_at = None
         self._frontend_snapshot_ready_at = None
         self._log("Character switched.")
@@ -1279,6 +1522,12 @@ class AIFrenWebSocketHost:
             self._proactive_task = asyncio.create_task(self._proactive_loop())
 
     def _on_service_event(self, event: AssistantEvent) -> None:
+        if self._character_switching:
+            return
+        if isinstance(event.data, dict) and event.data.get("character_session"):
+            current = getattr(self.service, "character_binding", lambda: {})()
+            if any(event.data.get(key) != current.get(key) for key in ("character_id", "character_session")):
+                return
         development_flight_recorder().observe_service_event(
             event.type, event.data if isinstance(event.data, dict) else None
         )
@@ -1303,6 +1552,7 @@ class AIFrenWebSocketHost:
 
         message = {
             "type": "event",
+            **self._binding_envelope(event.data),
             "event": {
                 "type": event.type,
                 "data": self._json_safe(event.data),
@@ -1367,6 +1617,8 @@ class AIFrenWebSocketHost:
         self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self._broadcast(message)))
 
     async def _send_snapshot(self, websocket) -> None:
+        if self._character_switching:
+            return
         if self._frontend_snapshot_ready_at is None and websocket is self._client:
             # The snapshot can now be constructed and sent on the live
             # transport. Start the product grace from this readiness boundary,
@@ -1391,13 +1643,16 @@ class AIFrenWebSocketHost:
             for key in ("name", "description", "avatar")
             if isinstance(character, dict) and character.get(key) is not None
         }
-        active_character = self._registry().active()
-        identity["character_id"] = active_character.character_id
+        active_character = self._registry().active_or_none()
+        identity["character_id"] = str(getattr(self.service, "character_id", "") or character.get("_character_id") or (active_character.character_id if active_character else "no-character"))
         characters = [
             {
                 "character_id": item.character_id,
                 "display_name": item.display_name,
-                "is_active": item.character_id == active_character.character_id,
+                "is_active": active_character is not None and item.character_id == active_character.character_id,
+                "storage_layout": item.storage_layout, "storage_status": item.storage_status,
+                "timeline_generation": item.timeline_generation, "has_retained_copy":bool(item.migration_source),
+                "operation_kind":str((item.operation or {}).get("kind") or ""),
             }
             for item in self._registry().list_characters()
         ]
@@ -1412,11 +1667,15 @@ class AIFrenWebSocketHost:
             websocket,
             {
                 "type": "snapshot",
+                **self._binding_envelope(),
                 "data": {
-                    "transport_version": 8,
+                    **self._binding_envelope(),
+                    "transport_version": 9,
                     "conversation": conversation,
                     "character": identity,
                     "characters": characters,
+                    "registry_revision": self._registry().revision,
+                    "storage_unavailable":bool(getattr(self.service,"storage_unavailable",False)),
                     "status": dict(self._status),
                     "voice": self._voice_snapshot(),
                     "tts": {"volume": volume, **self._tts_snapshot()},
@@ -1480,6 +1739,9 @@ class AIFrenWebSocketHost:
         posture_mode = capability_rows.get(("posture", "posture"), "")
         return {
             "proactive_behavior": enabled,
+            "explicit_avatar_cues": bool(getattr(self.service, "explicit_avatar_cues", False)),
+            **(self.service.companion_preferences_snapshot()
+               if callable(getattr(self.service, "companion_preferences_snapshot", None)) else {}),
             "proactive_interval_seconds": interval_seconds,
             "proactive_eligibility": (
                 str(eligibility.outcome)[:80] if eligibility is not None else gate_outcome
@@ -1657,6 +1919,12 @@ class AIFrenWebSocketHost:
             "global_listener": bool(listener_active()) if callable(listener_active) else False,
         }
 
+    def _binding_envelope(self, captured=None) -> dict[str, Any]:
+        owner = getattr(self.service, "character_binding", lambda: {})()
+        if isinstance(captured, dict):
+            owner = {**owner, **{key: captured[key] for key in ("character_id", "character_session") if key in captured}}
+        return {**owner, "character_generation": self._character_generation}
+
     async def _broadcast(self, message: dict[str, Any]) -> None:
         if self._client is not None:
             await self._send_json(self._client, message)
@@ -1666,7 +1934,8 @@ class AIFrenWebSocketHost:
             websocket,
             {
                 "type": "command_error",
-                "error": {"code": code, "message": message},
+                **(self._command_owner.get() or {}),
+                "error": {"code": code, "message": message, "request_id":self._command_request_id.get()},
             },
         )
 

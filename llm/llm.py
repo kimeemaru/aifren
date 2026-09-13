@@ -37,13 +37,17 @@ def create_llm():
         if not settings["local_endpoint"] or not settings["local_model"]:
             return UnavailableLLM(MODEL_CONFIGURATION_MESSAGE)
         try:
-            from config import LOCAL_LLM_CONTEXT_CHAR_BUDGET
+            from config import LOCAL_LLM_CONTEXT_CHAR_BUDGET, LOCAL_LLM_CONTEXT_SIZE, CONTEXT_OPERATING_TARGET_TOKENS
             sampling_preset, sampling_options = _local_sampling_configuration(settings["local_model"])
             return OpenAICompatibleLLM(
                 api_key=settings["local_api_key"], base_url=settings["local_endpoint"], model=settings["local_model"],
                 context_budget_chars=LOCAL_LLM_CONTEXT_CHAR_BUDGET,
+                context_capacity_tokens=LOCAL_LLM_CONTEXT_SIZE,
+                context_operating_target_tokens=CONTEXT_OPERATING_TARGET_TOKENS,
+                local_tokenizer=True,
                 fresh_request_seeds=True,
                 companion_memory_realization=True,
+                local_presentation=True,
                 sampling_preset=sampling_preset, sampling_options=sampling_options,
             )
         except (RuntimeError, ValueError):

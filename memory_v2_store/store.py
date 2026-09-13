@@ -13,6 +13,7 @@ import struct
 from typing import Any, Iterable, Iterator, Optional
 import uuid
 
+from character_storage_runtime import continuity_close_scope, continuity_write_scope
 from .durable_contract import (
     DURABLE_ASSERTION_SCOPE,
     DURABLE_CORE_FACT,
@@ -1172,6 +1173,28 @@ class MemoryV2Store:
         seen_set_identities: set[tuple[object, ...]] = set()
         with self.transaction():
             scope_id = self._write_truth_scope_id(character_id, truth_scope_id)
+            # A relabel is a clear/set pair for one already located object.
+            # Prove retained loci before the first mutation closes that row;
+            # a later operation may not borrow a locus created by this batch.
+            # Identity includes character, scope, actor/scene target, object,
+            # literal locus and predicate, so another relation cannot supply it.
+            for proposal in validated:
+                if proposal.locus is None:
+                    continue
+                target = refs.get(proposal.target, proposal.target)
+                cause_subject_id = (
+                    refs.get(proposal.cause_subject_ref, proposal.cause_subject_ref)
+                    if proposal.cause_subject_ref is not None else None
+                )
+                prior = self.connection.execute(
+                    """SELECT 1 FROM active_scene_relations WHERE character_id=? AND truth_scope_id=?
+                       AND target_kind=? AND target_actor=? AND cause_subject_id=? AND locus=?
+                       AND predicate=? AND valid_to_us IS NULL LIMIT 1""",
+                    (character_id, scope_id, proposal.target_kind, target, cause_subject_id,
+                     proposal.locus, proposal.predicate),
+                ).fetchone()
+                if prior is None and proposal.locus not in content[proposal.excerpt_start_cp:proposal.excerpt_end_cp]:
+                    raise StoreError("relation locus is not literal source evidence")
             touched_subjects: set[str] = set()
             for proposal_index, proposal in enumerate(validated):
                 target = refs.get(proposal.target, proposal.target)
@@ -1187,18 +1210,6 @@ class MemoryV2Store:
                     character_id, cause_subject_id, effective_at_us, scope_id,
                 ):
                     raise StoreError("scene relation object is not a current scoped subject")
-                if proposal.locus is not None:
-                    prior = self.connection.execute(
-                        """SELECT 1 FROM active_scene_relations WHERE character_id=? AND truth_scope_id=?
-                           AND target_kind=? AND target_actor=? AND cause_subject_id=? AND locus=?
-                           AND predicate=? AND valid_to_us IS NULL LIMIT 1""",
-                        (character_id, scope_id, proposal.target_kind, target, cause_subject_id,
-                         proposal.locus, proposal.predicate),
-                    ).fetchone()
-                    # Attribute relabels and cause-specific clears can retain
-                    # an already evidenced locus; an establishment must cite it.
-                    if prior is None and proposal.locus not in content[proposal.excerpt_start_cp:proposal.excerpt_end_cp]:
-                        raise StoreError("relation locus is not literal source evidence")
                 if proposal.target_kind == "scene":
                     touched_subjects.add(target)
                 if cause_subject_id is not None:
@@ -1433,23 +1444,25 @@ class MemoryV2Store:
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
-        # Active-state proposals validate multiple slot updates up front and
-        # apply them as one transaction. Existing single-operation methods may
-        # therefore be safely reused inside that outer transaction.
-        if self.connection.in_transaction:
-            yield
-            return
-        self.connection.execute("BEGIN IMMEDIATE")
-        try:
-            yield
-        except Exception:
-            self.connection.execute("ROLLBACK")
-            raise
-        else:
-            self.connection.execute("COMMIT")
+        with continuity_write_scope(self):
+            # Active-state proposals validate multiple slot updates up front and
+            # apply them as one transaction. Existing single-operation methods may
+            # therefore be safely reused inside that outer transaction.
+            if self.connection.in_transaction:
+                yield
+                return
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except Exception:
+                self.connection.execute("ROLLBACK")
+                raise
+            else:
+                self.connection.execute("COMMIT")
 
     def close(self) -> None:
-        self.connection.close()
+        with continuity_close_scope(self):
+            self.connection.close()
 
     def schema_version(self) -> int:
         return int(self.connection.execute("SELECT value FROM database_meta WHERE key = 'schema_version'").fetchone()[0])

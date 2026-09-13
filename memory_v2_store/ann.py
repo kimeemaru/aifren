@@ -41,7 +41,9 @@ class HnswClaimIndex:
         self.directory = None if store.path == ":memory:" else Path(store.path).resolve().parent / "ann_index"
         self.index_path = self.directory / f"{digest}.hnsw" if self.directory else None
         self.meta_path = self.directory / f"{digest}.json" if self.directory else None
-        self.cache_key = f"{store.path}|{id(store) if store.path == ':memory:' else ''}|{digest}"
+        epoch = store.connection.execute("SELECT value FROM database_meta WHERE key='timeline_generation'").fetchone()
+        generation = str(epoch[0]) if epoch is not None else "legacy"
+        self.cache_key = f"{store.path}|{id(store) if store.path == ':memory:' else ''}|{generation}|{digest}"
 
     def _library(self):
         try:

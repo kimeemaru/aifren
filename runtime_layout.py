@@ -118,7 +118,10 @@ def initialize_data_root(data_root: Path, seed_data_root: Path | None = None) ->
     """Create a writable root and copy only absent package seed records into it."""
     data_root = absolute_path(data_root)
     data_root.mkdir(parents=True, exist_ok=True)
-    if seed_data_root is None:
+    if seed_data_root is None or (data_root / "characters" / "registry.json").exists():
+        # Seed only a first installation. A persisted registry (including an
+        # intentionally empty one) owns its timelines; missing reset/deleted
+        # files must never be revived from package seeds.
         return data_root
     seed_data_root = absolute_path(seed_data_root)
     if not seed_data_root.is_dir():

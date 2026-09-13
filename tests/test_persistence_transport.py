@@ -74,7 +74,8 @@ class PersistenceTransportTests(unittest.IsolatedAsyncioTestCase):
         return json.loads(await asyncio.wait_for(self.client.recv(), timeout=2))
 
     async def submit(self, text):
-        await self.client.send(json.dumps({"command": "submit_text", "text": text}))
+        await self.client.send(json.dumps({"command": "submit_text", "text": text,
+                                           **self.service.character_binding()}))
         events = []
         for _ in range(50):
             message = await self.receive()

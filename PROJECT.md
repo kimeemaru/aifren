@@ -1,68 +1,76 @@
 # AIFren project direction
 
-## Current authority
+## Current technical baseline
 
-Memory V2 is the normal prompt-facing long-term-memory authority. It admits
-canonical-source-grounded history and maintains governed facts/corrections,
-episodes, Truth Scope, Open Threads and Active State. Normal V2 operation is
-independent of V1 prompt memory, learned-memory writes and summary writes.
-CompanionMemoryRealizer is the normal local-provider surface owner for admitted
-memory answers. Optional model reactions are non-authoritative and dispensable.
+AIFren is a local-first companion with permanent conversation and separately
+owned memory, current state, and presentation. It remains pre-1.0 software.
 
-Memory V1 remains temporary, explicit one-launch rollback/compatibility. V2
-startup or lookup failure never silently switches authority. Canonical dialogue
-remains permanent source evidence; neither version replaces the raw archive.
+Memory V2 is normal long-term-memory authority: canonical-source history,
+durable facts/corrections, episodes, Active State, Open Threads and Truth Scope.
+Normal operation is V1-independent. V1 is temporary explicit one-launch rollback,
+with no normal V2 prompt or learned-memory/summary writes and no silent fallback.
+CompanionMemoryRealizer owns the surface of admitted answers. Optional present
+commentary is non-authoritative and dispensable.
 
-## Product direction
+The responsive Context Governor budgets the whole request: required authority,
+immediate complete exchanges, admitted current continuity, older exchanges, then
+optional context. Its local working target is separate from model capacity.
 
-AIFren is a local-first, continuing companion, not a disposable chat session.
-**Persist the facts that matter; infer the experience.**
-**Context is for reasoning. Active State is for continuity.**
+The normal Unity player has responsive committed speech, selectable Natural /
+Roleplay delivery, opt-in ACT cues and optional CPU expressions. Automatic faces
+are temporary response-owned overlays. Settings use Save/Cancel; they do not edit
+personality or history. See [delivery controls](docs/NATURAL_COMPANION_DESIGN.md).
 
-Identity, authored personality, dialogue, learned facts, current scene, visual
-assets and voice are separate. Models and presentation implementations can change
-without creating a new character timeline. Corrections retain their provenance
-and history; they do not rewrite old conversations.
+New characters own their continuity directory and database. Settings > Character >
+Manage provides storage status, open folder, reviewed selected-character migration
+and retained-copy cleanup, Reset timeline and Delete. UUID/revision-bound
+confirmation and resumable operation journals protect ownership. Framing is
+character/asset/orientation specific. Shared assets remain independently owned.
 
-## Implemented technical baseline
+Generic object/locus application, scene controls and capability causes retain
+backend authority. History and Memory Viewer/Editor are implemented. Named-topic
+personal past-value questions now use source-grounded recall after restart;
+ambiguous references clarify. Expired one-turn anchors are not restored.
 
-- Source-grounded historical recall with speaker, scope, polarity and modality
-  checks; current versus historical values and bounded before/after ordering.
-- Exact-source immediate attribute follow-ups that cannot borrow an unrelated
-  source just because it contains the requested kind of detail.
-- Durable personal facts, correction/supersession history, source-ranged episodes,
-  scoped Open Threads and sparse Active State.
-- Incremental observation/recovery and derived MiniLM/FTS/ANN retrieval. An
-  unresolved historical operation stays visible without unsafe replay or idle spin.
-- CompanionMemoryRealizer: concise grounded prose plus an optional safe present
-  reaction, without an extra inference or repair for a rejected reaction.
-- Unity direct VRM rendering, independent portrait/landscape framing, hidden
-  speech subtitles with word fades/color, paged History, Memory Viewer/Editor,
-  and a Current Scene drawer with backend-owned cause-specific removal.
-- Provider-neutral local/online operation, bounded synthesis cancellation,
-  final-response ownership and isolated Development diagnostics/tests.
+## Known limits
 
-This is pre-1.0 software. Technical validation does not imply human subjective
-acceptance, universal model quality or finished cross-platform distribution.
+- Intermittent blank History/Memory panels after reset and live switching remain
+  unresolved. Synthetic reset/switch checks pass; restart recovery does not prove
+  the reported live refresh issue fixed. Character/session fences remain enabled.
+- Natural delivery can still be verbose, include roleplay openings or append
+  unnecessary questions. Ordinary free dialogue is not generally semantically
+  verified. Governed memory has a stricter admission boundary.
+- Optional memory commentary uses closed present speech acts and narrow reaction
+  compatibility; it is not unrestricted personality generation.
+- Automatic emotion classification is conservative and may abstain or misread
+  tone. ACT syntax compliance does not establish good emotional selection.
+- CPU speech starts from an opening unit after commitment. Native synthesis in
+  flight cannot be forcibly preempted; replacement may wait for that unit.
+- Recent Pulse and lean experiments stay disabled; impulses are dormant with no
+  automatic producers. Relationship State is not implemented.
+
+## Release-candidate retirement gate
+
+Before retiring V1 runtime/rollback/import/rolling-summary code and one-time
+legacy shared-store migration/cleanup tools, verify retained development data and
+outstanding application copies are handled. Migration is not proof of retained-copy
+cleanup. Cleanup is not confirmed merely by this source update.
+
+Retirement requires a separate reviewed change. Preserve canonical history, valid
+V1-origin records already admitted to V2, ordinary Reset/Delete, continuing
+operation recovery and future V2 schema upgrades. No live-data cleanup or migration
+is performed by this catch-up.
 
 ## Next work
 
-1. Companion feel and passive continuity within existing authority boundaries.
-2. Avatar, animation and audio presentation polish.
-3. Character/avatar management and user-controlled backup/export.
-4. Windows validation and packaging/distribution.
-5. 1.0 durability, usability and performance hardening.
-6. Later Relationship State and explicitly controlled external capabilities.
+1. Resolve demonstrated continuity/refresh defects and improve companion feel.
+2. Polish avatar, animation, speech and audio presentation.
+3. Finish character/avatar backup and export workflows.
+4. Windows and distribution packaging.
+5. Release-candidate hardening and the retirement gate above.
+6. Later Relationship State and controlled external capabilities.
 
-This roadmap is not automatic authorization to implement another stage. Active
-State is current reality, not biography or Relationship State. AIFren is not a
-physics, inventory, anatomy, pathfinding or general autonomous world simulator.
-
-## Development contract
-
-Use synthetic data for correctness QA. Test the same service and normal client
-owners; never depend on another developer's characters, model caches or assets.
-Keep code/tests, generated results and subjective experience review distinct.
-Preserve canonical records, current corrections, settings and imported originals.
-See [ARCHITECTURE.md](ARCHITECTURE.md), [design decisions](docs/DESIGN_DECISIONS.md)
-and the [developer guide](docs/DEVELOPER_GUIDE.md).
+Development continues in this public repository as one application codebase.
+Ship reviewed source, synthetic regressions and necessary docs together; see
+[the developer guide](docs/DEVELOPER_GUIDE.md). This status does not claim human
+subjective acceptance, universal grounding or a consumer 1.0 release.

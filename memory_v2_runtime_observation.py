@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from contextlib import contextmanager
 from pathlib import Path
 import uuid
@@ -46,11 +47,14 @@ class CanonicalObservationRecovery:
         self.character_id = writer.character_id
         path = Path(conversation.conversation_file).resolve()
         relative = path.relative_to(writer.application_dir)
-        self.source_key = hashlib.sha256(relative.as_posix().encode()).hexdigest()
+        self.source_key = hashlib.sha256((getattr(writer, "source_namespace", None) or relative.as_posix()).encode()).hexdigest()
         self.last_status = {}
         self._completed_signature = None
         self.embedding_provider_getter = lambda: None
         self.last_embedding_work = {"embedded": 0, "failed": 0}
+        self.last_lookup_embedding_work = {
+            "attempted": False, "embedded": 0, "failed": 0, "duration_ms": 0.0,
+        }
 
     def _missing_embedding_ids(self, provider, *, limit):
         if provider is None:
@@ -76,7 +80,7 @@ class CanonicalObservationRecovery:
         return tuple(str(row[0]) for row in rows)
 
     def maintain_embeddings(self, provider):
-        """Idle-only bounded derived work; per-claim vector identity is progress."""
+        """One bounded derived page; per-claim vector identity is progress."""
         from memory_v2_store.embeddings import EmbeddingLifecycle
         identifiers = self._missing_embedding_ids(provider, limit=PAGE_RECORDS)
         if not identifiers:
@@ -85,6 +89,35 @@ class CanonicalObservationRecovery:
         self.last_embedding_work = EmbeddingLifecycle(self.store, provider).rebuild_claims(
             identifiers, character_id=self.character_id, report_health=False,
         )
+
+    def prepare_lookup(self, decision):
+        """Serve one due vector page before an explicit lookup under turn ownership.
+
+        Consecutive published questions need not wait for the next idle tick.
+        This does not replay source observers, build episodes, or declare a
+        partial index complete. Remaining work and failures retain their exact
+        lookup-health distinction, including when proving an absence.
+        """
+        self.last_lookup_embedding_work = {
+            "attempted": False, "embedded": 0, "failed": 0, "duration_ms": 0.0,
+        }
+        health, current_complete = self.lookup_health(decision)
+        if (not any(lane.lane == "semantic" and lane.error_code == "embedding_not_current"
+                    for lane in health.lanes)
+                or any(lane.lane == "observation" and lane.state != "complete"
+                       for lane in health.lanes)):
+            return health, current_complete
+        provider = self.embedding_provider_getter()
+        started = time.perf_counter()
+        try:
+            self.maintain_embeddings(provider)
+        except Exception:
+            self.last_embedding_work = {"embedded": 0, "failed": 1}
+        self.last_lookup_embedding_work = {
+            "attempted": True, **self.last_embedding_work,
+            "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+        }
+        return self.lookup_health(decision)
 
     def lookup_health(self, decision):
         """Compose existing query ownership with source/projection execution state."""

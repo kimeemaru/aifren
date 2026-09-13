@@ -130,7 +130,7 @@ class CharacterSwitchOwnershipTests(unittest.TestCase):
         def generate(context, prompt):
             # Memory processing is a separate pre-existing inference owner.
             if "AUTHORITATIVE RESPONSE FORMAT" not in prompt: return "[]"
-            calls.append(prompt)
+            calls.append(prompt + "\n" + "\n".join(m["content"] for m in context))
             return response
         self.service.llm.generate = generate
         self._turn("Hello there.")

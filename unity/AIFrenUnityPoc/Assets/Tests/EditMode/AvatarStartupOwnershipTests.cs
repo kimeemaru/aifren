@@ -46,6 +46,8 @@ namespace AIFren.UnityPoc.Tests.EditMode
             Set("statusDetailLabel", Child<TextMeshProUGUI>("detail label"));
             Set("messageInput", Child<TMP_InputField>("input"));
             Set("sendButton", Child<Button>("send"));
+            foreach (string name in new[] { "memoryViewerLaneButton", "memoryViewerStatusButton", "memoryViewerScopeButton" })
+                Set(name, Child<Button>(name));
             prefab = GameObject.CreatePrimitive(PrimitiveType.Cube);
             prefab.SetActive(false);
             loader.BundledForTesting = () => prefab;
@@ -181,6 +183,160 @@ namespace AIFren.UnityPoc.Tests.EditMode
             Assert.That(loader.ActiveModelPath, Is.EqualTo("Bundled model"));
             Assert.That(loader.ActiveAvatar, Is.Not.Null);
         }
+
+        [Test]
+        public void SharedBundledAvatarRestoresEachCharactersOwnFraming()
+        {
+            Set("avatarPresentationState", AvatarPresentationState.Load(new AvatarConfiguration()));
+            CharacterAvatarPreference.SetBundled(character);
+            CharacterAvatarPreference.SetBundled(secondCharacter);
+            Invoke(controller, "RequestCharacterAvatarPreference", character);
+            Framing().SetValues(true, new AvatarPresentationValues { x = .35f, y = -.1f, scale = 1.8f }, true);
+            Set("activeCharacterId", secondCharacter);
+            Invoke(controller, "RequestCharacterAvatarPreference", secondCharacter);
+            Assert.That(Framing().GetValues(true).x, Is.EqualTo(0f), "An unsaved character must not inherit the prior character's framing.");
+            Framing().SetValues(true, new AvatarPresentationValues { x = -.4f, y = .2f, scale = 1.3f }, true);
+            Set("activeCharacterId", character);
+            Invoke(controller, "RequestCharacterAvatarPreference", character);
+            Assert.That(Framing().GetValues(true).x, Is.EqualTo(.35f));
+            Assert.That(Framing().GetValues(true).scale, Is.EqualTo(1.8f));
+        }
+
+        [UnityTest]
+        public IEnumerator SwitchStartRetiresPendingAvatarBeforeDestinationSnapshot()
+        {
+            var library = (ManagedAssetLibrary)typeof(AIFrenPocController).GetField(
+                "managedAssetLibrary", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(controller);
+            Assert.That(library.TryImport(WriteModel("pending.vrm"), ManagedAssetLibrary.ModelKind,
+                out ManagedAssetRecord asset, out string error), Is.True, error);
+            CharacterAvatarPreference.SetBundled(character);
+            Invoke(controller, "RequestCharacterAvatarPreference", character);
+            var completion = new TaskCompletionSource<GameObject>();
+            loader.ImportForTesting = _ => completion.Task;
+            Invoke(controller, "RequestManagedAvatarModel", asset, false, true, character);
+            Invoke(controller, "BeginCharacterPresentationTransition");
+            completion.SetResult(GameObject.CreatePrimitive(PrimitiveType.Cube));
+            for (int frame = 0; frame < 10; frame++) yield return null;
+            Assert.That(loader.ActiveModelPath, Is.EqualTo("Bundled model"), "An import completing in the transition gap cannot activate the prior selection.");
+            Assert.That(CharacterAvatarPreference.Resolve(character, library, "").IsBundled, Is.True,
+                "Late visual completion must not write the retired character's preference.");
+        }
+
+        [Test]
+        public void FramingCancelRestoresOnlyItsCapturedDraftWithoutSaving()
+        {
+            CharacterAvatarPreference.SetBundled(character);
+            Invoke(controller, "RequestCharacterAvatarPreference", character);
+            Framing().SetValues(false, new AvatarPresentationValues { x = .2f, scale = 1.5f }, true);
+            BeginFramingEdit();
+            Framing().SetValues(false, new AvatarPresentationValues { x = .6f, scale = 2f }, false);
+            Invoke(controller, "CancelAvatarViewEditor");
+            Assert.That(Framing().GetValues(false).x, Is.EqualTo(.2f));
+            Assert.That(ReloadFraming(character).GetValues(false).x, Is.EqualTo(.2f));
+        }
+
+        [Test]
+        public void FramingSaveCommitsOnlyTheCapturedCharacterAndCurrentLayout()
+        {
+            CharacterAvatarPreference.SetBundled(character);
+            Invoke(controller, "RequestCharacterAvatarPreference", character);
+            BeginFramingEdit();
+            Framing().SetValues(false, new AvatarPresentationValues { x = .6f, scale = 2f }, false);
+            Framing().SetValues(true, new AvatarPresentationValues { x = .8f, scale = 2f }, false);
+            Invoke(controller, "SaveAvatarViewEditor"); // No display override: landscape is the current layout.
+            Assert.That(ReloadFraming(character).GetValues(false).x, Is.EqualTo(.6f));
+            Assert.That(ReloadFraming(character).GetValues(true).x, Is.EqualTo(0f));
+            Assert.That(ReloadFraming(secondCharacter).GetValues(false).x, Is.EqualTo(0f));
+        }
+
+        [Test]
+        public void RetiredEditorSaveCannotWriteTheNextCharacterOrItsOriginalDraft()
+        {
+            CharacterAvatarPreference.SetBundled(character);
+            CharacterAvatarPreference.SetBundled(secondCharacter);
+            Invoke(controller, "RequestCharacterAvatarPreference", character);
+            BeginFramingEdit();
+            Framing().SetValues(false, new AvatarPresentationValues { x = .6f, scale = 2f }, false);
+            Set("activeCharacterId", secondCharacter);
+            Invoke(controller, "RequestCharacterAvatarPreference", secondCharacter);
+            Framing().SetValues(false, new AvatarPresentationValues { x = -.4f, scale = 1.3f }, true);
+            Invoke(controller, "SaveAvatarViewEditor");
+            Assert.That(ReloadFraming(character).GetValues(false).x, Is.EqualTo(0f));
+            Assert.That(ReloadFraming(secondCharacter).GetValues(false).x, Is.EqualTo(-.4f));
+        }
+
+        [Test]
+        public void SameCharacterRebindAfterFailedSwitchRestoresReadyFraming()
+        {
+            CharacterAvatarPreference.SetBundled(character);
+            Invoke(controller, "RequestCharacterAvatarPreference", character);
+            Framing().SetValues(false, new AvatarPresentationValues { x = .4f, scale = 1.5f }, true);
+            Invoke(controller, "BeginCharacterPresentationTransition");
+            Assert.That(loader.ActiveAvatar.activeSelf, Is.False);
+            Set("characterSwitchInFlight", false); // The original owner's new authoritative snapshot settles failure.
+            Invoke(controller, "RequestCharacterAvatarPreference", character);
+            Assert.That(loader.ActiveAvatar.activeSelf, Is.True);
+            Assert.That(Framing().GetValues(false).x, Is.EqualTo(.4f));
+        }
+
+        [Test]
+        public void EmptyLibraryShellRetiresVisualWithoutCreatingCharacterPreferences()
+        {
+            CharacterAvatarPreference.SetBundled(character);
+            Invoke(controller, "RequestCharacterAvatarPreference", character);
+            Set("activeCharacterId", "no-character");
+            Invoke(controller, "RequestCharacterAvatarPreference", "no-character");
+            Assert.That(loader.ActiveAvatar.activeSelf, Is.False);
+            Assert.That(Framing().IsCharacterScoped, Is.False);
+            Assert.That(CharacterAvatarPreference.HasExplicit(character), Is.True);
+            Assert.That(CharacterAvatarPreference.HasExplicit("no-character"), Is.False);
+        }
+
+        [Test]
+        public void StaleExplicitAvatarRequestCannotReachLoaderOrWriteRetiredPreference()
+        {
+            var library = (ManagedAssetLibrary)typeof(AIFrenPocController).GetField(
+                "managedAssetLibrary", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(controller);
+            Assert.That(library.TryImport(WriteModel("retired.vrm"), ManagedAssetLibrary.ModelKind,
+                out ManagedAssetRecord asset, out string error), Is.True, error);
+            CharacterAvatarPreference.SetBundled(character); CharacterAvatarPreference.SetBundled(secondCharacter);
+            Set("activeCharacterId", secondCharacter);
+            Invoke(controller, "RequestCharacterAvatarPreference", secondCharacter);
+            GameObject currentAvatar = loader.ActiveAvatar; AvatarPresentationState currentFraming = Framing();
+            int imports = 0;
+            loader.ImportForTesting = _ => { imports++; return Task.FromResult(GameObject.CreatePrimitive(PrimitiveType.Cube)); };
+            Invoke(controller, "RequestManagedAvatarModel", asset, false, true, character);
+            Invoke(controller, "RequestBundledAvatarModel", true, character);
+            Assert.That(imports, Is.Zero); Assert.That(loader.ActiveAvatar, Is.SameAs(currentAvatar));
+            Assert.That(Framing(), Is.SameAs(currentFraming)); Assert.That(loader.ActiveAvatar.activeSelf, Is.True);
+            Assert.That(CharacterAvatarPreference.Resolve(character, library, "").IsBundled, Is.True);
+        }
+
+        [Test]
+        public void PickerCompletionRequiresOriginalCharacterGenerationAndNoTransition()
+        {
+            Assert.That(AIFrenPocController.IsAvatarPickerCompletionCurrent(3, 3, character, character, false), Is.True);
+            Assert.That(AIFrenPocController.IsAvatarPickerCompletionCurrent(3, 3, character, secondCharacter, false), Is.False);
+            Assert.That(AIFrenPocController.IsAvatarPickerCompletionCurrent(3, 5, character, character, false), Is.False,
+                "Returning to A after B does not restore an old file picker's ownership.");
+            Assert.That(AIFrenPocController.IsAvatarPickerCompletionCurrent(3, 3, character, character, true), Is.False);
+        }
+
+        private AvatarPresentationState ReloadFraming(string owner) => AvatarPresentationState.LoadForCharacter(
+            AvatarConfiguration.Load(), owner, AvatarPresentationState.BundledAssetIdentity(AvatarConfiguration.Load()));
+
+        private void BeginFramingEdit()
+        {
+            Set("avatarViewEditOwner", Framing());
+            Set("avatarViewEditGeneration", (int)typeof(AIFrenPocController).GetField(
+                "modelApplyGeneration", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(controller));
+            Set("avatarViewPortraitSnapshot", Framing().GetValues(true));
+            Set("avatarViewLandscapeSnapshot", Framing().GetValues(false));
+            Set("avatarViewEditing", true);
+        }
+
+        private AvatarPresentationState Framing() => (AvatarPresentationState)typeof(AIFrenPocController)
+            .GetField("avatarPresentationState", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(controller);
 
         private string WriteModel(string name)
         {

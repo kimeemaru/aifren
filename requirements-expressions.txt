@@ -1,0 +1,8 @@
+# Optional automatic facial presentation; Python 3.11+ for this reviewed runtime.
+# Main conversation/TTS do not import these unless the user enables the feature.
+# CPU wheel only. Model data is separately pinned/hash-checked by automatic_expression.py.
+onnxruntime==1.29.0
+tokenizers==0.22.2
+
+# Explicit one-time local conversion of pinned safetensors; not imported by turns.
+onnx==1.19.1

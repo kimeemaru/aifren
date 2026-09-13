@@ -30,6 +30,13 @@ inventory, anatomy, pathfinding, or general world simulator.
 - CompanionMemoryRealizer renders admitted memory answers as ordinary dialogue.
   Optional present-moment model reactions can be dropped without losing the
   grounded answer. V1 remains explicit one-launch rollback/compatibility.
+- Responsive committed speech: playback starts from a prepared opening unit while
+  the rest is synthesized in order. Natural/Roleplay delivery is selectable;
+  ACT preview and automatic CPU expressions are optional, with temporary automatic
+  expression ownership. See [controls and limits](docs/NATURAL_COMPANION_DESIGN.md).
+- Character-local continuity and database storage, confirmed management operations,
+  live switching and per-character/avatar/orientation framing. Settings > Character
+  > Manage includes Reset timeline, Delete and selected legacy-storage migration.
 - A generic current-scene model with actor-aware subjects, attributes,
   relations, corrections, transfers, replacements, locations, and
   current/dormant/retired lifecycle.
@@ -98,12 +105,13 @@ independent, and global UI hide does not resize the avatar.
 
 ## Current status
 
-Memory V2 promotion and the Memory Viewer/Editor are implemented in the current
-technical baseline. This remains pre-1.0 software, without a claim of subjective
-companion acceptance. Companion feel and passive continuity, presentation polish,
-character/avatar management and backup/export, cross-platform packaging, and 1.0
-hardening remain ahead. Relationship State and broader external capabilities are
-later work. Further memory correctness changes should address concrete regressions.
+Memory V2, the responsive Context Governor, Memory Viewer/Editor and character
+management are implemented. Named-topic personal recall after restart now routes
+through source admission. Intermittent blank History/Memory panels after reset and
+switch remain unresolved. Natural-mode quality, automatic acting, CPU synthesis
+cancellation and optional memory commentary have practical limits. This is pre-1.0;
+it does not claim human acceptance or general grounding of ordinary model prose.
+Presentation polish, backup/export, cross-platform packaging and hardening remain.
 
 See [PROJECT.md](PROJECT.md) for current direction,
 [ARCHITECTURE.md](ARCHITECTURE.md) for technical ownership,

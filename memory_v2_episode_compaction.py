@@ -1120,6 +1120,8 @@ class EpisodeContextSelection:
     temporal_result_truncated: bool = False
     temporal_source_ranges: tuple[tuple[int, int], ...] = ()
     compaction_version: int = COMPACTION_VERSION
+    # Exact validated ranges for request planning. Not new truth or retrieval.
+    context_segments: tuple[tuple[int, int, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -4197,6 +4199,8 @@ class EpisodeCompactionCache:
         )
         return EpisodeContextSelection(
             context_block=context_block,
+            context_segments=tuple((start, end, content) for _order, content, start, end
+                                   in passages + retrieved_passages + temporal_detail_passages),
             raw_start_index=expected_start,
             total_episode_count=count,
             selected_episode_count=selected_context_unit_count,

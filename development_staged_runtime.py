@@ -144,7 +144,8 @@ def attest_development_staged_runtime(
         )
     paths = registry.runtime_paths(expected_character)
     database = (
-        root / STAGED_DATABASE_DIRECTORY / DEFAULT_STAGED_DATABASE_NAME
+        paths["memory_v2"] if active.storage_layout == "local"
+        else root / STAGED_DATABASE_DIRECTORY / DEFAULT_STAGED_DATABASE_NAME
     ).resolve()
     try:
         validate_staged_disposable_target(
@@ -173,6 +174,13 @@ def attest_development_staged_runtime(
             raise DevelopmentStagedRuntimeError(
                 "Staged SQLite character ownership is inconsistent."
             )
+        if active.storage_layout == "local":
+            identity = dict(connection.execute(
+                "SELECT key,value FROM database_meta WHERE key IN ('storage_character_id','timeline_generation')",
+            ))
+            if identity != {"storage_character_id": expected_character,
+                            "timeline_generation": active.timeline_generation}:
+                raise DevelopmentStagedRuntimeError("Staged local SQLite timeline identity is inconsistent.")
         evidence_count = int(connection.execute(
             "SELECT COUNT(*) FROM historical_evidence WHERE character_id=?",
             (expected_character,),
@@ -213,7 +221,7 @@ def attest_development_staged_runtime(
     )
     runtime_valid = evidence_count > 0 and _runtime_history_attested(
         progress, messages, character_id=expected_character,
-        relative_path=paths['conversation'].relative_to(root))
+        relative_path=Path(registry.canonical_namespace(expected_character)))
     if require_rebuilt_history and not (frozen_valid or runtime_valid):
         raise DevelopmentStagedRuntimeError(
             "Staged historical occurrence reconstruction is incomplete."

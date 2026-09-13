@@ -228,17 +228,22 @@ class MemoryV2ShadowWriterTests(unittest.TestCase):
             character_id=second.character_id,
             display_name=second.display_name,
             memory_file=second_memory_path,
-            database_path=self.writer.database_path,
         )
         try:
+            self.assertEqual(self.registry.runtime_paths(second.character_id)["memory_v2"],second_writer.database_path)
+            self.assertNotEqual(self.writer.database_path,second_writer.database_path)
             second_memory.subscribe_mutations(second_writer.observe)
             self.memory.add_memory("fact", "The first character remembers aurora.", 5)
             second_memory.add_memory("fact", "The second character remembers basil.", 5)
             repository = MemoryV2Repository(self.writer.store)
             self.assertEqual([], repository.search(self.character.character_id, "basil", limit=5))
-            self.assertEqual([], repository.search(second.character_id, "aurora", limit=5))
+            from memory_v2_store.store import StoreError
+            with self.assertRaises(StoreError): repository.search(second.character_id, "aurora", limit=5)
             self.assertEqual(1, len(repository.search(self.character.character_id, "aurora", limit=5)))
-            self.assertEqual(1, len(repository.search(second.character_id, "basil", limit=5)))
+            second_repository=MemoryV2Repository(second_writer.store)
+            with self.assertRaises(StoreError):repository.search(second.character_id,"basil",limit=5)
+            with self.assertRaises(StoreError):second_repository.search(self.character.character_id,"aurora",limit=5)
+            self.assertEqual(1, len(second_repository.search(second.character_id, "basil", limit=5)))
         finally:
             second_writer.close()
 

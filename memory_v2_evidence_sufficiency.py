@@ -180,7 +180,7 @@ def relation_value(text: object, relation: str, *, require_unique: bool = False)
         return word_value((
             # A bounded locative attached to an explicit shared past event.
             # Keep the user's preposition; no geocoding or general decomposition.
-            r"\b(?:we|i)\s+(?:watched|saw|walked|sat|camped|picnicked|met|played)\b"
+            r"\b(?:we|i)\s+(?:watched|saw|spotted|walked|sat|camped|picnicked|met|played)\b"
             r"[^.!?]{0,96}?\s+(?P<value>(?:beside|by|near|at|in)\s+(?:the\s+)?[^.!?;,]{1,60}?)"
             r"(?=\s+(?:during|while|and|before|after)\b|[.!?;,]|$)",
             r"\bi\s+(?:went|travelled|traveled|moved)\s+to\s+(?P<value>[^.!?]{1,80})",
@@ -338,6 +338,21 @@ def candidate_answers_memory_query(
 ) -> EvidenceSufficiency:
     """Prove that a retrieved candidate supplies the requested answer shape."""
     relation = decision.requested_relation
+    if decision.reason == "ordinary_topic_past_value":
+        # The explicit topic identifies the source to look up, not a new fact
+        # or a revived one-turn anchor. A partially matching topic, a question,
+        # or the other speaker's account cannot answer this personal callback.
+        topic = set(re.findall(r"\w+", decision.subject_reference.casefold()))
+        content = set(re.findall(r"\w+", source_text(getattr(candidate, "content", "")).casefold()))
+        speaker = getattr(candidate, "speaker_role", "")
+        # Canonical historical indexing labels assistant prose "other"; its
+        # exact quoted account retains that label, never a fabricated user act.
+        acts = {"assertion", "other"} if speaker == "assistant" else {"assertion"}
+        if (not topic or not topic.issubset(content)
+                or not getattr(candidate, "canonical_record_id", "")
+                or speaker not in decision.allowed_historical_speakers
+                or getattr(candidate, "speech_act", "") not in acts):
+            return EvidenceSufficiency(False, relation, reason="topic_source_unresolved")
     if decision.source_order is not None and not _source_order_proven(candidate, decision):
         return EvidenceSufficiency(False, relation, reason="source_order_unproven")
     if decision.requested_slots:
@@ -401,6 +416,14 @@ def admit_memory_evidence(
         for candidate in values
     )
     admitted = tuple(candidate for candidate, check in checks if check.sufficient)
+    if decision.reason == "ordinary_topic_past_value":
+        # Ranking is navigation, not disambiguation. Without an existing typed
+        # ordering/value constraint, distinct accounts of the named topic must
+        # not silently become a single answer via the secondary-score cutoff.
+        sources = {source_text(getattr(candidate, "content", "")).casefold() for candidate in admitted}
+        identities = {getattr(candidate, "canonical_record_id", "") for candidate in admitted}
+        if not decision.subject_reference or (len(identities) > 1 and len(sources) > 1):
+            return EvidenceAdmission((), len(values), "topic_reference_ambiguous")
     return EvidenceAdmission(
         admitted,
         sum(not check.sufficient for _, check in checks),

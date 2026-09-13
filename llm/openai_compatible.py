@@ -26,11 +26,17 @@ class OpenAICompatibleLLM:
 
     def __init__(self, *, api_key: str | None, base_url: str, model: str,
                  context_budget_chars: int | None = None,
+                 context_capacity_tokens: int | None = None,
+                 context_operating_target_tokens: int | None = None,
+                 local_tokenizer: bool = False,
                  fresh_request_seeds: bool = False,
                  seed_source: Callable[[], int] | None = None,
                  sampling_preset: str = "",
                  sampling_options: dict[str, int | float] | None = None,
-                 companion_memory_realization: bool = False) -> None:
+                 companion_memory_realization: bool = False,
+                 local_ordinary_dialogue: bool = False,
+                 local_presentation: bool = False,
+                 application_policy_role: str = "user") -> None:
         if not str(base_url).strip():
             raise RuntimeError("An OpenAI-compatible endpoint is required.")
         if not str(model).strip():
@@ -38,8 +44,19 @@ class OpenAICompatibleLLM:
         self.base_url = str(base_url).rstrip("/") + "/"
         self.model = str(model).strip()
         self.context_budget_chars = int(context_budget_chars) if context_budget_chars else None
+        self.context_capacity_tokens = int(context_capacity_tokens) if context_capacity_tokens else None
+        self.context_operating_target_tokens = context_operating_target_tokens
+        self.local_tokenizer = bool(local_tokenizer)
         self.fresh_request_seeds = bool(fresh_request_seeds)
         self.companion_memory_realization = bool(companion_memory_realization)
+        # Explicit local experiment opt-in, never inferred from endpoint/model
+        # names. Normal and online factories remain off pending paired review.
+        self.local_ordinary_dialogue = bool(local_ordinary_dialogue)
+        self.local_presentation = bool(local_presentation)
+        if application_policy_role not in {"user", "system"}:
+            raise ValueError("Unsupported application policy role")
+        self.application_policy_role = application_policy_role
+        self.last_response_diagnostics = {}
         options = dict(sampling_options or {})
         unknown = set(options).difference(self._SAMPLING_FIELDS)
         if unknown:
@@ -53,10 +70,29 @@ class OpenAICompatibleLLM:
         self._stream_lock = threading.Lock()
         self._active_stream = None
 
-    @staticmethod
-    def _messages(messages: list[dict[str, Any]], character_prompt: str) -> list[dict[str, str]]:
-        # The project keeps its existing all-user context role architecture;
-        # this adapter must not reinterpret Memory V2 content by provider.
+    def count_context_tokens(self, text: str) -> int | None:
+        """Installed llama.cpp tokenizer; content only, no inference/model load.
+
+        Opt-in only for the configured local adapter. Unknown online services
+        are never probed. Planner owns timeout fallback and framing reserve.
+        """
+        if not self.local_tokenizer:
+            return None
+        endpoint = self.base_url.rstrip("/")
+        if endpoint.endswith("/v1"):
+            endpoint = endpoint[:-3]
+        response = self.client._client.post(
+            endpoint + "/extras/tokenize/count",
+            json={"model": self.model, "input": text},
+            headers=self.client.auth_headers, timeout=0.75,
+        )
+        response.raise_for_status()
+        count = response.json().get("count")
+        return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+    def _messages(self, messages: list[dict[str, Any]], character_prompt: str) -> list[dict[str, str]]:
+        # Only the application prefix has a declared template capability.
+        # Data/context and canonical roles are never promoted by this adapter.
         # Canonical timestamps and truth-scope IDs are persistence provenance,
         # never ordinary companion prompt fields.
         projected = [
@@ -64,7 +100,32 @@ class OpenAICompatibleLLM:
             for item in messages
             if isinstance(item, dict)
         ]
-        return [{"role": "user", "content": character_prompt}, *projected]
+        delivery = ""
+        if self.application_policy_role == "system" and self.local_presentation:
+            from conversation_style import separate_owned_delivery_policy
+            character_prompt, delivery = separate_owned_delivery_policy(character_prompt)
+        if delivery and projected and projected[-1]["role"] == "user":
+            # The installed template supports system messages. The single
+            # application delivery preference follows historical examples but
+            # precedes the intact current user turn. No data changes role.
+            projected.insert(len(projected) - 1, {"role": "system", "content": delivery})
+        elif delivery:
+            character_prompt += delivery
+        return [{"role": self.application_policy_role, "content": character_prompt}, *projected]
+
+    def _record_response_diagnostics(self, response) -> None:
+        usage = getattr(response, "usage", None)
+        choices = getattr(response, "choices", ()) or ()
+        result = {}
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = getattr(usage, key, None)
+            if isinstance(value, int) and not isinstance(value, bool):
+                result[key] = value
+        if choices:
+            reason = getattr(choices[0], "finish_reason", None)
+            if isinstance(reason, str):
+                result["finish_reason"] = reason[:48]
+        self.last_response_diagnostics.update(result)
 
     def new_request_seed(self) -> int | None:
         """Return one explicit seed for a local request, or no override."""
@@ -107,6 +168,7 @@ class OpenAICompatibleLLM:
         return request
 
     def generate(self, messages, character_prompt, *, seed: int | None = None) -> str:
+        self.last_response_diagnostics = {}
         try:
             if seed is None:
                 seed = self.new_request_seed()
@@ -116,6 +178,7 @@ class OpenAICompatibleLLM:
             )
         except Exception as error:
             raise ModelTransportError("The configured model is unavailable. Check Settings > Model.") from error
+        self._record_response_diagnostics(response)
         return str(response.choices[0].message.content or "")
 
     def generate_bounded(
@@ -125,6 +188,7 @@ class OpenAICompatibleLLM:
         if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) \
                 or not 1 <= max_output_tokens <= 256:
             raise ValueError("bounded output tokens must be from 1 to 256")
+        self.last_response_diagnostics = {}
         try:
             if seed is None:
                 seed = self.new_request_seed()
@@ -135,12 +199,14 @@ class OpenAICompatibleLLM:
             response = self.client.chat.completions.create(**request)
         except Exception as error:
             raise ModelTransportError("The configured model is unavailable. Check Settings > Model.") from error
+        self._record_response_diagnostics(response)
         return str(response.choices[0].message.content or "")
 
     def stream_generate(
         self, messages, character_prompt, *, seed: int | None = None,
     ) -> Iterator[str]:
         stream = None
+        self.last_response_diagnostics = {}
         try:
             if seed is None:
                 seed = self.new_request_seed()
@@ -151,6 +217,7 @@ class OpenAICompatibleLLM:
             with self._stream_lock:
                 self._active_stream = stream
             for event in stream:
+                self._record_response_diagnostics(event)
                 choices = getattr(event, "choices", ())
                 if not choices:
                     continue

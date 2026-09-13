@@ -3,21 +3,44 @@ using System.Collections.Generic;
 
 namespace AIFren.UnityPoc.UI
 {
+    /// <summary>A page of already-owned spoken words and escaped presentation markup.</summary>
+    internal sealed class SubtitlePage
+    {
+        internal readonly string SourceText, SpokenText, FormattedText;
+        internal SubtitlePage(string source, string spoken, string formatted)
+        { SourceText = source; SpokenText = spoken; FormattedText = formatted; }
+        internal static SubtitlePage FromMarkup(string text) => new SubtitlePage(text ?? string.Empty,
+            DialoguePresentationParser.SpokenText(text), DialoguePresentationParser.FormatSubtitleText(text));
+    }
+
     internal static class SubtitlePagination
     {
         private readonly struct PageWord
         {
-            internal PageWord(string text, bool emphasized) { Text = text; Emphasized = emphasized; }
+            internal PageWord(string text, string formattedText, string richText, bool emphasized)
+            { Text = text; FormattedText = formattedText; RichText = richText; Emphasized = emphasized; }
             internal string Text { get; }
+            internal string FormattedText { get; }
+            internal string RichText { get; }
             internal bool Emphasized { get; }
         }
 
         internal static List<string> Split(string text, int maximumWords = 28, Func<string, bool> pageFits = null)
         {
-            List<string> pages = new List<string>();
-            if (string.IsNullOrWhiteSpace(text)) return pages;
+            // Compatibility for existing callers with complete markup. Normal
+            // publication carries the typed pages all the way to the renderer.
+            var owned = SplitOwned(DialoguePresentationParser.ParseDocument(text), maximumWords,
+                pageFits == null ? null : new Func<SubtitlePage, bool>(page => pageFits(page.SourceText)));
+            return owned.ConvertAll(page => page.SourceText);
+        }
+
+        internal static List<SubtitlePage> SplitOwned(DialogueDocument document, int maximumWords = 28,
+            Func<SubtitlePage, bool> pageFits = null)
+        {
+            var pages = new List<SubtitlePage>();
+            if (document == null || string.IsNullOrWhiteSpace(document.SpokenText)) return pages;
             maximumWords = Math.Max(1, maximumWords);
-            List<PageWord> words = Tokenize(text);
+            List<PageWord> words = Tokenize(document.Spans);
             for (int start = 0; start < words.Count;)
             {
                 int count = Math.Min(maximumWords, words.Count - start);
@@ -36,7 +59,7 @@ namespace AIFren.UnityPoc.UI
                 if (remaining > 0 && remaining < 7)
                 {
                     int expanded = words.Count - start;
-                    string expandedPage = FormatPage(words, start, expanded);
+                    SubtitlePage expandedPage = FormatPage(words, start, expanded);
                     // Preserve the established orphan absorption for plain
                     // prose. Styled spans retain the requested cap so a long
                     // emphasis can be closed/reopened safely across pages.
@@ -56,54 +79,73 @@ namespace AIFren.UnityPoc.UI
             return pages;
         }
 
-        private static List<PageWord> Tokenize(string text)
+        private static List<PageWord> Tokenize(IReadOnlyList<DialogueSpan> spans)
         {
             List<PageWord> words = new List<PageWord>();
-            foreach (DialogueSpan span in DialoguePresentationParser.Parse(text))
+            var spokenWord = new System.Text.StringBuilder();
+            var formattedWord = new System.Text.StringBuilder();
+            var richWord = new System.Text.StringBuilder();
+            bool emphasisOpen = false, hasEmphasis = false;
+            foreach (DialogueSpan span in spans)
             {
                 if (span.Kind == DialogueSpanKind.Emote) continue;
-                string[] spanWords = span.Text.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
-                for (int index = 0; index < spanWords.Length; index++)
+                for (int cursor = 0; cursor < span.Text.Length;)
                 {
-                    string word = spanWords[index];
-                    // Markup boundaries can leave trailing punctuation in its
-                    // own plain-text span (for example **that**.). It is still
-                    // part of the preceding spoken word and must not acquire a
-                    // separate timing/ownership slot.
-                    if (index == 0 && words.Count > 0 && !char.IsWhiteSpace(span.Text[0]) &&
-                        IsPunctuationOnly(word))
+                    if (char.IsWhiteSpace(span.Text[cursor]))
                     {
-                        PageWord previous = words[words.Count - 1];
-                        words[words.Count - 1] = new PageWord(previous.Text + word, previous.Emphasized);
+                        FlushWord(words, spokenWord, formattedWord, richWord, emphasisOpen, hasEmphasis);
+                        emphasisOpen = hasEmphasis = false;
+                        cursor++;
+                        continue;
                     }
-                    else words.Add(new PageWord(word, span.Kind == DialogueSpanKind.Emphasis));
+                    int start = cursor;
+                    while (cursor < span.Text.Length && !char.IsWhiteSpace(span.Text[cursor])) cursor++;
+                    string fragment = span.Text.Substring(start, cursor - start);
+                    bool emphasized = span.Kind == DialogueSpanKind.Emphasis;
+                    if (emphasized != emphasisOpen)
+                    {
+                        formattedWord.Append("**");
+                        richWord.Append(emphasized ? "<i>" : "</i>");
+                    }
+                    emphasisOpen = emphasized;
+                    hasEmphasis |= emphasized;
+                    spokenWord.Append(fragment);
+                    formattedWord.Append(fragment);
+                    richWord.Append(Escape(fragment));
                 }
             }
+            FlushWord(words, spokenWord, formattedWord, richWord, emphasisOpen, hasEmphasis);
             return words;
         }
 
-        private static bool IsPunctuationOnly(string value)
+        private static void FlushWord(List<PageWord> words, System.Text.StringBuilder spoken,
+            System.Text.StringBuilder formatted, System.Text.StringBuilder rich, bool emphasisOpen, bool hasEmphasis)
         {
-            if (string.IsNullOrEmpty(value)) return false;
-            foreach (char character in value) if (char.IsLetterOrDigit(character)) return false;
-            return true;
+            if (spoken.Length == 0) return;
+            if (emphasisOpen) { formatted.Append("**"); rich.Append("</i>"); }
+            // Only spoken whitespace ends a timing word. Markup can split an
+            // attached suffix/prefix (for example **doing**—growing) without
+            // introducing a new spoken token or changing which letters are styled.
+            words.Add(new PageWord(spoken.ToString(), formatted.ToString(), rich.ToString(), hasEmphasis));
+            spoken.Clear(); formatted.Clear(); rich.Clear();
         }
 
-        private static string FormatPage(List<PageWord> words, int start, int count)
+        private static SubtitlePage FormatPage(List<PageWord> words, int start, int count)
         {
             System.Text.StringBuilder page = new System.Text.StringBuilder();
-            bool emphasisOpen = false;
+            System.Text.StringBuilder spoken = new System.Text.StringBuilder();
+            System.Text.StringBuilder rich = new System.Text.StringBuilder();
             for (int index = start; index < start + count; index++)
             {
-                PageWord word = words[index];
-                if (!word.Emphasized && emphasisOpen) { page.Append("**"); emphasisOpen = false; }
-                if (page.Length > 0) page.Append(' ');
-                if (word.Emphasized && !emphasisOpen) { page.Append("**"); emphasisOpen = true; }
-                page.Append(word.Text);
+                if (page.Length > 0) { page.Append(' '); spoken.Append(' '); rich.Append(' '); }
+                page.Append(words[index].FormattedText);
+                spoken.Append(words[index].Text);
+                rich.Append(words[index].RichText);
             }
-            if (emphasisOpen) page.Append("**");
-            return page.ToString();
+            return new SubtitlePage(page.ToString(), spoken.ToString(), rich.ToString());
         }
+
+        private static string Escape(string text) => text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 
         private static bool EndsNaturalBreak(string word)
         {

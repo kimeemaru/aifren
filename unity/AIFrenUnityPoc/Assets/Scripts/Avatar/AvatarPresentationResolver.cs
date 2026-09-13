@@ -24,6 +24,8 @@ namespace AIFren.UnityPoc.Avatar
         private string speechMode = "normal";
         private string visionMode = "available";
         private string awarenessMode = "normal";
+        private AutomaticExpressionLease automaticResponseLease;
+        private bool automaticAdmissionOpen;
 
         public string HandsMode => handsMode;
         public string LocomotionMode => locomotionMode;
@@ -53,15 +55,77 @@ namespace AIFren.UnityPoc.Avatar
         public void ApplyReply(PresentationMetadata presentation, AvatarGestureIntent fallback)
             => ApplyReply(presentation, fallback, null);
 
-        internal void ApplyDialogueReply(PresentationMetadata presentation, DialogueDocument dialogue, string selfName)
+        internal void ApplyDialogueReply(PresentationMetadata presentation, DialogueDocument dialogue, string selfName,
+            bool reserveAutomaticFace = false)
         {
             var emotes = new List<string>();
             foreach (DialogueSpan span in dialogue.Spans)
                 if (span.Kind == DialogueSpanKind.Emote) emotes.Add(span.Text);
             AvatarGestureMapper.TryFirstSupported(emotes, out AvatarGestureIntent body, out _);
             string face = FacialEmoteProjection.Select(dialogue, selfName, out string reason);
+            if (reserveAutomaticFace) { face = null; reason = "automatic_pending"; }
             LastFaceFallbackReason = reason;
             ApplyReply(presentation, body, face);
+        }
+
+        internal AutomaticExpressionLease BeginAutomaticExpressionLease()
+        {
+            RetireAutomaticExpression(automaticResponseLease);
+            automaticAdmissionOpen = true;
+            return automaticResponseLease = new AutomaticExpressionLease();
+        }
+
+        internal bool RetireAutomaticExpression(AutomaticExpressionLease lease)
+        {
+            if (lease == null) return false;
+            if (ReferenceEquals(automaticResponseLease, lease))
+            { automaticResponseLease = null; automaticAdmissionOpen = false; }
+            bool retired = expressions != null && expressions.RetireAutomaticExpression(lease);
+            if (retired && LastFaceOrigin == "automatic")
+            {
+                LastFaceOrigin = "automatic_retired";
+                LastFaceRequest = "none"; LastFaceApplied = false;
+            }
+            return retired;
+        }
+
+        internal bool FinishAutomaticExpression(AutomaticExpressionLease lease)
+        {
+            if (!automaticAdmissionOpen || lease == null || !ReferenceEquals(automaticResponseLease, lease)) return false;
+            // Keep ownership through the dwell so a replacement or restriction
+            // can retire the layer immediately, while closing late admission.
+            automaticAdmissionOpen = false;
+            return expressions != null && expressions.FinishAutomaticExpression(lease, Time.unscaledTime);
+        }
+
+        internal bool ApplyAutomaticExpression(PresentationMetadata presentation, AutomaticExpressionLease lease)
+        {
+            // A late optional result owns only the semantic face. Never reapply
+            // capabilities, pose, gaze, speech, gestures or scene reactions.
+            if (!automaticAdmissionOpen || lease == null || !ReferenceEquals(automaticResponseLease, lease)
+                || presentation == null || presentation.origin != "automatic"
+                || awarenessMode == "asleep" || expressions == null || expressions.ManualOverride)
+                return false;
+            if (!TryResolveEmotion(presentation.emotion, out _)
+                && !string.Equals(presentation.emotion, "neutral", System.StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (presentation.has_intensity && (float.IsNaN(presentation.intensity)
+                || float.IsInfinity(presentation.intensity) || presentation.intensity < 0f || presentation.intensity > 1f))
+                return false;
+            LastFaceOrigin = "automatic";
+            LastFaceRequest = presentation.emotion.ToLowerInvariant();
+            float intensity = presentation.has_intensity ? presentation.intensity : DefaultIntensity;
+            if (string.Equals(presentation.emotion, "neutral", System.StringComparison.OrdinalIgnoreCase))
+                LastFaceApplied = expressions.TrySetAutomaticNeutral(lease, Time.unscaledTime);
+            else
+            {
+                LastFaceApplied = false;
+                TryResolveEmotion(presentation.emotion, out ExpressionPreset[] candidates);
+                foreach (ExpressionPreset candidate in candidates)
+                    if (expressions.TrySetAutomaticPresetExpression(candidate, intensity, lease, Time.unscaledTime))
+                    { LastFaceApplied = true; break; }
+            }
+            return LastFaceApplied;
         }
 
         private void ApplyReply(PresentationMetadata presentation, AvatarGestureIntent fallback, string facialFallback)
@@ -77,12 +141,17 @@ namespace AIFren.UnityPoc.Avatar
                 new[] { "normal", "constrained", "mumble", "nonverbal", "unavailable" }, speechMode);
             visionMode = KnownMode(presentation.vision_mode, new[] { "available", "obstructed", "unavailable" }, visionMode);
             awarenessMode = KnownMode(presentation.awareness_mode, new[] { "normal", "reduced", "asleep" }, awarenessMode);
-            float intensity = presentation.has_intensity ? Mathf.Clamp01(presentation.intensity) : DefaultIntensity;
+            float intensity = presentation.has_intensity && !float.IsNaN(presentation.intensity)
+                && !float.IsInfinity(presentation.intensity) ? Mathf.Clamp01(presentation.intensity) : DefaultIntensity;
             // An explicit request owns this channel even when the avatar cannot
             // supply its preset. Unrelated presentation fields do not mask emotes.
             bool explicitEmotion = !string.IsNullOrWhiteSpace(presentation.emotion);
             string face = explicitEmotion ? presentation.emotion : facialFallback;
+            if (explicitEmotion || facialFallback != null || awarenessMode == "asleep"
+                || string.Equals(presentation.pose, "sleeping", System.StringComparison.OrdinalIgnoreCase))
+                RetireAutomaticExpression(automaticResponseLease);
             LastFaceOrigin = explicitEmotion ? "model_metadata" : facialFallback != null ? "explicit_emote" : "no_change";
+            if (explicitEmotion && presentation.origin == "act") LastFaceOrigin = "act";
             LastFaceRequest = string.Equals(face, "neutral", System.StringComparison.OrdinalIgnoreCase) ? "neutral" :
                 TryResolveEmotion(face, out _) ? face.ToLowerInvariant() : "none";
             bool appliedEmotion = ApplyEmotion(face, explicitEmotion ? intensity : DefaultIntensity);
@@ -138,8 +207,7 @@ namespace AIFren.UnityPoc.Avatar
             if (string.IsNullOrWhiteSpace(semanticEmotion)) return false;
             if (string.Equals(semanticEmotion, "neutral", System.StringComparison.OrdinalIgnoreCase))
             {
-                expressions?.ClearExpression();
-                return expressions != null;
+                return expressions != null && expressions.ClearSemanticExpression();
             }
             if (!TryResolveEmotion(semanticEmotion, out ExpressionPreset[] candidates)) return false;
             if (expressions == null) return false;

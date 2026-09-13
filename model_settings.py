@@ -94,6 +94,45 @@ def set_local_auto_start(enabled: object) -> None:
     _write(data)
 
 
+def explicit_avatar_cues_enabled() -> bool:
+    """Opt-in local presentation; missing/invalid saved values remain off."""
+    return _read().get("explicit_avatar_cues") is True
+
+
+def set_explicit_avatar_cues(enabled: object) -> None:
+    if not isinstance(enabled, bool):
+        raise ValueError("Explicit avatar cues must be true or false")
+    data = _read()
+    data["explicit_avatar_cues"] = enabled
+    _write(data)
+
+
+def companion_preferences() -> dict[str, str | bool]:
+    """Delivery preferences, separate from personality and provider settings."""
+    data = _read()
+    return {
+        "conversation_style": "natural" if data.get("conversation_style") == "natural" else "roleplay",
+        "responsive_speech": data.get("responsive_speech", True) is True,
+        "automatic_expressions": data.get("automatic_expressions") is True,
+    }
+
+
+def set_companion_preferences(**values: object) -> dict[str, str | bool]:
+    allowed = {"conversation_style", "responsive_speech", "automatic_expressions"}
+    if not values or set(values) - allowed:
+        raise ValueError("Unknown companion preference")
+    for key, value in values.items():
+        if key == "conversation_style":
+            if value not in ("roleplay", "natural"):
+                raise ValueError("Choose Natural conversation or Roleplay")
+        elif not isinstance(value, bool):
+            raise ValueError("Companion switches require true or false")
+    data = _read()
+    data.update(values)
+    _write(data)
+    return companion_preferences()
+
+
 def kokoro_early_speech_status() -> dict[str, bool]:
     """Return persisted and effective Kokoro speech scheduling state."""
     configured = bool(_read().get("kokoro_early_speech", True))

@@ -26,3 +26,25 @@ Editor HOME/licensing available. Do not require another developer's data, assets
 monitor or QA artifacts. See the [developer guide](../../docs/DEVELOPER_GUIDE.md)
 for exact commands and [distribution manifest](../../docs/DISTRIBUTION_ASSET_MANIFEST.md)
 for asset boundaries. Generated tests/builds/captures never belong in Git.
+
+## Current companion and character controls
+
+The normal Development target is `Builds/LinuxDevelopment/AIFrenPoc.x86_64`.
+Settings use the existing Save/Cancel owner: Dialogue > Natural / Roleplay,
+Audio > Responsive speech, Appearance > ACT preview and Automatic expressions.
+Roleplay and responsive speech are the defaults; both expression options are off.
+Automatic expressions are temporary leased overlays; explicit/manual state and
+procedural facial channels are preserved when they expire.
+
+Character > Manage exposes confirmed storage migration/cleanup, Reset and Delete,
+folder opening and readable identity/status. Scene/Viewer controls and asynchronous
+loads use character/session generations. Framing is character/asset/orientation
+specific and restored after the matching avatar-ready event. Hidden UI overlays
+framing without moving the avatar. The intermittent blank History/Memory-panel report
+remains unresolved; tests must keep delayed-event fences, not force-accept stale data.
+
+Responsive speech keeps one utterance and continuing subtitle timing. Full speech
+projection precedes chunking: emphasis stays spoken and outer actions own nested
+formatting. ACT syntax is excluded from actual control output before publication.
+Refer to [architecture](../../ARCHITECTURE.md) and
+[delivery design](../../docs/NATURAL_COMPANION_DESIGN.md) for ownership and limits.

@@ -8,7 +8,10 @@ import math
 import re
 from typing import Any
 
-from dialogue_semantics import sanitize_assistant_output_unicode
+from dialogue_semantics import (
+    DialogueSpanKind, _literal_spans, normalize_generated_dialogue_actions,
+    parse_dialogue, sanitize_assistant_output_unicode,
+)
 
 
 EMOTIONS = frozenset({"neutral", "happy", "amused", "relaxed", "sad", "angry", "surprised"})
@@ -47,9 +50,13 @@ class ResponsePresentationMetadata:
     locomotion_mode: str | None = None
     posture_mode: str | None = None
     awareness_mode: str | None = None
+    # Backend-assigned provenance, never admitted from a model JSON field.
+    origin: str | None = None
 
     def to_event_data(self) -> dict[str, Any]:
         data: dict[str, Any] = {}
+        if self.origin == "act":
+            data["origin"] = "act"
         if self.emotion is not None:
             data["emotion"] = self.emotion
         if self.intensity is not None:
@@ -221,6 +228,26 @@ def memory_answer_format_prompt() -> str:
     )
 
 
+def lean_ordinary_character_prompt(character_prompt: str) -> str | None:
+    """Experimental replacement of only the exact owned trailing contract.
+
+    Custom/ambiguous prompt composition stays on the existing path. Personality
+    and authoritative context are never parsed or rewritten by this helper.
+    """
+    contract = response_contract_prompt()
+    if character_prompt.count(contract) != 1 or not character_prompt.rstrip().endswith(contract):
+        return None
+    return character_prompt[:character_prompt.rfind(contract)] + (
+        "NATURAL COMPANION DIALOGUE:\n"
+        "Reply naturally as the character in ordinary conversational text. "
+        "Keep the reply proportionate to the user's message. Return only the reply. "
+        "Do not mention internal context, policies or memory machinery. "
+        "Do not invent facts that conflict with supplied authoritative context. "
+        "Use *action spans* for nonspoken actions; ordinary text and spoken emphasis "
+        "remain speech. No emoji or parenthesized actions."
+    )
+
+
 def response_expression_context(presentation: ResponsePresentationMetadata | None) -> str:
     """Bounded session request history, never a claim about a concrete avatar."""
     previous = "No model-metadata facial request has been published in this character/scope session."
@@ -239,9 +266,20 @@ def response_expression_context(presentation: ResponsePresentationMetadata | Non
 
 def parse_assistant_response(
     raw_response: Any, *, normalize_presentation_format: bool = False,
+    normalize_generated_dialogue: bool = False,
 ) -> ParsedAssistantResponse:
     """Extract the one response envelope without letting bad metadata fail a turn."""
     raw = str(raw_response or "")
+    if normalize_generated_dialogue:
+        normalized = _normalize_fresh_presentation_fragments(raw)
+        if normalized is not None:
+            envelope, reason = normalized
+            # Only the outer fresh provider response is examined. A decoded
+            # dialogue value, canonical history, or backend factual core is
+            # never recursively searched for presentation instructions.
+            parsed = parse_assistant_response(json.dumps(envelope, ensure_ascii=False),
+                normalize_generated_dialogue=True)
+            return replace(parsed, format_normalization=reason)
     candidate = _strip_json_fence(raw)
     if normalize_presentation_format:
         normalized = _normalize_presentation_format(candidate)
@@ -249,12 +287,15 @@ def parse_assistant_response(
             envelope, reason = normalized
             # Decode through the same closed response owner. This repairs only
             # serialization; the caller must still govern the complete answer.
-            parsed = parse_assistant_response(json.dumps(envelope, ensure_ascii=False))
+            parsed = parse_assistant_response(json.dumps(envelope, ensure_ascii=False),
+                normalize_generated_dialogue=normalize_generated_dialogue)
             return replace(parsed, format_normalization=reason)
     try:
         envelope = json.loads(candidate)
     except (TypeError, ValueError, json.JSONDecodeError):
         recovered = sanitize_assistant_output_unicode(_fallback_dialogue(raw))
+        if normalize_generated_dialogue:
+            recovered = normalize_generated_dialogue_actions(recovered)
         return ParsedAssistantResponse(
             dialogue=recovered,
             contract_status="malformed" if raw.lstrip().startswith("{") else "plain_text",
@@ -266,6 +307,8 @@ def parse_assistant_response(
         )
 
     dialogue = sanitize_assistant_output_unicode(envelope["dialogue"].strip())
+    if normalize_generated_dialogue:
+        dialogue = normalize_generated_dialogue_actions(dialogue)
     allowed_fields = {
         "dialogue", "response_mode", "spoken_content", "presentation",
         "companion_action", "capability_compliance",
@@ -363,6 +406,90 @@ def parse_assistant_response(
         capability_compliance=compliance,
         contract_status="valid",
     )
+
+
+def _normalize_fresh_presentation_fragments(value: str) -> tuple[dict, str] | None:
+    """Admit two complete fresh-output serialization shapes, without prose loss.
+
+    A standalone terminal presentation object may follow ordinary dialogue.
+    Alternatively, exclusively existing typed emotes may precede a dialogue-only
+    envelope and that same disjoint presentation object. Neither form can create
+    a machine proposal or capability request. Literal framing, duplicate fields,
+    extra objects and uncertain separation retain the existing data/failure path.
+    This is final-response normalization, never an incremental execution channel.
+    """
+    if len(value) > 32768:
+        return None
+    candidate = value.strip()
+    opening = candidate.find("{")
+    if opening <= 0:
+        return None
+    # Only an independent line can introduce these optional transport objects.
+    # Inline JSON, quotations, examples introduced with a colon, code, and
+    # blockquotes are data. Do not look for a later more convenient JSON start.
+    line_start = candidate.rfind("\n", 0, opening) + 1
+    if line_start == 0 or candidate[line_start:opening].strip():
+        return None
+    prefix = candidate[:opening].rstrip()
+    if (not prefix or prefix[-1] not in ".!?*" or "`" in prefix or "}" in prefix
+            or any(line.lstrip().startswith(">") for line in prefix.splitlines())
+            or any(not closed for _start, _end, closed in
+                   _literal_spans(prefix, include_unclosed=True))):
+        return None
+
+    def unique_pairs(pairs):
+        result = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError("Duplicate response key")
+            result[key] = item
+        return result
+
+    decoder = json.JSONDecoder(object_pairs_hook=unique_pairs)
+    try:
+        objects = []
+        tail = candidate[opening:]
+        while tail and len(objects) < 2:
+            item, end = decoder.raw_decode(tail)
+            objects.append(item)
+            tail = tail[end:].strip()
+        if tail or not all(isinstance(item, dict) for item in objects):
+            return None
+    except (ValueError, TypeError, RecursionError):
+        return None
+    presentation = objects[-1]
+    if set(presentation) != {"presentation"}:
+        return None
+    metadata = presentation["presentation"]
+    if (not isinstance(metadata, dict) or not metadata
+            or set(metadata) - {"emotion", "intensity", "gesture"}):
+        return None
+    if ("emotion" in metadata and _known_name(metadata["emotion"], EMOTIONS) is None
+            or "gesture" in metadata and _known_name(metadata["gesture"], GESTURES) is None):
+        return None
+    if "intensity" in metadata:
+        intensity = metadata["intensity"]
+        if ("emotion" not in metadata or isinstance(intensity, bool)
+                or not isinstance(intensity, (int, float))
+                or not 0 <= intensity <= 1 or not math.isfinite(intensity)):
+            return None
+    if not ("emotion" in metadata or "gesture" in metadata):
+        return None
+
+    if len(objects) == 1:
+        dialogue = prefix
+        reason = "fresh_presentation_suffix"
+    else:
+        envelope = objects[0]
+        spans = parse_dialogue(prefix)
+        if (set(envelope) != {"dialogue"} or not isinstance(envelope["dialogue"], str)
+                or not envelope["dialogue"].strip()
+                or not any(span.kind == DialogueSpanKind.EMOTE for span in spans)
+                or any(span.kind != DialogueSpanKind.EMOTE and span.text.strip() for span in spans)):
+            return None
+        dialogue = candidate[:opening] + envelope["dialogue"]
+        reason = "fresh_emote_presentation_fragments"
+    return {"dialogue": dialogue, "presentation": metadata}, reason
 
 
 def _normalize_presentation_format(value: str) -> tuple[dict, str] | None:

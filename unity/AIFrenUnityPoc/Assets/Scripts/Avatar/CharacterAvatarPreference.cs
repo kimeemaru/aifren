@@ -72,6 +72,7 @@ namespace AIFren.UnityPoc.Avatar
         {
             if (!IsCharacterId(characterId)) return;
             PlayerPrefs.DeleteKey(Key(characterId));
+            AvatarPresentationState.DeleteCharacter(characterId);
             PlayerPrefs.Save();
         }
 

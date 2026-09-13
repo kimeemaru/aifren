@@ -105,9 +105,9 @@ class FakeService:
         self.development_qa_calls.append(response)
         return True
 
-    def stop_speaking(self):
+    def stop_speaking(self, *, interrupted=False):
         self.stop_calls += 1
-        self.emit("tts_state", state="stopped")
+        self.emit("tts_state", state="stopped", interrupted=interrupted)
 
     def set_tts_volume(self, volume):
         self.volume_calls.append(volume)
@@ -349,11 +349,32 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(message["data"]["models"]["current"]["configured"])
         self.assertEqual(message["data"]["models"]["current"]["model"], "")
         self.assertEqual(message["data"]["models"]["current"]["availability"], "unconfigured")
-        self.assertEqual(8, message["data"]["transport_version"])
+        self.assertEqual(9, message["data"]["transport_version"])
         self.assertEqual({"kind": "real_world", "label": ""}, message["data"]["truth_scope"])
         self.assertEqual("1", message["data"]["continuity"]["revision"])
         self.assertTrue(message["data"]["companion"]["proactive_behavior"])
         self.assertEqual("provider_not_ready", message["data"]["companion"]["proactive_eligibility"])
+
+    async def test_companion_delivery_preferences_acknowledge_without_replacing_snapshot_or_unrelated_settings(self):
+        self.service.apply_companion_preferences = lambda values: setattr(self.service, 'delivery_preferences', values)
+        self.service.companion_preferences_snapshot = lambda: dict(model_settings.companion_preferences(),
+                                                                  automatic_expression_status='off')
+        initial = model_settings.companion_preferences()
+        await self.client.send(json.dumps({'command':'set_companion_preferences', 'conversation_style':'natural'}))
+        ack = await self.receive_until(lambda m: m.get('type') == 'companion_preferences')
+        self.assertEqual(ack['data']['conversation_style'], 'natural')
+        self.assertEqual(ack['data']['responsive_speech'], initial['responsive_speech'])
+        self.assertEqual(self.service.delivery_preferences['conversation_style'], 'natural')
+        self.service.model_reconfigure_busy = True
+        await self.client.send(json.dumps({'command':'set_companion_preferences', 'conversation_style':'roleplay'}))
+        error = await self.receive_until(lambda m: m.get('type') == 'command_error')
+        self.assertEqual(error['error']['code'], 'companion_preferences_busy')
+        self.assertEqual(model_settings.companion_preferences()['conversation_style'], 'natural')
+        self.service.model_reconfigure_busy = False
+        await self.client.send(json.dumps({'command':'set_companion_preferences', 'automatic_expressions':'yes'}))
+        error = await self.receive_until(lambda m: m.get('type') == 'command_error')
+        self.assertEqual(error['error']['code'], 'invalid_companion_preferences')
+        self.assertFalse(model_settings.companion_preferences()['automatic_expressions'])
 
     async def test_companion_snapshot_preserves_obstructed_mode_and_explicit_restoration(self):
         self.service.continuity.update({
@@ -561,7 +582,7 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
 
         await self.client.send(json.dumps({"command": "get_snapshot"}))
         snapshot = await self.receive_until(lambda item: item.get("type") == "snapshot")
-        self.assertEqual(8, snapshot["data"]["transport_version"])
+        self.assertEqual(9, snapshot["data"]["transport_version"])
 
     async def test_memory_view_detail_is_bounded_and_preserves_request_identity(self):
         import uuid
@@ -626,6 +647,7 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.service.stop_calls, 1)
         self.assertEqual(stopped["event"]["data"]["state"], "stopped")
+        self.assertTrue(stopped["event"]["data"]["interrupted"])
 
         await self.client.send(json.dumps({"command": "set_tts_volume", "volume": 0.7}))
         volume = await self.receive_until(
@@ -639,6 +661,34 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         error = await self.receive_until(lambda item: item.get("type") == "command_error")
         self.assertEqual(error["type"], "command_error")
         self.assertEqual(error["error"]["code"], "unknown_command")
+
+    async def test_avatar_cues_default_save_restart_and_isolated_backend_ownership(self):
+        self.assertFalse(model_settings.explicit_avatar_cues_enabled())
+        model_settings._write({"synthetic_unrelated": "preserved"})
+        await self.client.send(json.dumps({"command":"set_explicit_avatar_cues", "explicit_avatar_cues":True}))
+        ack = await self.receive_until(lambda m:m.get("type")=="avatar_cues_settings")
+        self.assertTrue(ack["data"]["explicit_avatar_cues"])
+        self.assertTrue(self.service.explicit_avatar_cues)
+        self.assertTrue(model_settings.explicit_avatar_cues_enabled())
+        self.assertEqual("preserved", model_settings._read()["synthetic_unrelated"])
+        await self.client.send(json.dumps({"command":"get_snapshot"}))
+        snap = await self.receive_until(lambda m:m.get("type")=="snapshot")
+        self.assertTrue(snap["data"]["companion"]["explicit_avatar_cues"])
+        await self.client.send(json.dumps({"command":"set_explicit_avatar_cues", "explicit_avatar_cues":False}))
+        await self.receive_until(lambda m:m.get("type")=="avatar_cues_settings")
+        self.assertFalse(model_settings.explicit_avatar_cues_enabled())
+        self.assertEqual([], self.service.submitted)
+
+    async def test_avatar_cues_reject_invalid_or_busy_save_without_mutation(self):
+        for value in ("true", 1, None):
+            await self.client.send(json.dumps({"command":"set_explicit_avatar_cues", "explicit_avatar_cues":value}))
+            error = await self.receive_until(lambda m:m.get("type")=="command_error")
+            self.assertEqual("invalid_avatar_cues", error["error"]["code"])
+        self.service.model_reconfigure_busy = True
+        await self.client.send(json.dumps({"command":"set_explicit_avatar_cues", "explicit_avatar_cues":True}))
+        error = await self.receive_until(lambda m:m.get("type")=="command_error")
+        self.assertEqual("avatar_cues_busy", error["error"]["code"])
+        self.assertFalse(model_settings.explicit_avatar_cues_enabled())
 
     async def test_kokoro_early_speech_setting_defaults_on_persists_and_snapshots(self):
         with patch.object(model_settings, "KOKORO_EARLY_SPEECH_OVERRIDE", None):
@@ -973,6 +1023,7 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
                 return True
 
             def switch_character_state(self, **request):
+                request["publish_selection"]()
                 self.switches.append(request["character_id"])
                 self.character = {
                     "name": request["display_name"],

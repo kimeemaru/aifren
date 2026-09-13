@@ -21,7 +21,7 @@ import uuid
 from character_registry import CharacterRegistry, CharacterRegistryError, REGISTRY_RELATIVE_PATH
 from conversation.truth_scope import parse_canonical_truth_scope
 from memory_v2_episode_compaction import canonical_record_id
-from memory_v2_shadow_writer import MemoryV2ShadowWriter, default_v2_path
+from memory_v2_shadow_writer import MemoryV2ShadowWriter
 from memory_v2_store.store import parse_timestamp_us, utc_now_us
 
 
@@ -129,30 +129,12 @@ def validate_staged_disposable_target(
     """Prove positive clone ownership before opening SQLite sidecars."""
     root = Path(application_dir).resolve()
     lexical_stage = root / STAGED_DATABASE_DIRECTORY
-    if (not lexical_stage.is_dir() or lexical_stage.is_symlink()
-            or lexical_stage.resolve() != lexical_stage):
-        raise HistoricalEvidenceError("owned staged evidence directory is missing or unsafe")
     target_input = Path(database_path)
     if target_input.is_symlink():
         raise HistoricalEvidenceError("staged evidence database cannot be a symlink")
     target = target_input.resolve()
-    if target.parent != lexical_stage or target.suffix != ".sqlite3":
-        raise HistoricalEvidenceError(
-            "staged evidence database must be a direct SQLite file in the owned staging directory",
-        )
-    if target.exists():
-        metadata = target.stat(follow_symlinks=False)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise HistoricalEvidenceError("staged evidence database has unsafe filesystem ownership")
-    for suffix in ("-wal", "-shm", "-journal"):
-        sidecar = Path(f"{target}{suffix}")
-        if sidecar.is_symlink():
-            raise HistoricalEvidenceError("staged evidence database sidecar cannot be a symlink")
-        if sidecar.exists():
-            metadata = sidecar.stat(follow_symlinks=False)
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise HistoricalEvidenceError("staged evidence sidecar has unsafe ownership")
-
+    if target.suffix != ".sqlite3":
+        raise HistoricalEvidenceError("staged evidence database must be a SQLite file")
     source_input = Path(conversation_file)
     if source_input.is_symlink():
         raise HistoricalEvidenceError("canonical archive cannot be a symlink")
@@ -176,14 +158,36 @@ def validate_staged_disposable_target(
     try:
         registry = CharacterRegistry(root)
         character = registry.get(character_id)
+        registered_paths = registry.runtime_paths(character_id) if character is not None else None
         registered_source = (
-            registry.runtime_paths(character_id)["conversation"].resolve()
-            if character is not None else None
+            registered_paths["conversation"].resolve() if registered_paths is not None else None
         )
     except (CharacterRegistryError, OSError) as error:
         raise HistoricalEvidenceError("staged clone character registry is malformed") from error
     if character is None or registered_source != source:
         raise HistoricalEvidenceError("canonical archive is not owned by the selected staged character")
+    local_target = character.storage_layout == "local" and target == registered_paths["memory_v2"].resolve()
+    if character.storage_layout == "local":
+        if not local_target or character.storage_status != "ready" or character.operation:
+            raise HistoricalEvidenceError("local staged evidence must use its ready registered database")
+        if (len(registry.list_characters()) != 1 or registry.active().character_id != character_id):
+            raise HistoricalEvidenceError("local staged clone must contain only its selected active character")
+    elif (target.parent != lexical_stage or not lexical_stage.is_dir()
+          or lexical_stage.is_symlink() or lexical_stage.resolve() != lexical_stage):
+        raise HistoricalEvidenceError("owned staged evidence directory is missing or unsafe")
+
+    if target.exists():
+        metadata = target.stat(follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise HistoricalEvidenceError("staged evidence database has unsafe filesystem ownership")
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = Path(f"{target}{suffix}")
+        if sidecar.is_symlink():
+            raise HistoricalEvidenceError("staged evidence database sidecar cannot be a symlink")
+        if sidecar.exists():
+            metadata = sidecar.stat(follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise HistoricalEvidenceError("staged evidence sidecar has unsafe ownership")
 
     marker = root / STAGED_DISPOSABLE_MARKER
     if marker.is_symlink() or not marker.is_file():
@@ -204,10 +208,12 @@ def validate_staged_disposable_target(
             "staged disposable marker does not bind this character and database",
         )
 
-    live_database = default_v2_path(root).resolve()
-    if target == live_database or (
+    live_database = registered_paths["memory_v2"].resolve()
+    # An exactly marked one-character local clone uses the ordinary local path.
+    # Legacy QA remains separate from its live shared DB even with a marker.
+    if not local_target and (target == live_database or (
         target.exists() and live_database.exists() and target.samefile(live_database)
-    ):
+    )):
         raise HistoricalEvidenceError("historical evidence indexing refuses the live V2 database")
     return target
 

@@ -25,6 +25,11 @@ namespace AIFren.UnityPoc.Protocol
         private CancellationTokenSource cancellation;
         private Task receiveTask;
         private readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
+        private readonly CharacterSessionFence characterSession = new CharacterSessionFence();
+
+        public CharacterSessionOwner CharacterOwner => characterSession.Current;
+        public bool CharacterSwitching => characterSession.Switching;
+        public bool OwnsCharacter(CharacterSessionOwner owner) => characterSession.IsCurrent(owner);
 
         public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
         public string LastError { get; private set; } = string.Empty;
@@ -158,6 +163,21 @@ namespace AIFren.UnityPoc.Protocol
             });
         }
 
+        public async Task SetExplicitAvatarCuesAsync(bool enabled)
+        {
+            await SendCommandAsync(new ClientCommand {
+                command = "set_explicit_avatar_cues", explicit_avatar_cues = enabled
+            });
+        }
+
+        public async Task SetCompanionPreferencesAsync(string style, bool responsiveSpeech, bool automaticExpressions)
+        {
+            await SendCommandAsync(new ClientCommand {
+                command = "set_companion_preferences", conversation_style = style,
+                responsive_speech = responsiveSpeech, automatic_expressions = automaticExpressions,
+            });
+        }
+
         public async Task SetProactiveBehaviorAsync(bool enabled)
         {
             await SendCommandAsync(new ClientCommand
@@ -230,7 +250,7 @@ namespace AIFren.UnityPoc.Protocol
         }
 
         public async Task ApplyContinuityControlAsync(string commandId, string action,
-            string expectedRevision, string actionToken = "")
+            string expectedRevision, string actionToken = "", CharacterSessionOwner owner = null)
         {
             await SendCommandAsync(new ClientCommand
             {
@@ -239,6 +259,8 @@ namespace AIFren.UnityPoc.Protocol
                 action = action ?? string.Empty,
                 expected_revision = expectedRevision ?? string.Empty,
                 action_token = actionToken ?? string.Empty,
+                character_id = owner?.CharacterId,
+                character_session = owner?.Session,
             });
         }
 
@@ -312,15 +334,25 @@ namespace AIFren.UnityPoc.Protocol
             });
         }
 
-        public async Task CreateCharacterAsync(string displayName, string personality)
+        public async Task CreateCharacterAsync(string displayName, string personality, string requestId = null)
         {
             await SendCommandAsync(new ClientCommand
             {
                 command = "create_character",
                 display_name = displayName ?? string.Empty,
                 personality = personality ?? string.Empty,
+                request_id = requestId ?? string.Empty,
             });
         }
+
+        public Task PreviewCharacterOperationAsync(string characterId, string action) => SendCommandAsync(new ClientCommand
+        { command = "character_operation_preview", character_id = characterId, action = action });
+
+        public Task ConfirmCharacterOperationAsync(string characterId, string token, long revision) => SendCommandAsync(new ClientCommand
+        { command = "character_operation_confirm", character_id = characterId, token = token, revision = revision });
+
+        public Task OpenCharacterFolderAsync(string characterId) => SendCommandAsync(new ClientCommand
+        { command = "open_character_folder", character_id = characterId });
 
         public bool TryDequeue(out ServerMessage message)
         {
@@ -329,7 +361,22 @@ namespace AIFren.UnityPoc.Protocol
             // ownership. Main-thread presentation never sees retired packets.
             while (receivedMessages.TryDequeue(out var received))
                 if (ReferenceEquals(received.owner, socket) && socket != null)
-                { message = received.message; return true; }
+                {
+                    if (received.message?.type == "snapshot"
+                        && received.message.data != null && received.message.data.transport_version < 9)
+                    {
+                        // Never admit an old unbound snapshot as character
+                        // content, but do not leave normal startup waiting.
+                        characterSession.InvalidateCurrent();
+                        message = new ServerMessage { type = "command_error", error = new CommandError {
+                            code = "unsupported_backend_version",
+                            message = "The running backend is older than this player. Restart AIFren with the current Development launcher."
+                        } };
+                        return true;
+                    }
+                    if (!characterSession.Accept(received.message)) continue;
+                    message = received.message; return true;
+                }
             message = null; return false;
         }
 
@@ -339,6 +386,7 @@ namespace AIFren.UnityPoc.Protocol
             ClientWebSocket previousSocket = socket;
             cancellation = null;
             socket = null;
+            characterSession.Reset();
 
             if (previousCancellation != null)
             {
@@ -395,9 +443,18 @@ namespace AIFren.UnityPoc.Protocol
 
         private async Task SendCommandAsync(ClientCommand command)
         {
+            // Freeze the binding before the first await. A queued old command
+            // must not acquire a newer character or socket while waiting.
+            ClientWebSocket ownerSocket = socket;
+            if (!BindCharacterCommand(command, characterSession.Current))
+            {
+                Debug.Log("[AIFren Transport] Discarded a command without the current character binding.");
+                return;
+            }
             await sendLock.WaitAsync();
             try
             {
+                if (!ReferenceEquals(ownerSocket, socket)) return;
                 if (socket == null || socket.State != WebSocketState.Open)
                 {
                     SetError("Not connected to the AIFren backend.");
@@ -426,6 +483,18 @@ namespace AIFren.UnityPoc.Protocol
             {
                 sendLock.Release();
             }
+        }
+
+        internal static bool BindCharacterCommand(ClientCommand command, CharacterSessionOwner owner)
+        {
+            if (command == null) return false;
+            if (!CharacterSessionFence.IsScopedCommand(command.command)) return true;
+            if (owner == null || !owner.IsValid) return false;
+            if (!string.IsNullOrEmpty(command.character_id) && command.character_id != owner.CharacterId) return false;
+            if (!string.IsNullOrEmpty(command.character_session) && command.character_session != owner.Session) return false;
+            command.character_id = owner.CharacterId;
+            command.character_session = owner.Session;
+            return true;
         }
 
         internal void EnqueueReceived(ClientWebSocket owner, ServerMessage message) => receivedMessages.Enqueue((owner, message));

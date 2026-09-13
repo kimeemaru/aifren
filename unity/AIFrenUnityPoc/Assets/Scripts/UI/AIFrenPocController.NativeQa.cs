@@ -52,6 +52,7 @@ namespace AIFren.UnityPoc.UI
             if (message.type == "snapshot") qaSnapshots++;
             BackendEvent evt = message.@event;
             if (evt == null) return;
+            ObserveCharacterNativeQaEvent(evt);
             if (evt.type == "turn_started") { qaTtsState = ""; qaLastTurnFailed = false; }
             if (evt.type == "tts_state" && evt.data != null) qaTtsState = evt.data.state;
             if (evt.type == "turn_cancelled" || evt.type == "error") qaLastTurnFailed = true;
@@ -88,9 +89,8 @@ namespace AIFren.UnityPoc.UI
             {
                 qaTrace.WriteLine("time,utc_ms,frame,dt,step,event,playback,page,global_word,state,tmp_words,tmp_active,alpha,word_alpha,previous_word_alpha,readback");
                 float deadline = Time.realtimeSinceStartup + 40;
-                while ((qaSnapshots == 0 || avatarLoader.ActiveAvatar == null || avatarPresentationInitialization != null) &&
-                       Time.realtimeSinceStartup < deadline) yield return null;
-                if (qaSnapshots == 0) { QaMark("startup_timeout"); qaTrace.Flush(); Application.Quit(4); yield break; }
+                while (!QaStartupPresentationReady() && Time.realtimeSinceStartup < deadline) yield return null;
+                if (!QaStartupPresentationReady()) { QaMark("startup_timeout"); qaTrace.Flush(); Application.Quit(4); yield break; }
                 // The host window manager caps a 1080-high decorated window
                 // to its work area. Borderless QA uses the existing display
                 // mode at native resolution; it never changes OS resolution.
@@ -152,10 +152,14 @@ namespace AIFren.UnityPoc.UI
                         }
                         if (step.action == "submit" && qaTerminal > terminalBefore && QaTurnPresentationFinished()) break;
                         if (step.action == "wait_synthesis" && (qaTtsState == "starting" || qaTtsState == "synthesizing")) break;
+                        if (step.action == "wait_playback" && qaTtsState == "playback_started") break;
+                        if (step.action == "character_wait_ready" && QaCharacterReady(step.value)) break;
                         yield return null;
                     }
                     if ((step.action == "submit" && (qaTerminal == terminalBefore || !QaTurnPresentationFinished())) ||
-                        (step.action == "wait_synthesis" && qaTtsState != "starting" && qaTtsState != "synthesizing"))
+                        (step.action == "wait_synthesis" && qaTtsState != "starting" && qaTtsState != "synthesizing") ||
+                        (step.action == "wait_playback" && qaTtsState != "playback_started") ||
+                        (step.action == "character_wait_ready" && !QaCharacterReady(step.value)))
                     { qaTimeouts++; QaMark("step_timeout"); }
                     yield return new WaitForEndOfFrame();
                     CaptureNativeQa(qaStep);
@@ -227,10 +231,22 @@ namespace AIFren.UnityPoc.UI
 
         private bool QaProbeAvatar(string stage)
         {
-            var result = AvatarVisualProbe.Inspect(avatarLoader.ActiveAvatar, avatarLoader.PresentationCamera);
-            qaAvatarTrace.WriteLine("{\"stage\":\"" + SafeQaName(stage) + "\",\"character\":\"" + activeCharacterId +
+            if (activeCharacterId == "no-character")
+            {
+                bool verified = QaVerifiedEmptyCharacterState();
+                qaAvatarTrace?.WriteLine(JsonUtility.ToJson(new QaEmptyCharacterVisual {
+                    stage = SafeQaName(stage), character = activeCharacterId, absence_kind = "empty_character_library",
+                    verified = verified, storage_unavailable = characterStorageUnavailable,
+                    composer_disabled = messageInput != null && sendButton != null && !messageInput.interactable && !sendButton.interactable,
+                    outgoing_avatar_visible = QaOutgoingAvatarVisible() }));
+                qaAvatarTrace?.Flush();
+                return verified;
+            }
+            var result = AvatarVisualProbe.Inspect(avatarLoader != null ? avatarLoader.ActiveAvatar : null,
+                avatarLoader != null ? avatarLoader.PresentationCamera : null);
+            qaAvatarTrace?.WriteLine("{\"stage\":\"" + SafeQaName(stage) + "\",\"character\":\"" + activeCharacterId +
                 "\",\"geometry\":" + JsonUtility.ToJson(result) + "}");
-            qaAvatarTrace.Flush();
+            qaAvatarTrace?.Flush();
             return result.ready;
         }
 
@@ -322,6 +338,7 @@ namespace AIFren.UnityPoc.UI
 
         private void ApplyNativeQaStep(NativeQaSession.Step step)
         {
+            if (ApplyCharacterNativeQaStep(step)) return;
             switch (step.action)
             {
                 case "wait": break;
@@ -375,12 +392,31 @@ namespace AIFren.UnityPoc.UI
                         "\",\"duration\":" + vrma.Duration.ToString("F3", CultureInfo.InvariantCulture) + "}");
                     break;
                 case "wait_synthesis": break;
+                case "wait_playback": break;
                 case "assets_seed": QaSeedManagementAssets(); break;
                 case "sequence":
                     qaSequence = step.value == "on" || step.value == "fade" || step.value == "motion";
                     qaMotionSequence = step.value == "motion";
                     qaFadeSequence = step.value == "fade"; qaFadeCaptures = 0; break;
                 case "captures": qaCaptureEnabled = step.value != "off"; break;
+                case "avatar_cues":
+                    if (step.value == "on" || step.value == "off") avatarCuesToggle.isOn = step.value == "on";
+                    else if (step.value == "save") avatarCuesSave.onClick.Invoke();
+                    else if (step.value == "cancel") CancelAvatarCuesDraft();
+                    else if (step.value == "preview") PreviewAvatarSmile();
+                    else if (step.value == "reset") ResetAvatarExpression();
+                    else throw new InvalidOperationException();
+                    break;
+                case "companion_preferences":
+                    if (step.value == "natural" || step.value == "roleplay") SetConversationStyleDraft(step.value);
+                    else if (step.value == "speech_on" || step.value == "speech_off") responsiveSpeechToggle.isOn = step.value == "speech_on";
+                    else if (step.value == "face_on" || step.value == "face_off") automaticExpressionToggle.isOn = step.value == "face_on";
+                    else if (step.value == "save_style") conversationStyleSave.onClick.Invoke();
+                    else if (step.value == "save_speech") responsiveSpeechSave.onClick.Invoke();
+                    else if (step.value == "save_face") automaticExpressionSave.onClick.Invoke();
+                    else if (step.value == "cancel") CancelCompanionPreferenceDraft();
+                    else throw new InvalidOperationException();
+                    break;
                 case "subtitle_color":
                     // Drive the actual controls, in the isolated QA product only.
                     if (step.value == "save") subtitleColorSave.onClick.Invoke();
@@ -435,7 +471,7 @@ namespace AIFren.UnityPoc.UI
                 case "display_confirm": ApplyDisplaySettings(currentDisplaySettings.Clone(), true); break;
                 case "display_revert": RevertDisplaySettings(); break;
                 case "character_switch":
-                    CharacterSummary selected = availableCharacters.First(x => x.display_name == step.value);
+                    CharacterSummary selected = ResolveQaCharacter(availableCharacters, step.value);
                     RequestCharacterSwitch(selected.character_id); break;
                 case "viewer": OpenMemoryViewer(); break;
                 case "viewer_lane":

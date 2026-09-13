@@ -71,6 +71,72 @@ class ConversationPersistenceTests(unittest.TestCase):
         self.path.write_text(json.dumps(records, separators=(",", ":")), encoding="utf-8")
         return records
 
+    def test_maintenance_preserves_identical_archive_identity_and_complete_records(self):
+        records = self.seed()
+        conversation = self.conversation("v2")
+        original = self.path.read_bytes()
+        before = self.path.stat()
+        with patch("conversation.conversation.save_json") as save:
+            self.assertFalse(conversation.prepare_maintenance())
+        save.assert_not_called()
+        after = self.path.stat()
+        self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns))
+        self.assertEqual(original, self.path.read_bytes())
+        self.assertEqual(records, conversation.messages)
+        self.assertEqual(len(records), conversation._persisted_message_count)
+
+    def test_maintenance_materializes_only_a_never_saved_empty_archive(self):
+        conversation = self.conversation("v2")
+        self.assertTrue(conversation.prepare_maintenance())
+        self.assertEqual([], json.loads(self.path.read_text()))
+        identity = self.path.stat()
+        self.assertFalse(conversation.prepare_maintenance())
+        current = self.path.stat()
+        self.assertEqual((identity.st_ino, identity.st_mtime_ns), (current.st_ino, current.st_mtime_ns))
+
+    def test_maintenance_never_promotes_unsaved_nonempty_history(self):
+        conversation = self.conversation("v2")
+        conversation.messages.append({"role": "user", "content": "Uncommitted synthetic input."})
+        with self.assertRaises(ConversationPersistenceError):
+            conversation.prepare_maintenance()
+        with self.assertRaises(ConversationPersistenceError):
+            conversation.save()
+        self.assertFalse(self.path.exists())
+
+    def test_maintenance_refuses_external_change_and_close_cannot_overwrite_it(self):
+        for changed in (None, b"{broken", b'[{"role":"user","content":"External synthetic edit."}]'):
+            with self.subTest(changed=changed):
+                records = self.seed()
+                conversation = self.conversation("v2")
+                service = self.service("v2", conversation=conversation)
+                if changed is None:
+                    self.path.unlink()
+                else:
+                    self.path.write_bytes(changed)
+                with self.assertRaises(ConversationPersistenceError):
+                    service.prepare_character_maintenance()
+                with self.assertRaises(ConversationPersistenceError):
+                    service.close()
+                self.assertEqual(changed, self.path.read_bytes() if self.path.exists() else None)
+                self.assertEqual(records, conversation.messages)
+                self.assertFalse(service._turn_lock.locked())
+                self.memory.save.assert_not_called()
+
+    def test_maintenance_is_serialized_and_v1_compatibility_flush_is_explicit(self):
+        for mode in ("v2", "v1"):
+            with self.subTest(mode=mode):
+                self.seed()
+                service = self.service(mode)
+                self.memory.save.reset_mock()
+                with service._turn_lock:
+                    with self.assertRaises(RuntimeError):
+                        service.prepare_character_maintenance()
+                service.prepare_character_maintenance()
+                self.assertEqual(mode == "v1", self.memory.save.called)
+                service.close()
+                with self.assertRaises(RuntimeError):
+                    service.prepare_character_maintenance()
+
     def service(self, mode="v1", conversation=None, tts=None):
         c = conversation or self.conversation(mode)
         character_id = "11111111-1111-4111-8111-111111111111"
@@ -527,10 +593,11 @@ class ConversationPersistenceTests(unittest.TestCase):
                  "summary": self.summary, "character": self.root / "character.json",
                  "personality": self.root / "personality.md"}
         registry = SimpleNamespace(active=lambda: SimpleNamespace(character_id="synthetic", display_name="Synthetic"),
-                                   runtime_paths=lambda _: paths)
+                                   runtime_paths=lambda _: paths, assert_storage_ready=lambda _:paths)
         # Corrupt unused compatibility data must not block V2 startup or be repaired there.
         self.summary.write_bytes(b"[")
         with self.summary_mutations() as attempts, ExitStack() as stack:
+            stack.enter_context(patch('character_storage_runtime.acquire_runtime_lease',return_value=Mock(spec=['close','assert_current'])))
             for target, value in (("create_llm", self.provider), ("CharacterRegistry", registry),
                                   ("Memory", self.memory), ("VoiceInput", object()),
                                   ("TextToSpeech", object()), ("load_character", ({"name": "Synthetic"}, "Synthetic"))):

@@ -76,17 +76,9 @@ from development_flight_recorder import development_flight_recorder
 # Local Speech-to-Text
 # ============================================================
 
-BASE_DIR = os.path.dirname(
-    os.path.dirname(
-        os.path.abspath(__file__)
-    )
-)
+from runtime_layout import resource_path
 
-MODEL_DIR = os.path.join(
-    BASE_DIR,
-    "models",
-    "whisper-small"
-)
+MODEL_DIR = str(resource_path("models/whisper-small"))
 
 
 class SpeechToText:

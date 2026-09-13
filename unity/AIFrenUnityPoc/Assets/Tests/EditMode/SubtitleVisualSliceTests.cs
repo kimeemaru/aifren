@@ -52,6 +52,20 @@ namespace AIFren.UnityPoc.Tests.EditMode
         private void Tick(float time) => presenter.Tick(time, true, true);
         private void Until(float start, float end) { for (float t = start; t <= end; t += .01f) Tick(t); }
 
+        [Test]
+        public void OwnedLiteralPageSurvivesMeshPreparationAndResizeWithoutReparsingAction()
+        {
+            // This is a fragment of a larger quoted source. Its opening quote
+            // was on a previous page; ownership was already decided there.
+            var page = new SubtitlePage("*I smile.*", "*I smile.*", "*I smile.*");
+            target.Preload(page); target.ShowPage(page, 2);
+            Assert.That(visible.text, Is.EqualTo("*I smile.*"));
+            root.GetComponent<RectTransform>().sizeDelta = new Vector2(700, 220);
+            target.ShowPage(page, 2);
+            Assert.That(visible.text, Is.EqualTo("*I smile.*"));
+            Assert.That(visible.textInfo.characterCount, Is.GreaterThan(0));
+        }
+
         [Test] public void EachWordHasIntermediateVertexAlphaWithoutRefadingEarlierWords()
         {
             Begin(new[] { "One **gentle** thought." }, new[] { 0f, .4f, .8f });

@@ -33,7 +33,7 @@ class SceneEventTransportTests(unittest.IsolatedAsyncioTestCase):
         self.session.provider.generate = Mock(return_value=response_envelope("*Blinks.*"))
         snapshot = self.service.continuity_snapshot()
         self.command = {
-            "command": "continuity_control", "command_id": str(uuid.uuid4()),
+            **self.service.character_binding(), "command": "continuity_control", "command_id": str(uuid.uuid4()),
             "action": "interact_scene_relation", "expected_revision": snapshot["revision"],
             "action_token": snapshot["scene_relations"][0]["clear_token"],
         }
@@ -78,6 +78,21 @@ class SceneEventTransportTests(unittest.IsolatedAsyncioTestCase):
     def scene_records(self):
         return [row for row in json.loads(self.session.conversation_file.read_text())
                 if row.get("origin", {}).get("kind") == "scene_ui"]
+
+    async def test_scoped_errors_retain_request_owner_for_pending_controls(self):
+        await self.client.send(json.dumps({**self.command, "expected_revision": "retired-revision"}))
+        error, _ = await self.receive_until(lambda row: row.get("type") == "command_error")
+        for key, value in self.service.character_binding().items():
+            self.assertEqual(value, error[key])
+        self.assertEqual(0, error["character_generation"])
+        self.assertEqual([], self.scene_records())
+
+    async def test_stale_command_error_cannot_impersonate_current_session(self):
+        await self.client.send(json.dumps({**self.command, "character_session": "retired-session"}))
+        error, _ = await self.receive_until(lambda row: row.get("type") == "command_error")
+        self.assertEqual("stale_character_control", error["error"]["code"])
+        self.assertEqual("retired-session", error["character_session"])
+        self.assertEqual([], self.scene_records())
 
     async def test_unavailable_reaction_ack_and_reconnect_retry_keep_one_canonical_identity(self):
         self.session.provider.is_available = False
@@ -128,7 +143,7 @@ class SceneEventTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(self.scene_records()))
         self.assertEqual("ready", (await self.snapshot())["status"]["state"])
         self.session.provider.generate.assert_not_called()
-        await self.client.send(json.dumps({"command": "submit_text", "text": "Hello again."}))
+        await self.client.send(json.dumps({"command": "submit_text", "text": "Hello again.", **self.service.character_binding()}))
         response, _ = await self.receive_until(lambda row: row.get("event", {}).get("type") == "assistant_response")
         self.assertEqual("*Blinks.*", response["event"]["data"]["content"])
         await asyncio.wait_for(asyncio.gather(*list(self.host._turn_tasks)), timeout=3)
@@ -140,7 +155,7 @@ class SceneEventTransportTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.session.tts.release.set)
         await self.client.send(json.dumps(self.command))
         self.assertTrue(await asyncio.to_thread(self.session.tts.entered.wait, 3))
-        await self.client.send(json.dumps({"command": "ptt_press"}))
+        await self.client.send(json.dumps({"command": "ptt_press", **self.service.character_binding()}))
         _, events = await self.receive_until(
             lambda row: row.get("event", {}).get("type") == "voice_state"
             and row["event"]["data"]["state"] == "listening",

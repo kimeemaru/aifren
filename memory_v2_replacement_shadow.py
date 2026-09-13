@@ -130,6 +130,33 @@ def _is_removed_long_term(content: str) -> bool:
     return any(marker in content for marker in _REMOVED_LONG_TERM_MARKERS)
 
 
+def _exact_anchor_source_provenance(candidate: object) -> bool:
+    """Recognize the exact-source resolver's bounded canonical proof shape.
+
+    The upstream owner rechecks the canonical hash, speaker and scope. This
+    boundary requires its matching source reference and passage projection;
+    an arbitrary anchor label cannot substitute for an episode identity.
+    """
+    from memory_v2_source_projection import MAX_PASSAGES, MAX_PASSAGE_CHARACTERS
+    record_id = str(getattr(candidate, "canonical_record_id", ""))
+    index = getattr(candidate, "canonical_index", None)
+    evidence = getattr(candidate, "evidence", ())
+    segments = getattr(candidate, "source_segments", ())
+    if (getattr(candidate, "attribution_state", "") != "canonical_exact_source_anchor"
+            or not record_id or isinstance(index, bool) or not isinstance(index, int) or index < 0
+            or getattr(candidate, "associated_from", "") != record_id
+            or not isinstance(evidence, tuple) or not isinstance(segments, tuple)
+            or len(evidence) != 1 or not 1 <= len(segments) <= MAX_PASSAGES
+            or not all(isinstance(segment, HistoricalSourceSegment) for segment in segments)
+            or sum(len(segment.text) for segment in segments) > MAX_PASSAGE_CHARACTERS):
+        return False
+    proof = evidence[0]
+    return (getattr(proof, "source_type", "") == "ordinary_conversation"
+            and getattr(proof, "source_id", "") == record_id
+            and getattr(proof, "source_reference", "") == f"canonical_index:{index}"
+            and getattr(proof, "sequence", None) == index + 1)
+
+
 def _historical_exclusion(
     candidate: object, active_scope_id: str, *, allow_recall_anchor: bool,
 ) -> str:
@@ -158,10 +185,11 @@ def _historical_exclusion(
         return "canonical_source_identity_missing"
     if getattr(candidate, "canonical_index", None) is None:
         return "canonical_source_order_missing"
-    if lane in {"historical_episode_source", "historical_recall_anchor_source"} and not str(
-        getattr(candidate, "episode_id", "")
-    ):
-        return "validated_episode_identity_missing"
+    if not str(getattr(candidate, "episode_id", "")):
+        if lane == "historical_episode_source":
+            return "validated_episode_identity_missing"
+        if lane == "historical_recall_anchor_source" and not _exact_anchor_source_provenance(candidate):
+            return "validated_anchor_source_identity_missing"
     if not _content(getattr(candidate, "content", "")):
         return "source_content_missing"
     return ""
@@ -198,6 +226,8 @@ def _historical_line(item: V2ReplacementItem) -> str:
         "CANONICAL SOURCE REFINED FROM VALIDATED EPISODE"
         if item.lane == "historical_episode_source"
         else "CANONICAL SOURCE FROM PRIOR GROUNDED EPISODE"
+        if item.lane == "historical_recall_anchor_source" and item.episode_id
+        else "EXACT CANONICAL SOURCE FROM PRIOR GROUNDED ANSWER"
         if item.lane == "historical_recall_anchor_source"
         else "CANONICAL HISTORICAL SOURCE"
     )

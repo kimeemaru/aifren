@@ -235,7 +235,7 @@ def capability_context_block(effects: CapabilityEffects) -> str:
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + ("\nConstraints: " + " ".join(constraints) if constraints else "")
         + ("\nConstrained/nonverbal: target 50–80 words; maximum 100."
-           if constraints else "")
+           if effects.speech_mode != "normal" or effects.awareness_mode == "asleep" else "")
         + "\n[End authoritative capability envelope]"
     )
     # The closed set above remains comfortably below this defensive product

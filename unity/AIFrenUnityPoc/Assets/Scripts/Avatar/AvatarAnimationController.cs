@@ -215,12 +215,12 @@ namespace AIFren.UnityPoc.Avatar
             finally { stateReactionDispatch = false; }
         }
 
-        public void BeginSpeech(float durationSeconds, float[] envelope)
+        public void BeginSpeech(float durationSeconds, float[] envelope, bool continuation = false)
         {
             speechDuration = Mathf.Max(0f, durationSeconds);
             speechEnvelope = envelope ?? Array.Empty<float>();
             speechStartedAt = Time.unscaledTime;
-            mouthWeight = 0f;
+            if (!continuation) mouthWeight = 0f;
         }
 
         public void StopSpeech()

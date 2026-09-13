@@ -1,4 +1,5 @@
 import io
+import inspect
 import json
 import os
 import re
@@ -103,11 +104,27 @@ class LocalPlaybackTTS:
         """Notify a frontend-neutral owner when local playback naturally ends."""
         self.playback_finished_callback = callback if callable(callback) else None
 
-    def _notify_playback_started(self, duration_seconds, lip_sync_envelope=None, word_start_seconds=None, playback_id=None):
+    def _notify_playback_started(self, duration_seconds, lip_sync_envelope=None, word_start_seconds=None, playback_id=None,
+                                 *, chunk_metadata=None):
         callback = self.playback_started_callback
         if callback is None:
             return
         try:
+            if chunk_metadata is not None:
+                try:
+                    inspect.signature(callback).bind(
+                        float(duration_seconds), lip_sync_envelope, list(word_start_seconds or ()),
+                        playback_id, chunk_metadata=chunk_metadata,
+                    )
+                except (TypeError, ValueError):
+                    pass  # Existing integrations retain their four-argument callback.
+                else:
+                    try:
+                        callback(float(duration_seconds), lip_sync_envelope, list(word_start_seconds or ()),
+                                 playback_id, chunk_metadata=chunk_metadata)
+                    except Exception:
+                        pass  # Never invoke a failing callback a second time.
+                    return
             callback(float(duration_seconds), lip_sync_envelope, list(word_start_seconds or ()), playback_id)
         except TypeError:
             # Existing integrations may still accept the historic two or one
@@ -181,6 +198,32 @@ class LocalPlaybackTTS:
         with self.playback_state_lock:
             if self.active_playback_generation == generation:
                 self.active_playback_generation = None
+
+    @staticmethod
+    def _dispose_playback_stream(stream, generation, *, cancelled):
+        """Run native teardown only on this stream's existing playback worker.
+
+        Cancellation callers invalidate generation/PCM ownership immediately.
+        They never race a native abort against this worker's stop or close, or
+        wait for a driver cleanup operation before accepting replacement input.
+        """
+        succeeded = True
+        for stage in (("abort" if cancelled else "stop"), "close"):
+            try:
+                operation = getattr(stream, stage)
+                try:
+                    inspect.signature(operation).bind(ignore_errors=False)
+                except (TypeError, ValueError):
+                    operation()  # Compatible synthetic/alternative stream API.
+                else:
+                    operation(ignore_errors=False)
+            except Exception as error:
+                succeeded = False
+                development_flight_recorder().mark(
+                    "playback_stream_teardown_error", playback_id=int(generation),
+                    stage=stage, exception_class=type(error).__name__[:80],
+                )
+        return succeeded
 
     @staticmethod
     def build_lip_sync_envelope(audio, sample_rate, samples_per_second=24):
@@ -334,6 +377,9 @@ class LocalPlaybackTTS:
         recorder = development_flight_recorder()
         position = 0
         first_non_silent_reported = False
+        first_non_silent_seen = False
+        underflow_callbacks = 0
+        playback_error = False
 
         # ----------------------------------------------------
         # Keep a reference to the current stream locally.
@@ -350,16 +396,12 @@ class LocalPlaybackTTS:
                 status
             ):
 
-                nonlocal position, first_non_silent_reported
+                nonlocal position, first_non_silent_seen, underflow_callbacks
 
                 if status:
 
                     if getattr(status, "output_underflow", False):
-                        recorder.mark("portaudio_underflow", playback_id=int(generation), underflows=1)
-
-                    print(
-                        f"\nTTS audio status: {status}"
-                    )
+                        underflow_callbacks += 1
 
                 # --------------------------------------------
                 # Stop immediately when requested.
@@ -406,9 +448,8 @@ class LocalPlaybackTTS:
                     )
 
                     position += count
-                    if not first_non_silent_reported and np.any(np.abs(audio[position - count:position]) > 1e-7):
-                        first_non_silent_reported = True
-                        recorder.mark("playback_first_non_silent_buffer", playback_id=int(generation))
+                    if not first_non_silent_seen and np.any(np.abs(audio[position - count:position]) > 1e-7):
+                        first_non_silent_seen = True
 
                 # --------------------------------------------
                 # Fill any remaining frames with silence.
@@ -450,10 +491,6 @@ class LocalPlaybackTTS:
             # start. Do not emit a false playback_started event or let that
             # stale stream produce another audible callback.
             if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
-                try:
-                    stream.abort()
-                except Exception:
-                    pass
                 return
             print(f"[AIFren Timing] audio playback started; id={generation}; duration={duration_seconds:.3f}s")
             self._notify_playback_started(duration_seconds, lip_sync_envelope, word_start_seconds, generation)
@@ -465,6 +502,10 @@ class LocalPlaybackTTS:
 
             while stream.active:
 
+                if first_non_silent_seen and not first_non_silent_reported:
+                    first_non_silent_reported = True
+                    recorder.mark("playback_first_non_silent_buffer", playback_id=int(generation))
+
                 if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
 
                     break
@@ -474,6 +515,7 @@ class LocalPlaybackTTS:
                 )
 
         except Exception as e:
+            playback_error = True
 
             if not self.stop_event.is_set() and self._is_current_playback_generation(generation):
 
@@ -487,21 +529,12 @@ class LocalPlaybackTTS:
             # Close stream.
             # ------------------------------------------------
 
-            if stream:
-
-                try:
-
-                    stream.stop()
-
-                except Exception:
-                    pass
-
-                try:
-
-                    stream.close()
-
-                except Exception:
-                    pass
+            if stream is not None:
+                disposed = self._dispose_playback_stream(
+                    stream, generation, cancelled=(self.stop_event.is_set()
+                        or not self._is_current_playback_generation(generation)),
+                )
+                playback_error = playback_error or not disposed
 
             with self.stream_lock:
 
@@ -512,13 +545,19 @@ class LocalPlaybackTTS:
             naturally_completed = (
                 not self.stop_event.is_set()
                 and self._is_current_playback_generation(generation)
+                and not playback_error and position >= len(audio)
             )
+            if first_non_silent_seen and not first_non_silent_reported:
+                recorder.mark("playback_first_non_silent_buffer", playback_id=int(generation))
+            if underflow_callbacks:
+                recorder.mark("portaudio_underflow", playback_id=int(generation), underflows=underflow_callbacks)
             recorder.mark("playback_stream_stopped", playback_id=int(generation), cancelled=not naturally_completed)
             self._retire_playback(generation)
             if self.playback_thread is threading.current_thread():
                 self.playback_thread = None
-            if naturally_completed:
+            if self._is_current_playback_generation(generation):
                 self.playback_finished.set()
+            if naturally_completed:
                 print(f"[AIFren TTS] natural completion; id={generation}; state={self.playback_debug_state()}")
                 self._notify_playback_finished(generation)
 
@@ -547,26 +586,10 @@ class LocalPlaybackTTS:
             f"playback={interrupted_playback}"
         )
 
-        # ----------------------------------------------------
-        # Stop active stream.
-        # ----------------------------------------------------
-
-        with self.stream_lock:
-
-            stream = self.stream
-
-        if stream:
-
-            try:
-
-                stream.abort()
-
-            except Exception:
-                pass
-
         # Do not join the audio worker here. PTT must begin microphone capture
         # immediately; the invalidated worker cleans its own stream up and is
-        # forbidden from publishing a natural-completion event.
+        # forbidden from publishing a natural-completion event. Only that
+        # worker may call native abort/stop/close on its captured stream.
         thread = self.playback_thread
         if thread is not None and not thread.is_alive():
             self.playback_thread = None
@@ -584,6 +607,7 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
     """Optional hexgrad Kokoro-82M provider using the shared local player."""
 
     supports_early_speech = True
+    supports_owned_continuous_stream = True
 
     @property
     def synthesis_strategy(self):
@@ -661,22 +685,38 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
 
     def _initialize_continuous_state(self):
         self._kokoro_synthesis_lock = threading.Lock()
+        self._continuous_dispatch_lock = threading.RLock()
         self._continuous_condition = threading.Condition()
         self._continuous_chunks = deque()
         self._continuous_closed = False
         self._continuous_generation = None
         self._continuous_sample_rate = None
         self._continuous_max_chunks = 4
+        self._continuous_submitted_samples = 0
+        self._continuous_results = deque(maxlen=8)
 
     def _generate_audio(self, text, generation=None, *, cancelled=None):
         # Cancellation can retire a turn while a CUDA kernel is still winding
         # down. Serialize at the provider boundary so the replacement turn can
         # never start a second Kokoro inference concurrently.
+        resource_wait_started = time.monotonic()
+        recorder = development_flight_recorder()
         while not self._kokoro_synthesis_lock.acquire(timeout=0.05):
             if cancelled is not None and cancelled.is_set():
+                recorder.mark(
+                    "kokoro_synthesis_resource_wait", playback_id=int(generation or 0),
+                    duration_ms=(time.monotonic() - resource_wait_started) * 1000.0,
+                    cancelled=True, characters=len(str(text or "")),
+                )
                 return None
         try:
-            if cancelled is not None and cancelled.is_set():
+            retired = cancelled is not None and cancelled.is_set()
+            recorder.mark(
+                "kokoro_synthesis_resource_wait", playback_id=int(generation or 0),
+                duration_ms=(time.monotonic() - resource_wait_started) * 1000.0,
+                cancelled=retired, characters=len(str(text or "")),
+            )
+            if retired:
                 return None
             return self._generate_audio_serial(text, generation, cancelled=cancelled)
         finally:
@@ -721,7 +761,8 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
                 return None
             unit_start = time.monotonic()
             unit_samples = 0
-            recorder.mark("kokoro_synthesis_unit_start", chunk_index=index, characters=len(unit))
+            recorder.mark("kokoro_synthesis_unit_start", chunk_index=index,
+                          characters=len(unit), words=len(re.findall(r"\S+", unit)))
             for result in self.pipeline(unit, voice=str(self.voice_path), speed=self.speed):
                 # An in-flight native call is irreducible here. Never request
                 # its next yield/unit after cancellation, even in prepare mode.
@@ -795,7 +836,7 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
         return self._generate_audio(str(text), cancelled=cancelled)
 
     @staticmethod
-    def _continuous_chunk(prepared, on_started=None):
+    def _continuous_chunk(prepared, on_started=None, metadata=None):
         audio, sample_rate, word_starts = prepared
         audio = np.asarray(audio, dtype=np.float32)
         if audio.ndim == 1:
@@ -803,6 +844,13 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
         if audio.ndim != 2 or audio.shape[1] != 1 or len(audio) == 0 or int(sample_rate) <= 0:
             raise ValueError("Continuous Kokoro playback requires non-empty mono PCM.")
         duration = len(audio) / float(sample_rate) if sample_rate else 0.0
+        details = dict(metadata) if metadata is not None else None
+        if details is not None:
+            details.update(
+                sample_count=len(audio), sample_rate=int(sample_rate),
+                alignment_kind=("provider_token_count" if word_starts and
+                                len(word_starts) == details.get("word_count") else "estimated"),
+            )
         return {
             "audio": audio,
             "sample_rate": int(sample_rate),
@@ -812,39 +860,55 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
             "on_started": on_started,
             "position": 0,
             "announced": False,
+            "metadata": details,
         }
 
-    def begin_prepared_stream(self, prepared, *, on_started=None) -> bool:
+    def begin_prepared_stream(self, prepared, *, on_started=None, cancelled=None, metadata=None):
         """Open one queued PCM playback session for this assistant turn."""
-        self.stop()
-        chunk = self._continuous_chunk(prepared, on_started)
-        generation = self._next_playback_generation()
-        self.stop_event.clear()
-        self.playback_finished.clear()
-        with self._continuous_condition:
-            self._continuous_chunks.clear()
-            self._continuous_chunks.append(chunk)
-            self._continuous_closed = False
-            self._continuous_generation = generation
-            self._continuous_sample_rate = chunk["sample_rate"]
-            self._continuous_condition.notify_all()
-        self._mark_playback_active(generation)
-        self.playback_thread = threading.Thread(
-            target=self._play_continuous_audio,
-            args=(chunk["sample_rate"], generation),
-            name="aifren-tts-continuous-playback",
-            daemon=True,
-        )
-        self.playback_thread.start()
-        return True
+        expected_generation = self.playback_generation
+        # Array validation and envelope work stay outside the short dispatch
+        # lock. Cancellation must not wait for preparation or queue producers.
+        chunk = self._continuous_chunk(prepared, on_started, metadata)
+        with self._continuous_dispatch_lock:
+            if (expected_generation != self.playback_generation or
+                    (cancelled is not None and cancelled.is_set())):
+                return False
+            self.stop()
+            if cancelled is not None and cancelled.is_set():
+                return False
+            generation = self._next_playback_generation()
+            self.stop_event.clear()
+            self.playback_finished.clear()
+            with self._continuous_condition:
+                self._continuous_chunks.clear()
+                if chunk["metadata"] is not None:
+                    chunk["metadata"]["sample_offset"] = 0
+                self._continuous_chunks.append(chunk)
+                self._continuous_closed = False
+                self._continuous_generation = generation
+                self._continuous_sample_rate = chunk["sample_rate"]
+                self._continuous_submitted_samples = len(chunk["audio"])
+                self._continuous_condition.notify_all()
+            self._mark_playback_active(generation)
+            self.playback_thread = threading.Thread(
+                target=self._play_continuous_audio,
+                args=(chunk["sample_rate"], generation, cancelled),
+                name="aifren-tts-continuous-playback",
+                daemon=True,
+            )
+            self.playback_thread.start()
+            return generation
 
-    def append_prepared_stream(self, prepared, *, on_started=None) -> bool:
+    def append_prepared_stream(self, prepared, *, on_started=None, stream_id=None,
+                               cancelled=None, metadata=None) -> bool:
         """Append ordered PCM without opening or restarting the audio device."""
-        chunk = self._continuous_chunk(prepared, on_started)
+        chunk = self._continuous_chunk(prepared, on_started, metadata)
         with self._continuous_condition:
             generation = self._continuous_generation
             if (
                 generation is None or self._continuous_closed or self.stop_event.is_set()
+                or (stream_id is not None and generation != stream_id)
+                or (cancelled is not None and cancelled.is_set())
                 or not self._is_current_playback_generation(generation)
                 or chunk["sample_rate"] != self._continuous_sample_rate
             ):
@@ -856,9 +920,14 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
                 self._continuous_condition.wait(timeout=0.10)
                 if (
                     self._continuous_closed or self.stop_event.is_set()
+                    or self._continuous_generation != generation
+                    or (cancelled is not None and cancelled.is_set())
                     or not self._is_current_playback_generation(generation)
                 ):
                     return False
+            if chunk["metadata"] is not None:
+                chunk["metadata"]["sample_offset"] = self._continuous_submitted_samples
+            self._continuous_submitted_samples += len(chunk["audio"])
             self._continuous_chunks.append(chunk)
             depth = len(self._continuous_chunks)
             self._continuous_condition.notify_all()
@@ -868,10 +937,60 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
         )
         return True
 
-    def finish_prepared_stream(self) -> None:
+    def finish_prepared_stream(self, *, stream_id=None) -> bool:
         with self._continuous_condition:
+            if stream_id is not None and stream_id != self._continuous_generation:
+                return False
             self._continuous_closed = True
             self._continuous_condition.notify_all()
+            return True
+
+    def abort_prepared_stream(self, stream_id) -> bool:
+        """Retire only the queue's own session, never replacement playback."""
+        if stream_id is None:
+            return False
+        with self._continuous_dispatch_lock:
+            if stream_id != self._continuous_generation:
+                return False
+            # A full-prepared/direct replacement can advance playback without
+            # adopting the former continuous-session field. Check both owners.
+            return self.stop_if_generation(stream_id) is not None
+
+    def stop_if_generation(self, expected_generation: int) -> int | None:
+        """Stop the observed owner, including full-prepared/direct playback.
+
+        None means a newer provider generation already owns playback. Detach
+        state atomically; the retired playback worker owns native teardown.
+        A later direct start cannot be cleared by that older worker's cleanup.
+        """
+        with self._continuous_dispatch_lock:
+            with self.playback_generation_lock:
+                if expected_generation != self.playback_generation:
+                    return None
+                self.playback_generation += 1
+                retired_generation = self.playback_generation
+                self.stop_event.set()
+                with self.playback_state_lock:
+                    interrupted_playback = self.active_playback_generation
+                    self.active_synthesis_generation = None
+                    self.active_playback_generation = None
+                # A new start may clear this event after the ownership lock
+                # is released. Native teardown never sets it again afterward.
+                self.playback_finished.set()
+            self._cancel_continuous_stream()
+            development_flight_recorder().mark(
+                "tts_cancellation", playback_id=int(retired_generation), cancelled=True,
+            )
+            return int(interrupted_playback or 0)
+
+    def continuous_stream_outcome(self, stream_id):
+        with self._continuous_condition:
+            for generation, outcome in reversed(self._continuous_results):
+                if generation == stream_id:
+                    return outcome
+        if stream_id is not None and stream_id != self.playback_generation:
+            return "cancelled"
+        return None
 
     def _cancel_continuous_stream(self) -> None:
         with self._continuous_condition:
@@ -881,51 +1000,112 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
             self._continuous_sample_rate = None
             self._continuous_condition.notify_all()
 
-    def _play_continuous_audio(self, sample_rate, generation):
+    def _play_continuous_audio(self, sample_rate, generation, cancelled=None):
         recorder = development_flight_recorder()
         transitions = SimpleQueue()
         current = None
         stream = None
+        rendered_samples = 0
+        drained = False
+        playback_error = False
+        underflow_callbacks = 0
+        starvation_samples = 0
+        starvation_callbacks = 0
+        first_non_silent = False
+
+        def retired():
+            return (self.stop_event.is_set() or generation != self.playback_generation or
+                    (cancelled is not None and cancelled.is_set()))
+
+        def announce_pending():
+            while True:
+                try:
+                    chunk, sample_position = transitions.get_nowait()
+                except Empty:
+                    return
+                # The audio callback only places bounded transition records.
+                # Service/event work happens here and cannot reopen retired
+                # playback after cancellation or a replacement session.
+                with self._continuous_dispatch_lock:
+                    if retired():
+                        continue
+                    callback_started = chunk.get("on_started")
+                    if callable(callback_started):
+                        callback_started()
+                    if retired():
+                        continue
+                    details = chunk.get("metadata")
+                    if details is not None:
+                        details = dict(details, playback_sample_offset=sample_position)
+                    recorder.mark(
+                        "playback_chunk_transition", playback_id=int(generation),
+                        duration_seconds=chunk["duration"],
+                        chunk_index=int((details or {}).get("sequence", 0)),
+                    )
+                    self._notify_playback_started(
+                        chunk["duration"], chunk["envelope"], chunk["word_starts"], generation,
+                        chunk_metadata=details,
+                    )
 
         try:
             def callback(outdata, frames, time_info, status):
-                nonlocal current
-                if status:
-                    if getattr(status, "output_underflow", False):
-                        recorder.mark("portaudio_underflow", playback_id=int(generation), underflows=1)
-                    print(f"\nTTS audio status: {status}")
+                nonlocal current, rendered_samples, drained, underflow_callbacks
+                nonlocal starvation_samples, starvation_callbacks, first_non_silent
+                # No logging, synthesis, I/O, or producer wait on PortAudio's
+                # thread. Counters are reported by the management worker.
+                if status and getattr(status, "output_underflow", False):
+                    underflow_callbacks += 1
                 outdata.fill(0)
-                if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
+                if retired():
                     raise sd.CallbackStop()
 
                 written = 0
                 while written < frames:
                     if current is None:
-                        with self._continuous_condition:
+                        acquired = self._continuous_condition.acquire(blocking=False)
+                        try:
+                            if not acquired:
+                                starvation_samples += frames - written
+                                starvation_callbacks += 1
+                                rendered_samples += frames
+                                return
                             if self._continuous_chunks:
                                 current = self._continuous_chunks.popleft()
                                 self._continuous_condition.notify_all()
                             elif self._continuous_closed:
+                                drained = True
+                                rendered_samples += written
                                 raise sd.CallbackStop()
                             else:
+                                starvation_samples += frames - written
+                                starvation_callbacks += 1
+                                rendered_samples += frames
                                 return
+                        finally:
+                            if acquired:
+                                self._continuous_condition.release()
                     if not current["announced"]:
                         current["announced"] = True
-                        transitions.put(current)
+                        transitions.put((current, rendered_samples + written))
                     available = len(current["audio"]) - current["position"]
                     count = min(frames - written, available)
                     if count > 0:
-                        with self.volume_lock:
-                            volume = self.volume
+                        volume = self.volume  # One atomic scalar read; setter owns validation.
                         start = current["position"]
-                        outdata[written:written + count] = current["audio"][start:start + count] * volume
+                        pcm = current["audio"][start:start + count]
+                        outdata[written:written + count] = pcm * volume
+                        if not first_non_silent and np.any(np.abs(pcm) > 1e-7):
+                            first_non_silent = True
                         current["position"] += count
                         written += count
                     if current["position"] >= len(current["audio"]):
                         current = None
+                rendered_samples += frames
 
             opened_at = time.monotonic()
             recorder.mark("playback_stream_open_begin", playback_id=int(generation))
+            if retired():
+                return
             stream = sd.OutputStream(
                 samplerate=sample_rate,
                 channels=1,
@@ -936,8 +1116,11 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
                 "playback_stream_open_end", playback_id=int(generation),
                 duration_ms=(time.monotonic() - opened_at) * 1000.0,
             )
-            with self.stream_lock:
-                self.stream = stream
+            with self._continuous_dispatch_lock:
+                if retired():
+                    return
+                with self.stream_lock:
+                    self.stream = stream
             started_at = time.monotonic()
             recorder.mark("playback_stream_start_begin", playback_id=int(generation))
             stream.start()
@@ -946,86 +1129,73 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
                 duration_ms=(time.monotonic() - started_at) * 1000.0,
             )
 
-            first_transition = True
+            reported_non_silent = False
             while stream.active:
-                while True:
-                    try:
-                        chunk = transitions.get_nowait()
-                    except Empty:
-                        break
-                    callback_started = chunk.get("on_started")
-                    if callable(callback_started):
-                        callback_started()
-                    recorder.mark(
-                        "playback_chunk_transition", playback_id=int(generation),
-                        duration_seconds=chunk["duration"],
-                    )
-                    if first_transition:
-                        first_transition = False
-                        recorder.mark("playback_first_non_silent_buffer", playback_id=int(generation))
-                    self._notify_playback_started(
-                        chunk["duration"], chunk["envelope"], chunk["word_starts"], generation
-                    )
-                if self.stop_event.is_set() or not self._is_current_playback_generation(generation):
+                announce_pending()
+                if first_non_silent and not reported_non_silent and not retired():
+                    reported_non_silent = True
+                    recorder.mark("playback_first_non_silent_buffer", playback_id=int(generation))
+                if retired():
                     break
                 sd.sleep(2)
 
             # A short final buffer can stop the stream before the management
-            # loop observes its transition marker.
-            while True:
-                try:
-                    chunk = transitions.get_nowait()
-                except Empty:
-                    break
-                callback_started = chunk.get("on_started")
-                if callable(callback_started):
-                    callback_started()
-                recorder.mark("playback_chunk_transition", playback_id=int(generation))
-                self._notify_playback_started(
-                    chunk["duration"], chunk["envelope"], chunk["word_starts"], generation
-                )
-        except Exception as error:
-            if not self.stop_event.is_set() and self._is_current_playback_generation(generation):
+            # loop observes its transition marker. The same ownership check
+            # applies here, including cancellation during stream.start().
+            announce_pending()
+            if first_non_silent and not reported_non_silent and not retired():
+                recorder.mark("playback_first_non_silent_buffer", playback_id=int(generation))
+        except Exception:
+            playback_error = True
+            if not retired():
                 print('[AIFren TTS] audio operation failed.')
         finally:
             if stream is not None:
-                try:
-                    stream.stop()
-                except Exception:
-                    pass
-                try:
-                    stream.close()
-                except Exception:
-                    pass
+                disposed = self._dispose_playback_stream(
+                    stream, generation, cancelled=retired(),
+                )
+                playback_error = playback_error or not disposed
             with self.stream_lock:
                 if self.stream is stream:
                     self.stream = None
-            naturally_completed = (
-                not self.stop_event.is_set()
-                and self._is_current_playback_generation(generation)
-            )
-            recorder.mark(
-                "playback_stream_stopped", playback_id=int(generation),
-                cancelled=not naturally_completed,
-            )
-            self._retire_playback(generation)
-            with self._continuous_condition:
-                if self._continuous_generation == generation:
-                    self._continuous_generation = None
-                    self._continuous_sample_rate = None
-                    self._continuous_chunks.clear()
-                    self._continuous_closed = True
-                    self._continuous_condition.notify_all()
-            if self.playback_thread is threading.current_thread():
-                self.playback_thread = None
-            if naturally_completed:
-                self.playback_finished.set()
-                self._notify_playback_finished(generation)
+            with self._continuous_dispatch_lock:
+                was_retired = retired()
+                naturally_completed = drained and not playback_error and not was_retired
+                outcome = "completed" if naturally_completed else "cancelled" if was_retired else "failed"
+                recorder.mark(
+                    "playback_stream_stopped", playback_id=int(generation),
+                    cancelled=was_retired, outcome=outcome,
+                    audio_samples=rendered_samples, sample_rate=sample_rate,
+                )
+                if underflow_callbacks:
+                    recorder.mark("portaudio_underflow", playback_id=int(generation), underflows=underflow_callbacks)
+                if starvation_samples:
+                    recorder.mark("tts_pcm_starvation", playback_id=int(generation),
+                                  audio_samples=starvation_samples, sample_rate=sample_rate,
+                                  underflows=starvation_callbacks)
+                self._retire_playback(generation)
+                with self._continuous_condition:
+                    self._continuous_results.append((generation, outcome))
+                    if self._continuous_generation == generation:
+                        self._continuous_generation = None
+                        self._continuous_sample_rate = None
+                        self._continuous_chunks.clear()
+                        self._continuous_closed = True
+                        self._continuous_condition.notify_all()
+                if self.playback_thread is threading.current_thread():
+                    self.playback_thread = None
+                # Wake the queue on a playback error as well, but never
+                # announce that a partial/failed utterance completed normally.
+                if generation == self.playback_generation:
+                    self.playback_finished.set()
+                if naturally_completed:
+                    self._notify_playback_finished(generation)
 
     def stop(self):
-        interrupted = super().stop()
-        self._cancel_continuous_stream()
-        return interrupted
+        with self._continuous_dispatch_lock:
+            interrupted = super().stop()
+            self._cancel_continuous_stream()
+            return interrupted
 
     def start_prepared_chunk(self, prepared) -> bool:
         """Start an already-synthesized Kokoro chunk in source order."""

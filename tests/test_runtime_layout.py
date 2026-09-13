@@ -99,3 +99,27 @@ class RuntimeLayoutTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProviderResourceLayoutTests(unittest.TestCase):
+    def test_model_locations_follow_resources_while_code_stays_in_the_checkout(self):
+        import json, os, subprocess, sys
+        source=Path(__file__).resolve().parents[1]
+        with TemporaryDirectory() as directory:
+            code = """
+import json, os
+from pathlib import Path
+import automatic_expression, memory.embeddings, stt.stt, config, assistant_service
+print(json.dumps({
+ 'models':[str(automatic_expression.DEFAULT_MODEL_DIR),memory.embeddings.MODEL_DIR,
+           stt.stt.MODEL_DIR,config.KOKORO_MODEL_DIR,config.LOCAL_LLM_MODEL_DIR],
+ 'modules':[automatic_expression.__file__,memory.embeddings.__file__,stt.stt.__file__,
+            config.__file__,assistant_service.__file__]}))
+"""
+            environment=dict(os.environ,AIFREN_RESOURCE_ROOT=directory,PYNPUT_BACKEND='dummy')
+            result=subprocess.run([sys.executable,'-c',code],cwd=source,env=environment,
+                text=True,capture_output=True,check=True,timeout=60)
+            values=json.loads(result.stdout.strip().splitlines()[-1])
+            self.assertTrue(all(Path(p).is_relative_to(directory) for p in values['models']))
+            self.assertTrue(all(Path(p).is_relative_to(source) for p in values['modules']))
+            self.assertEqual([],list(Path(directory).iterdir()),'Path resolution initialized runtime data')

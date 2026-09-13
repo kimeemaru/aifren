@@ -25,6 +25,17 @@ LOCAL_LLM_MODEL_DIR = str(resource_path(
 # support it.  The context builder then trims only expendable oldest raw turns.
 LOCAL_LLM_CONTEXT_SIZE = int(os.environ.get("AIFREN_LOCAL_LLM_CONTEXT_SIZE", "16384"))
 LOCAL_LLM_CONTEXT_CHAR_BUDGET = int(os.environ.get("AIFREN_LOCAL_LLM_CONTEXT_CHAR_BUDGET", "48000"))
+# Governor deployment ceiling when an adapter cannot report model capacity.
+# This is not a claim about an unknown online model's advertised context size.
+CONTEXT_GOVERNOR_FALLBACK_CAPACITY = int(os.environ.get("AIFREN_CONTEXT_CAPACITY_TOKENS", "16384"))
+# Complete-request performance target, independent of model allocation/output.
+# Initial deployment profile: prior responsive requests were about 4.1k tokens
+# including conservative framing. 4.5k adds modest margin; not an optimality claim.
+CONTEXT_OPERATING_TARGET_TOKENS = int(os.environ.get("AIFREN_CONTEXT_OPERATING_TARGET_TOKENS", "4608"))
+# Normal V2 composition after the matched responsive-profile validation.
+# AIFREN_CONTEXT_GOVERNOR=0 is explicit process-local composition rollback;
+# it never selects V1 or changes model allocation/output limits.
+CONTEXT_GOVERNOR_DEFAULT_ENABLED = True
 
 # Kokoro is the practical daily-driver provider. Audio8 remains an explicitly
 # selectable diagnostic persistent service, but its chunking constraints must
@@ -85,6 +96,8 @@ MEMORY_AUTHORITY_ENV = "AIFREN_MEMORY_AUTHORITY"
 DEVELOPMENT_QA_ENV = "AIFREN_ENABLE_DEVELOPMENT_QA"
 V2_AUTHORITY_RECENT_MESSAGES = 12
 V2_AUTHORITY_RECENT_CHARACTERS = 12000
+# Legacy request-composition rollback and bounded retrospective-guard work only.
+# Normal V2 prompt selection is adaptive; these are not its history boundary.
 V2_AUTHORITY_RECENT_POLICY = "memory_query_contained"
 
 
@@ -111,3 +124,7 @@ OPEN_THREAD_CONTEXTUAL_SHADOW_PROVIDER = "none"
 # changing conversation or Memory V2 semantics.
 RECENT_CONTEXT_MAX_MESSAGES = 100
 RECENT_CONTEXT_MAX_CHARS = 60000
+
+# Non-authoritative attention experiment: the 2026-09-10 eight-pair comparison
+# did not meet the benefit/safety gate. No preference or authority change.
+RECENT_PULSE_ENABLED = False

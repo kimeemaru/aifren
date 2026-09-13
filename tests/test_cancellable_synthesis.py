@@ -76,6 +76,10 @@ class CancellableSynthesisTests(unittest.TestCase):
         self.tts = ControlledKokoro()
         self.session = ProductionSession(self.id(), tts=self.tts)
         self.service = self.session.service
+        # This fixture owns the full-preparation compatibility path; its
+        # hardware stub intentionally overrides _start_playback only. The
+        # responsive path has separate real-queue/fake-device coverage.
+        self.service.responsive_speech = False
         self.service._ptt_factory = FocusedPtt
         self.events = []; self.service.subscribe(self.events.append)
         self.workers = []
@@ -363,6 +367,7 @@ class ProactiveCancellableSynthesisTests(proactive._ProactiveFixture):
         audio=ControlledKokoro()
         audio.release_synthesis=audio.release[0]
         with patch.object(proactive,'GatedAudio',return_value=audio): super().setUp()
+        self.service.responsive_speech = False
         self.addCleanup(audio.unblock)
 
     def test_proactive_commit_survives_cancel_without_consuming_tail(self):

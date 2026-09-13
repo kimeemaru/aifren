@@ -27,7 +27,7 @@ namespace AIFren.UnityPoc.UI
         {
             internal string Source;
             internal string Spoken;
-            internal List<string> Pages;
+            internal List<SubtitlePage> Pages;
             internal List<SubtitlePageWordRange> Ranges;
             internal float PreparationMilliseconds;
         }
@@ -110,6 +110,8 @@ namespace AIFren.UnityPoc.UI
         private Button leaveContinuityScenarioButton;
         private Transform continuityThreadsContent;
         private ContinuitySnapshot authoritativeContinuity;
+        private bool sceneProjectionDirty;
+        private CharacterSessionOwner pendingContinuityOwner;
         private string pendingContinuityCommandId;
         private string pendingContinuityAction;
         private string pendingContinuityActionToken;
@@ -295,6 +297,7 @@ namespace AIFren.UnityPoc.UI
         private TMP_InputField newCharacterPersonalityInput;
         private readonly List<CharacterSummary> availableCharacters = new List<CharacterSummary>();
         private bool characterSwitchInFlight;
+        private string activeCharacterSession;
         private bool showGeminiApiKey;
         private bool alwaysOnTop;
         private TMP_Text pttBindValue;
@@ -543,7 +546,7 @@ namespace AIFren.UnityPoc.UI
             alwaysOnTop = PlayerPrefs.GetInt(AlwaysOnTopPreference, 0) == 1;
             if (NativeQaSession.Active) alwaysOnTop = false;
             showSceneOverlay = PlayerPrefs.GetInt(SceneOverlayPreference, 0) == 1;
-            avatarPresentationState = AvatarPresentationState.Load(AvatarConfiguration.Load());
+            avatarPresentationState = AvatarPresentationState.CreateUnbound(AvatarConfiguration.Load());
             avatarViewerBackgroundState = AvatarViewerBackgroundState.Load();
             managedAssetLibrary = ManagedAssetLibrary.Load();
             List<ManagedAssetRecord> removedInvalidModels = managedAssetLibrary.RemoveInvalidModelRecords();
@@ -1042,6 +1045,10 @@ namespace AIFren.UnityPoc.UI
 
         private async Task ConnectAsync()
         {
+            if (avatarCuesSaving) { avatarCuesSaving = false; avatarCuesDirty = false; }
+            savingCompanionPreference = CompanionPreference.None;
+            committedSpeechTimeline = null;
+            committedSpeechRetired = true;
             presentationTurn.Reset();
             avatarAnimation?.RetireResponseMotion();
             if (client == null)
@@ -1131,10 +1138,33 @@ namespace AIFren.UnityPoc.UI
                 return;
             }
 
+            if (message.type == "event" && message.@event?.type == "character_switching")
+            {
+                BeginCharacterPresentationTransition();
+                return;
+            }
+
+            if (message.type == "avatar_cues_settings")
+            {
+                ReceiveAvatarCuesSetting(message.data.explicit_avatar_cues, true);
+                return;
+            }
+            if (message.type == "companion_preferences" && message.data != null)
+            {
+                ReceiveCompanionPreferences(message.data.conversation_style, message.data.responsive_speech,
+                    message.data.automatic_expressions, message.data.automatic_expression_status, true);
+                return;
+            }
+
             if (message.type == "command_error")
             {
+                if (message.error != null && message.error.code != null && message.error.code.Contains("avatar_cues"))
+                    AvatarCuesSaveFailed(message.error.message);
+                if (message.error != null && message.error.code != null && message.error.code.Contains("companion_preferences"))
+                    CompanionPreferencesSaveFailed(message.error.message);
+                if (HandleCharacterManagementError(message.error)) return;
                 RestoreAuthoritativeModelSettingsAfterFailure();
-                characterSwitchInFlight = false;
+                characterSwitchInFlight = client != null && client.CharacterSwitching;
                 if (message.error != null && !string.IsNullOrEmpty(message.error.code)
                     && message.error.code.Contains("memory_view"))
                 {
@@ -1160,6 +1190,7 @@ namespace AIFren.UnityPoc.UI
 
             BackendEvent backendEvent = message.@event;
             BackendEventData data = backendEvent.data;
+            if (HandleCharacterManagementEvent(backendEvent)) return;
 
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             if (backendEvent.type == "flight_recorder_backend_dumped")
@@ -1302,6 +1333,22 @@ namespace AIFren.UnityPoc.UI
                 }
                 RequestMemoryViewerPage();
             }
+            else if (backendEvent.type == "automatic_expression_status" && data != null)
+            {
+                automaticExpressionStatus = data.message;
+                RefreshCompanionPreferenceControls();
+            }
+            else if (backendEvent.type == "automatic_expression" && data != null)
+            {
+                if (!savedAutomaticExpressions)
+                {
+                    presentationTurn.CancelAutomatic();
+                    return;
+                }
+                AvatarPresentationResolver resolver = avatarLoader != null
+                    ? avatarLoader.GetComponent<AvatarPresentationResolver>() : null;
+                presentationTurn.PublishAutomatic(data.turn_id, resolver, data.presentation);
+            }
             else if (backendEvent.type == "assistant_response" && data != null)
             {
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
@@ -1312,6 +1359,7 @@ namespace AIFren.UnityPoc.UI
                 // conversation_message event appends history exactly once.
                 if (assistantStreamPresentationDirty) RefreshStreamedAssistantDialogue(false);
                 pendingAssistantContent = data.content;
+                publishedSubtitleTurnId = data.turn_id;
                 subtitleResponseReceivedAt = Time.unscaledTime;
                 Debug.Log("[AIFren Timing] Unity assistant response received t=" + subtitleResponseReceivedAt.ToString("F3"));
                 Debug.Log("[AIFren Subtitle] assistant response received hidden=" + interfaceHidden + " enabled=" + showDialogueWhenHidden);
@@ -1320,7 +1368,7 @@ namespace AIFren.UnityPoc.UI
                     ? avatarLoader.GetComponent<AvatarPresentationResolver>()
                     : null;
                 presentationTurn.PublishFinal(data.turn_id, presentationResolver,
-                    data.has_presentation ? data.presentation : null, data.content, characterName);
+                    data.has_presentation ? data.presentation : null, data.content, characterName, data.automatic_expression_pending);
                 if (assistantStreamVisible)
                 {
                     // Reconcile against the canonical final response while
@@ -1400,6 +1448,7 @@ namespace AIFren.UnityPoc.UI
             }
             else if (backendEvent.type == "tts_state" && data != null)
             {
+                if (HandleCommittedSpeech(data)) return;
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
                 if (data.state == "starting") developmentFlightRecorder?.Mark("tts_submit", data.turn_id, data.playback_id);
                 else if (data.state == "playback_started")
@@ -1505,6 +1554,7 @@ namespace AIFren.UnityPoc.UI
                         // must not end a newer subtitle response.
                         return;
                     }
+                    if (data.state == "stopped") presentationTurn.FinishSpeech(data.turn_id, data.interrupted);
                     avatarAnimation?.StopSpeech();
                     pendingSpeechReady = true;
                     pendingSpeechDuration = 0f;
@@ -1624,18 +1674,23 @@ namespace AIFren.UnityPoc.UI
                 return;
             }
 
-            if (snapshot.transport_version < 2)
+            if (snapshot.transport_version < 9)
             {
                 ApplyStatus("error", "An older backend is listening on port 8765. Stop it, then launch the current AIFren backend.");
                 return;
             }
 
+            bool settlingCharacterTransition = characterSwitchInFlight;
             bool receivedCharacterIdentity = snapshot.character != null
                 && !string.IsNullOrWhiteSpace(snapshot.character.character_id);
             bool characterChanged = receivedCharacterIdentity
                 && HasCharacterChanged(activeCharacterId, snapshot.character.character_id);
             bool initialCharacterIdentity = receivedCharacterIdentity
                 && string.IsNullOrWhiteSpace(activeCharacterId);
+            bool bindingChanged = !string.IsNullOrWhiteSpace(activeCharacterSession)
+                && !string.IsNullOrWhiteSpace(snapshot.character_session)
+                && !string.Equals(activeCharacterSession, snapshot.character_session, StringComparison.Ordinal);
+            activeCharacterSession = snapshot.character_session;
             if (snapshot.character != null && !string.IsNullOrWhiteSpace(snapshot.character.character_id))
             {
                 activeCharacterId = snapshot.character.character_id;
@@ -1644,6 +1699,10 @@ namespace AIFren.UnityPoc.UI
             {
                 characterName = snapshot.character.name;
             }
+            characterStorageUnavailable = snapshot.storage_unavailable;
+            characterRegistryRevision = snapshot.registry_revision;
+            if (characterOperationReceipt != null && characterManagerConfirm != null)
+                characterManagerConfirm.interactable = characterOperationReceipt.Revision >= characterRegistryRevision;
             availableCharacters.Clear();
             if (snapshot.characters != null) availableCharacters.AddRange(snapshot.characters);
             characterSwitchInFlight = false;
@@ -1651,7 +1710,7 @@ namespace AIFren.UnityPoc.UI
             backendReconnectInProgress = false;
             ClearBackendDisconnectWarning();
 
-            if (characterChanged)
+            if (characterChanged || bindingChanged)
             {
                 presentationTurn.Reset();
                 sceneDrawer?.CloseImmediately(); sceneDrawerRowsKey = null;
@@ -1660,6 +1719,7 @@ namespace AIFren.UnityPoc.UI
                 ResetCharacterScopedAvatarPresentation();
             }
             memoryViewerState.ChangeCharacter(activeCharacterId);
+            if (bindingChanged) { memoryViewerState.InvalidatePage(); RefreshMemoryViewerPage(); }
 
             // A snapshot is authoritative at connection/reconnection time.
             // Replacing this list never depends on UI visibility.
@@ -1711,6 +1771,9 @@ namespace AIFren.UnityPoc.UI
             }
             if (snapshot.companion != null)
             {
+                ReceiveAvatarCuesSetting(snapshot.companion.explicit_avatar_cues, false);
+                ReceiveCompanionPreferences(snapshot.companion.conversation_style, snapshot.companion.responsive_speech,
+                    snapshot.companion.automatic_expressions, snapshot.companion.automatic_expression_status, false);
                 authoritativeProactiveBehavior = snapshot.companion.proactive_behavior;
                 authoritativeProactiveIntervalSeconds = snapshot.companion.proactive_interval_seconds;
                 latestProactiveEligibility = snapshot.companion.proactive_eligibility;
@@ -1747,11 +1810,11 @@ namespace AIFren.UnityPoc.UI
             RefreshGlobalPttStatus(true);
             if (startupPanel != null) startupPanel.SetActive(false);
 
-            if (characterChanged || initialCharacterIdentity)
+            if (characterChanged || initialCharacterIdentity || bindingChanged || settlingCharacterTransition)
                 RequestCharacterAvatarPreference(activeCharacterId);
 
             if (memoryViewerPanel != null && memoryViewerPanel.activeInHierarchy
-                    && (characterChanged || initialCharacterIdentity))
+                    && (characterChanged || initialCharacterIdentity || bindingChanged || settlingCharacterTransition))
                 RequestMemoryViewerPage();
 
             if (!characterAvatarSwitchInFlight)
@@ -1787,6 +1850,30 @@ namespace AIFren.UnityPoc.UI
             currentAssistantPresentationText = string.Empty;
             wordReveal.Begin(string.Empty, true);
             HideHiddenSubtitleImmediately();
+        }
+
+        private void BeginCharacterPresentationTransition()
+        {
+            // Transport has retired the old binding before this notification.
+            // Clear only derived/current presentation; canonical data stays backend-owned.
+            characterSwitchInFlight = true;
+            RetireCharacterAvatarRequests();
+            presentationTurn.Reset();
+            avatarAnimation?.StopSpeech();
+            sceneDrawer?.CloseImmediately(); sceneDrawerRowsKey = null;
+            authoritativeContinuity = null;
+            ClearPendingContinuityControl();
+            memoryViewerState.InvalidatePage();
+            memoryViewerRetireConfirmation = false;
+            RefreshMemoryViewerPage();
+            messages.Clear(); canonicalMessageIds.Clear(); historyIndex.Rebuild(messages);
+            historyDirty = true; RefreshHistoryIfVisible();
+            ClearTransientAssistantPresentationForSnapshot();
+            authoritativeStatePresentation = null;
+            ResetCharacterScopedAvatarPresentation();
+            if (dialogueTextLabel != null) dialogueTextLabel.text = "Loading character…";
+            ApplyTruthScopeIndicator("real_world", string.Empty);
+            RefreshCharacterSettings(); RefreshInputAvailability();
         }
 
         private void ResetCharacterScopedAvatarPresentation()
@@ -2272,7 +2359,6 @@ namespace AIFren.UnityPoc.UI
 
         private void ApplyContinuitySnapshot(ContinuitySnapshot snapshot)
         {
-            if (snapshot == null) return;
             authoritativeContinuity = snapshot;
             RefreshContinuityPanel();
         }
@@ -2340,10 +2426,12 @@ namespace AIFren.UnityPoc.UI
                 Button cancel = CreateButton(row.transform, "Cancel", Panel);
                 Stretch(cancel.GetComponent<RectTransform>(), new Vector2(.82f, .18f), new Vector2(.98f, .82f), Vector2.zero, Vector2.zero);
                 string token = thread.action_token;
+                CharacterSessionOwner rowOwner = client?.CharacterOwner;
+                string rowRevision = snapshot?.revision;
                 resolve.interactable = idle;
                 cancel.interactable = idle;
-                resolve.onClick.AddListener(() => RequestContinuityControl("resolve_thread", token));
-                cancel.onClick.AddListener(() => RequestContinuityControl("cancel_thread", token));
+                resolve.onClick.AddListener(() => RequestOwnedContinuityControl("resolve_thread", token, rowOwner, rowRevision));
+                cancel.onClick.AddListener(() => RequestOwnedContinuityControl("cancel_thread", token, rowOwner, rowRevision));
             }
             RectTransform content = continuityThreadsContent as RectTransform;
             if (content != null) content.sizeDelta = new Vector2(0f, Mathf.Max(52f, threads.Length * 66f));
@@ -2403,8 +2491,15 @@ namespace AIFren.UnityPoc.UI
 
         private bool RefreshSceneDrawerAvailability()
         {
+            bool available = UpdateSceneDrawerAvailability();
+            if (available && sceneProjectionDirty) RefreshSceneOverlay(authoritativeContinuity);
+            return available;
+        }
+
+        private bool UpdateSceneDrawerAvailability()
+        {
             bool normalUiVisible = (!interfaceHidden || inputRequested)
-                && (modalScrim == null || !modalScrim.activeSelf);
+                && (modalScrim == null || !modalScrim.activeSelf) && !characterSwitchInFlight;
             bool available = SceneOverlayState.ShouldShow(showSceneOverlay, 0, normalUiVisible);
             sceneDrawer?.SetAvailable(available);
             return available;
@@ -2412,9 +2507,10 @@ namespace AIFren.UnityPoc.UI
 
         private void RefreshSceneOverlay(ContinuitySnapshot snapshot)
         {
+            sceneProjectionDirty = true;
             if (sceneOverlayPanel == null || sceneOverlayContent == null) return;
             SceneOverlayRow[] rows = SceneOverlayState.Rows(snapshot);
-            if (!RefreshSceneDrawerAvailability()) return;
+            if (!UpdateSceneDrawerAvailability()) return;
             if (rows.Length == 0) rows = new[] { new SceneOverlayRow { text = "No current scene items." } };
             RectTransform panelRect = sceneOverlayPanel.GetComponent<RectTransform>();
             if (panelRect != null)
@@ -2425,11 +2521,12 @@ namespace AIFren.UnityPoc.UI
                 panelRect.pivot = new Vector2(0, 1);
                 panelRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, width);
                 string key = string.Join("\n", rows.Select(row => row.text + "|" + row.action + "|" + row.actionToken))
-                    + "|" + pendingContinuityCommandId;
+                    + "|" + pendingContinuityCommandId + "|" + client?.CharacterOwner?.Session + "|" + snapshot?.revision;
                 if (sceneDrawerRowsKey == key && Mathf.Abs(sceneDrawerWidth - width) < .5f)
                 {
                     panelRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical,
                         Mathf.Min(sceneDrawerContentHeight, (parentRect != null ? parentRect.rect.height : Screen.height) * .34f));
+                    sceneProjectionDirty = false;
                     return;
                 }
                 sceneDrawerRowsKey = key; sceneDrawerWidth = width;
@@ -2463,7 +2560,9 @@ namespace AIFren.UnityPoc.UI
                     clear.interactable = idle;
                     string action = row.action;
                     string token = row.actionToken;
-                    clear.onClick.AddListener(() => RequestContinuityControl(action, token));
+                    CharacterSessionOwner rowOwner = client?.CharacterOwner;
+                    string rowRevision = snapshot?.revision;
+                    clear.onClick.AddListener(() => RequestOwnedContinuityControl(action, token, rowOwner, rowRevision));
                 }
             }
             RectTransform contentRect = sceneOverlayContent as RectTransform;
@@ -2473,18 +2572,26 @@ namespace AIFren.UnityPoc.UI
             sceneDrawerContentHeight = rowTop + 42;
             panelRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical,
                 Mathf.Min(sceneDrawerContentHeight, (panelRect.parent as RectTransform).rect.height * .34f));
+            sceneProjectionDirty = false;
         }
 
-        private void RequestContinuityControl(string action, string actionToken = "")
+        private void RequestContinuityControl(string action, string actionToken = "") =>
+            RequestOwnedContinuityControl(action, actionToken, client?.CharacterOwner, authoritativeContinuity?.revision);
+
+        private void RequestOwnedContinuityControl(string action, string actionToken,
+            CharacterSessionOwner owner, string revision)
         {
             if (client == null || client.State != ConnectionState.Connected
-                || authoritativeContinuity == null || !string.IsNullOrEmpty(pendingContinuityCommandId)) return;
+                || characterSwitchInFlight || authoritativeContinuity == null
+                || !string.IsNullOrEmpty(pendingContinuityCommandId)) return;
+            if (!client.OwnsCharacter(owner) || revision != authoritativeContinuity.revision) return;
+            pendingContinuityOwner = owner;
             BeginPendingContinuityControl(
                 Guid.NewGuid().ToString("D"), action, actionToken,
-                authoritativeContinuity.revision ?? string.Empty);
+                revision ?? string.Empty);
             _ = client.ApplyContinuityControlAsync(
                 pendingContinuityCommandId, pendingContinuityAction,
-                pendingContinuityRevision, pendingContinuityActionToken);
+                pendingContinuityRevision, pendingContinuityActionToken, pendingContinuityOwner);
         }
 
         internal void BeginPendingContinuityControl(
@@ -2528,10 +2635,11 @@ namespace AIFren.UnityPoc.UI
         {
             if (client == null || client.State != ConnectionState.Connected
                 || string.IsNullOrEmpty(pendingContinuityCommandId) || pendingContinuityRetrySent) return;
+            if (!client.OwnsCharacter(pendingContinuityOwner)) { ClearPendingContinuityControl(); return; }
             pendingContinuityRetrySent = true;
             _ = client.ApplyContinuityControlAsync(
                 pendingContinuityCommandId, pendingContinuityAction,
-                pendingContinuityRevision, pendingContinuityActionToken);
+                pendingContinuityRevision, pendingContinuityActionToken, pendingContinuityOwner);
         }
 
         private void ClearPendingContinuityControl()
@@ -2541,6 +2649,7 @@ namespace AIFren.UnityPoc.UI
             pendingContinuityActionToken = null;
             pendingContinuityRevision = null;
             pendingContinuityRetrySent = false;
+            pendingContinuityOwner = null;
             RefreshContinuityPanel();
         }
 
@@ -2551,6 +2660,7 @@ namespace AIFren.UnityPoc.UI
             if (client.State == ConnectionState.Disconnected || client.State == ConnectionState.Error)
             {
                 pendingContinuityRetrySent = false;
+                CharacterManagementDisconnected();
                 ClearPendingModelSettings();
                 string reason = !string.IsNullOrWhiteSpace(client.LastDisconnectReason)
                     ? client.LastDisconnectReason
@@ -2617,7 +2727,7 @@ namespace AIFren.UnityPoc.UI
         private async void SubmitCurrentText()
         {
             string text = messageInput != null ? messageInput.text.Trim() : string.Empty;
-            if (submitInFlight || string.IsNullOrEmpty(text) || client == null || client.State != ConnectionState.Connected)
+            if (submitInFlight || characterStorageUnavailable || string.IsNullOrEmpty(text) || client == null || client.State != ConnectionState.Connected)
             {
                 return;
             }
@@ -2778,6 +2888,8 @@ namespace AIFren.UnityPoc.UI
 
         private void ToggleSettingsPanel()
         {
+            CancelAvatarCuesDraft();
+            CancelCompanionPreferenceDraft();
             CancelSubtitleColor();
             bool show = !settingsPanel.activeSelf;
             settingsPanel.SetActive(show);
@@ -2834,6 +2946,8 @@ namespace AIFren.UnityPoc.UI
 
         private void CloseSettingsPanel()
         {
+            CancelAvatarCuesDraft();
+            CancelCompanionPreferenceDraft();
             CancelSubtitleColor();
             selectedModelAssets.Clear();
             if (modelLibraryPanel != null) modelLibraryPanel.SetActive(false);
@@ -3130,6 +3244,7 @@ namespace AIFren.UnityPoc.UI
 
         private async void StopSpeech()
         {
+            presentationTurn.CancelAutomatic();
             avatarAnimation?.StopSpeech();
             if (client != null && client.State == ConnectionState.Connected)
             {
@@ -3230,9 +3345,9 @@ namespace AIFren.UnityPoc.UI
         private void RefreshInputAvailability()
         {
             bool connected = client != null && client.State == ConnectionState.Connected;
-            bool enabled = connected && !submitInFlight;
-            messageInput.interactable = enabled;
-            sendButton.interactable = enabled;
+            bool enabled = connected && !submitInFlight && !characterSwitchInFlight && !characterStorageUnavailable && client.CharacterOwner != null;
+            if (messageInput != null) messageInput.interactable = enabled;
+            if (sendButton != null) sendButton.interactable = enabled;
             if (lastMessageInputEnabled != enabled)
             {
                 lastMessageInputEnabled = enabled;
@@ -3263,10 +3378,10 @@ namespace AIFren.UnityPoc.UI
             {
                 StopCoroutine(avatarPresentationInitialization);
             }
-            avatarPresentationInitialization = StartCoroutine(FinalizeAvatarPresentationAfterLayout());
+            avatarPresentationInitialization = StartCoroutine(FinalizeAvatarPresentationAfterLayout(modelApplyGeneration, avatar));
         }
 
-        private IEnumerator FinalizeAvatarPresentationAfterLayout()
+        private IEnumerator FinalizeAvatarPresentationAfterLayout(int generation, GameObject avatar)
         {
             // AvatarLoader creates its target from the RawImage's final canvas
             // dimensions.  Startup previously read the crop aspect before that
@@ -3283,6 +3398,7 @@ namespace AIFren.UnityPoc.UI
             }
             Canvas.ForceUpdateCanvases();
             yield return new WaitForEndOfFrame();
+            if (generation != modelApplyGeneration || avatarLoader == null || avatarLoader.ActiveAvatar != avatar) yield break;
             Canvas.ForceUpdateCanvases();
             UpdateCompositionLayout();
             Canvas.ForceUpdateCanvases();
@@ -4069,7 +4185,9 @@ namespace AIFren.UnityPoc.UI
 
         private void EnterAvatarViewEditor()
         {
-            if (avatarViewEditing) return;
+            if (avatarViewEditing || !HasCurrentFramingOwner) return;
+            avatarViewEditOwner = avatarPresentationState;
+            avatarViewEditGeneration = modelApplyGeneration;
             avatarViewPortraitSnapshot = avatarPresentationState.GetValues(true);
             avatarViewLandscapeSnapshot = avatarPresentationState.GetValues(false);
             avatarViewEditing = true;
@@ -4080,33 +4198,41 @@ namespace AIFren.UnityPoc.UI
 
         private void SaveAvatarViewEditor()
         {
-            avatarPresentationState.Commit(AvatarViewPortrait);
+            if (!HasCurrentFramingEdit) { CancelAvatarViewEditor(); return; }
+            try { avatarViewEditOwner.Commit(AvatarViewPortrait); }
+            catch (InvalidOperationException error) { ApplyStatus("error", error.Message); return; }
             avatarPresentationState.SetValues(!AvatarViewPortrait, !AvatarViewPortrait ? avatarViewPortraitSnapshot : avatarViewLandscapeSnapshot, false);
             ExitAvatarViewEditor();
         }
 
         private void CancelAvatarViewEditor()
         {
-            avatarPresentationState.SetValues(true, avatarViewPortraitSnapshot, false);
-            avatarPresentationState.SetValues(false, avatarViewLandscapeSnapshot, false);
-            ApplyAvatarPresentationTransform(AvatarViewPortrait);
+            if (avatarViewEditing && avatarViewEditOwner != null)
+            {
+                avatarViewEditOwner.SetValues(true, avatarViewPortraitSnapshot, false);
+                avatarViewEditOwner.SetValues(false, avatarViewLandscapeSnapshot, false);
+                if (HasCurrentFramingEdit) ApplyAvatarPresentationTransform(AvatarViewPortrait);
+            }
             ExitAvatarViewEditor();
         }
 
         private void ResetAvatarViewEditor()
         {
+            if (!HasCurrentFramingEdit) return;
             avatarPresentationState.Reset(AvatarViewPortrait, false);
             ApplyAvatarPresentationTransform(AvatarViewPortrait); SyncAvatarViewControls();
         }
 
         private void ExitAvatarViewEditor()
         {
-            avatarViewEditing = false; avatarViewGrid.SetActive(false); avatarViewPanel.SetActive(false);
+            avatarViewEditing = false; avatarViewEditOwner = null;
+            if (avatarViewGrid != null) avatarViewGrid.SetActive(false);
+            if (avatarViewPanel != null) avatarViewPanel.SetActive(false);
         }
 
         private void SetAvatarViewValue(int field, float value)
         {
-            if (suppressAvatarViewCallbacks || !avatarViewEditing) return;
+            if (suppressAvatarViewCallbacks || !HasCurrentFramingEdit) return;
             AvatarPresentationValues values = avatarPresentationState.GetValues(AvatarViewPortrait);
             if (field == 0) values.x = value; else if (field == 1) values.y = value; else values.scale = value;
             avatarPresentationState.SetValues(AvatarViewPortrait, values, false);
@@ -4121,7 +4247,7 @@ namespace AIFren.UnityPoc.UI
 
         private void HandleAvatarViewDrag(Vector2 delta)
         {
-            if (!avatarViewEditing) return;
+            if (!HasCurrentFramingEdit) return;
             AvatarPresentationValues values = avatarPresentationState.GetValues(AvatarViewPortrait);
             values.x += delta.x / Mathf.Max(1f, Screen.width);
             values.y += delta.y / Mathf.Max(1f, Screen.height);
@@ -4131,13 +4257,13 @@ namespace AIFren.UnityPoc.UI
 
         private void HandleAvatarViewScroll(float delta)
         {
-            if (!avatarViewEditing) return;
+            if (!HasCurrentFramingEdit) return;
             SetAvatarViewValue(2, avatarPresentationState.GetValues(AvatarViewPortrait).scale + delta * .08f);
         }
 
         private void SyncAvatarViewControls()
         {
-            if (!avatarViewEditing) return;
+            if (!HasCurrentFramingEdit) return;
             AvatarPresentationValues values = avatarPresentationState.GetValues(AvatarViewPortrait);
             suppressAvatarViewCallbacks = true;
             avatarViewXSlider.SetValueWithoutNotify(values.x); avatarViewYSlider.SetValueWithoutNotify(values.y); avatarViewScaleSlider.SetValueWithoutNotify(values.scale);
@@ -4197,7 +4323,7 @@ namespace AIFren.UnityPoc.UI
             Transform characterSettings = settingsTabContent["Character"]; y = -18f;
             AddSettingsHeading(characterSettings, "CHARACTER", ref y);
             currentCharacterValue = AddSettingsValue(characterSettings, "Current", ref y);
-            TMP_Text switchHint = CreateText(characterSettings, "Choose a character below. Each character remembers its avatar; background and voice remain global.", 15f, new Color(.72f, .72f, .82f, 1f), TextAlignmentOptions.MidlineLeft);
+            TMP_Text switchHint = CreateText(characterSettings, "Choose a character below. Each character remembers its avatar and framing. Background and voice remain global.", 15f, new Color(.72f, .72f, .82f, 1f), TextAlignmentOptions.MidlineLeft);
             PlaceTop(switchHint.rectTransform, y, 32f); y -= 38f;
             GameObject characterListViewport = CreatePanel(characterSettings, "Character List Viewport", theme.surfaceMuted);
             PlaceTop(characterListViewport.GetComponent<RectTransform>(), y, 150f);
@@ -4230,9 +4356,14 @@ namespace AIFren.UnityPoc.UI
             newCharacterPersonalityInput.lineType = TMP_InputField.LineType.MultiLineNewline;
             PlaceTop(newCharacterPersonalityInput.GetComponent<RectTransform>(), y, 88f, SettingsControlColumnStart, 1f - SettingsOuterMargin);
             y -= 98f;
-            Button createCharacterButton = CreateButton(characterSettings, "Create Character", Accent);
+            createCharacterButton = CreateButton(characterSettings, "Create Character", Accent);
             PlaceTop(createCharacterButton.GetComponent<RectTransform>(), y, StandardControlHeight);
             createCharacterButton.onClick.AddListener(CreateCharacterFromSettings);
+            y -= 44f;
+            characterCreationStatus = CreateText(characterSettings, string.Empty, 15f, theme.mutedText, TextAlignmentOptions.TopLeft);
+            characterCreationStatus.richText = false; characterCreationStatus.enableWordWrapping = true;
+            PlaceTop(characterCreationStatus.rectTransform, y, 66f);
+            RefreshCharacterCreationUi();
 
             Transform context = settingsTabContent["Context"]; y = -18f;
             AddSettingsHeading(context, "CURRENT CONTEXT", ref y);
@@ -4321,18 +4452,22 @@ namespace AIFren.UnityPoc.UI
 
             Transform audio = settingsTabContent["Audio"]; y = -18f;
             AddSettingsHeading(audio, "SPEECH", ref y); volumeLabel = AddSettingsValue(audio, "TTS volume", ref y); volumeSlider = CreateSlider(audio, 0f, 1f, 1f); PlaceTop(volumeSlider.GetComponent<RectTransform>(), y, 30f); volumeSlider.onValueChanged.AddListener(SetVolume); AddPointerUpHandler(volumeSlider.gameObject, FlushTtsVolume); y -= 46f;
-            earlySpeechToggle = CreateToggle(audio, "Speak while response is generating", true); PlaceTop(earlySpeechToggle.GetComponent<RectTransform>(), y, 34f); earlySpeechToggle.onValueChanged.AddListener(SetEarlySpeech); y -= 42f;
+            AddResponsiveSpeechControls(audio, ref y);
+            earlySpeechToggle = CreateToggle(audio, "Legacy generation streaming", true); PlaceTop(earlySpeechToggle.GetComponent<RectTransform>(), y, 34f); earlySpeechToggle.onValueChanged.AddListener(SetEarlySpeech); y -= 42f;
             Button stopSpeechButton = CreateButton(audio, "Stop speaking", Panel); PlaceTop(stopSpeechButton.GetComponent<RectTransform>(), y, StandardControlHeight); stopSpeechButton.onClick.AddListener(StopSpeech); y -= 58f;
             AddSettingsHeading(audio, "PRESENTATION AUDIO", ref y); sfxMuteToggle = CreateToggle(audio, "Mute UI SFX", presentationAudio == null || presentationAudio.SfxMuted); PlaceTop(sfxMuteToggle.GetComponent<RectTransform>(), y, 34f); sfxMuteToggle.onValueChanged.AddListener(value => presentationAudio?.SetSfxMuted(value)); y -= 42f;
             sfxVolumeSlider = CreateSlider(audio, 0f, 1f, presentationAudio == null ? .45f : presentationAudio.SfxVolume); PlaceTop(sfxVolumeSlider.GetComponent<RectTransform>(), y, 30f); sfxVolumeSlider.onValueChanged.AddListener(value => presentationAudio?.SetSfxVolume(value)); y -= 46f;
             bgmMuteToggle = CreateToggle(audio, "Mute background music", presentationAudio == null || presentationAudio.BgmMuted); PlaceTop(bgmMuteToggle.GetComponent<RectTransform>(), y, 34f); bgmMuteToggle.onValueChanged.AddListener(value => presentationAudio?.SetBgmMuted(value)); y -= 42f;
             bgmVolumeSlider = CreateSlider(audio, 0f, .35f, presentationAudio == null ? .14f : presentationAudio.BgmVolume); PlaceTop(bgmVolumeSlider.GetComponent<RectTransform>(), y, 30f); bgmVolumeSlider.onValueChanged.AddListener(value => presentationAudio?.SetBgmVolume(value));
+            ((RectTransform)audio).sizeDelta = new Vector2(0f, Mathf.Max(900f, -y + 66f));
 
             Transform dialogue = settingsTabContent["Dialogue"]; y = -18f;
+            AddConversationStyleControls(dialogue, ref y);
             AddSettingsHeading(dialogue, "DIALOGUE", ref y); revealSpeedLabel = AddSettingsValue(dialogue, "Reveal speed", ref y); revealSlider = CreateSlider(dialogue, 2f, 16f, revealWordsPerSecond); PlaceTop(revealSlider.GetComponent<RectTransform>(), y, 30f); revealSlider.onValueChanged.AddListener(SetRevealSpeed); y -= 46f;
             instantTextToggle = CreateToggle(dialogue, "Instant assistant text", instantText); PlaceTop(instantTextToggle.GetComponent<RectTransform>(), y, 34f); instantTextToggle.onValueChanged.AddListener(SetInstantText);
             y -= 52f;
             AddSubtitleColorControls(dialogue, ref y);
+            ((RectTransform)dialogue).sizeDelta = new Vector2(0f, Mathf.Max(900f, -y + 24f));
 
             Transform controls = settingsTabContent["Controls"]; y = -18f;
             AddSettingsHeading(controls, "PUSH-TO-TALK", ref y); pttBindValue = AddSettingsValue(controls, "Push-to-Talk", ref y); Button rebindButton = CreateButton(controls, "Rebind", Panel); PlaceTop(rebindButton.GetComponent<RectTransform>(), y, StandardControlHeight); rebindButton.onClick.AddListener(BeginPushToTalkRebind); y -= 46f;
@@ -4346,6 +4481,8 @@ namespace AIFren.UnityPoc.UI
             avatarModelValue = AddSettingsValue(appearance, "Current model", ref y);
             Button changeModelButton = CreateButton(appearance, "Change Model…", Panel); PlaceTop(changeModelButton.GetComponent<RectTransform>(), y, StandardControlHeight, .55f, .74f); changeModelButton.onClick.AddListener(OpenModelLibrary);
             Button resetModelButton = CreateButton(appearance, "Reset to Default", Panel); PlaceTop(resetModelButton.GetComponent<RectTransform>(), y, StandardControlHeight, .76f, .95f); resetModelButton.onClick.AddListener(() => RequestBundledAvatarModel()); y -= 52f;
+            AddAvatarCueControls(appearance, ref y);
+            AddAutomaticExpressionControls(appearance, ref y);
             AddSettingsHeading(appearance, "AVATAR LIGHTING", ref y);
             avatarLightingValue = AddSettingsValue(appearance, "Brightness", ref y);
             avatarLightingSlider = CreateSlider(appearance, 0f, 2f, avatarLightingMultiplier);
@@ -4366,6 +4503,7 @@ namespace AIFren.UnityPoc.UI
             PlaceTop(hiddenDialogueToggle.GetComponent<RectTransform>(), y, 34f);
             hiddenDialogueToggle.onValueChanged.AddListener(SetShowDialogueWhenHidden);
             y -= 46f;
+            ((RectTransform)appearance).sizeDelta = new Vector2(0f, Mathf.Max(900f, -y + 24f));
             CreateBackgroundLibraryPanel(panel.transform);
             CreateModelLibraryPanel(panel.transform);
             CreateMemoryViewerPanel(panel.transform);
@@ -4411,6 +4549,7 @@ namespace AIFren.UnityPoc.UI
             {
                 currentCharacterValue.text = string.IsNullOrWhiteSpace(characterName) ? "Loading…" : characterName;
             }
+            RefreshCharacterCreationUi();
             if (characterListContent == null) return;
             for (int index = characterListContent.childCount - 1; index >= 0; index--)
             {
@@ -4419,12 +4558,20 @@ namespace AIFren.UnityPoc.UI
             for (int index = 0; index < availableCharacters.Count; index++)
             {
                 CharacterSummary summary = availableCharacters[index];
-                string label = (summary.is_active ? "Current · " : "Switch to · ") + summary.display_name;
+                bool duplicateName = availableCharacters.Count(item => item.display_name == summary.display_name) > 1;
+                string label = (summary.is_active ? "Current · " : "Switch to · ") + summary.display_name +
+                    (duplicateName ? " · " + ShortCharacterId(summary.character_id) : string.Empty);
                 Button button = CreateButton(characterListContent, label, summary.is_active ? Accent : Panel);
-                PlaceTop(button.GetComponent<RectTransform>(), -index * 42f, 34f);
-                button.interactable = !summary.is_active && !characterSwitchInFlight;
+                PlaceTop(button.GetComponent<RectTransform>(), -index * 42f, 34f, SettingsOuterMargin, .73f);
+                button.GetComponentInChildren<TMP_Text>().richText = false;
+                button.interactable = !summary.is_active && !characterSwitchInFlight && !characterCreateInFlight && !CharacterMaintenanceBusy &&
+                    summary.storage_status != "creating" && summary.storage_status != "incomplete";
                 string selectedId = summary.character_id;
                 button.onClick.AddListener(() => RequestCharacterSwitch(selectedId));
+                Button manage = CreateButton(characterListContent, "Manage", Panel);
+                PlaceTop(manage.GetComponent<RectTransform>(), -index * 42f, 34f, .76f, 1f - SettingsOuterMargin);
+                manage.interactable = !characterSwitchInFlight && !characterCreateInFlight && !CharacterMaintenanceBusy;
+                manage.onClick.AddListener(() => OpenCharacterManager(summary));
             }
             RectTransform listRect = characterListContent as RectTransform;
             if (listRect != null)
@@ -4435,7 +4582,7 @@ namespace AIFren.UnityPoc.UI
 
         private void RequestCharacterSwitch(string characterId)
         {
-            if (client == null || string.IsNullOrWhiteSpace(characterId) || characterSwitchInFlight) return;
+            if (client == null || string.IsNullOrWhiteSpace(characterId) || characterSwitchInFlight || characterCreateInFlight || CharacterMaintenanceBusy) return;
             characterSwitchInFlight = true;
             RefreshCharacterSettings();
             ApplyStatus("thinking", "Switching character…");
@@ -4444,7 +4591,7 @@ namespace AIFren.UnityPoc.UI
 
         private void CreateCharacterFromSettings()
         {
-            if (client == null || newCharacterNameInput == null) return;
+            if (client == null || newCharacterNameInput == null || characterCreateInFlight || CharacterMaintenanceBusy) return;
             string displayName = newCharacterNameInput.text == null ? string.Empty : newCharacterNameInput.text.Trim();
             if (string.IsNullOrWhiteSpace(displayName))
             {
@@ -4457,10 +4604,12 @@ namespace AIFren.UnityPoc.UI
                 ApplyStatus("error", "A personality prompt is required.");
                 return;
             }
-            ApplyStatus("thinking", "Creating character…");
-            _ = client.CreateCharacterAsync(displayName, personality);
-            newCharacterNameInput.text = string.Empty;
-            if (newCharacterPersonalityInput != null) newCharacterPersonalityInput.text = string.Empty;
+            if (client.State != ConnectionState.Connected)
+            {
+                SetCharacterCreationStatus("Connect to the backend to create this character. Your form is kept.");
+                return;
+            }
+            SubmitCharacterCreation(displayName, personality);
         }
 
         private GameObject CreateSettingsTabPage(Transform parent, string name)
@@ -4633,6 +4782,9 @@ namespace AIFren.UnityPoc.UI
                 pendingEarlySpeech = null;
             if (earlySpeechToggle != null)
             {
+                // The normal committed-reply control owns V2 speech. Show the
+                // compatibility setting only when this provider can use it.
+                earlySpeechToggle.gameObject.SetActive(tts.early_speech_supported || tts.early_speech_overridden);
                 if (!pendingEarlySpeech.HasValue)
                     earlySpeechToggle.SetIsOnWithoutNotify(tts.early_speech_overridden
                         ? tts.early_speech : tts.early_speech_configured);
@@ -4640,8 +4792,8 @@ namespace AIFren.UnityPoc.UI
                 TMP_Text label = earlySpeechToggle.GetComponentInChildren<TMP_Text>();
                 if (label != null)
                     label.text = tts.early_speech_overridden
-                        ? "Speak while response is generating (developer override)"
-                        : "Speak while response is generating";
+                        ? "Legacy generation streaming (developer override)"
+                        : "Legacy generation streaming";
             }
             if (ttsProviderValue == null) return;
             ttsProviderValue.text = string.IsNullOrWhiteSpace(tts.provider) ? "Unavailable" : tts.provider +
@@ -5470,7 +5622,8 @@ namespace AIFren.UnityPoc.UI
 
         private void RequestMemoryViewerPage()
         {
-            if (client == null || string.IsNullOrWhiteSpace(activeCharacterId)) return;
+            if (client == null || characterSwitchInFlight || client.CharacterOwner == null
+                || string.IsNullOrWhiteSpace(activeCharacterId)) return;
             memoryViewerState.ChangeCharacter(activeCharacterId);
             string requestId = memoryViewerState.BeginRequest();
             SetMemoryViewerWarning("Loading one bounded page…");
@@ -5490,7 +5643,7 @@ namespace AIFren.UnityPoc.UI
             {
                 string authority = page != null && !string.IsNullOrWhiteSpace(page.authority_label)
                     ? page.authority_label
-                    : "Memory V1 is the broad prompt-facing authority; V2 lanes remain separate.";
+                    : "Memory V2 is normal authority; V1 is explicit compatibility only.";
                 memoryViewerAuthority.text = "Character: " + characterName + " · " + authority;
             }
             if (memoryViewerRows != null)
@@ -5512,7 +5665,10 @@ namespace AIFren.UnityPoc.UI
                     PlaceTop(row.GetComponent<RectTransform>(), -rowTop, rowHeight, .01f, .99f);
                     rowTop += rowHeight + 7;
                     if (!string.IsNullOrEmpty(selected.record_id)) memoryRowButtons[selected.record_id] = row;
-                    row.onClick.AddListener(() => SelectMemoryViewerItem(selected));
+                    CharacterSessionOwner rowOwner = client?.CharacterOwner;
+                    row.onClick.AddListener(() => {
+                        if (client != null && client.OwnsCharacter(rowOwner)) SelectMemoryViewerItem(selected);
+                    });
                 }
                 RectTransform rowsRect = memoryViewerRows as RectTransform;
                 if (rowsRect != null) rowsRect.sizeDelta = new Vector2(0f, Mathf.Max(40f, rowTop));
@@ -5811,15 +5967,19 @@ namespace AIFren.UnityPoc.UI
             string characterId = null)
         {
             if (asset == null || string.IsNullOrWhiteSpace(asset.id)) return;
+            if (!CanStartCharacterAvatarSelection(characterId ?? activeCharacterId)) return;
             if (!modelApplyInProgress && avatarLoader != null && avatarLoader.ActiveModelPath == asset.path)
             {
                 // Repeatedly clicking the already active card is deliberately
                 // idempotent. An explicit user selection still establishes
                 // this character's preference without reloading the VRM.
                 if (persistSelection) PersistAvatarSelection(characterId ?? activeCharacterId, asset);
+                BindReadyCharacterFraming(characterId ?? activeCharacterId);
                 RefreshModelLibrarySelection();
                 return;
             }
+            RetireAvatarFramingOwner();
+            avatarLoader?.ClaimCharacterSelection();
             pendingModelApply = asset;
             pendingBundledModelApply = false;
             pendingModelApplyRemoveOnFailure = removeOnFailure;
@@ -5831,6 +5991,9 @@ namespace AIFren.UnityPoc.UI
 
         private void RequestBundledAvatarModel(bool persistSelection = true, string characterId = null)
         {
+            if (!CanStartCharacterAvatarSelection(characterId ?? activeCharacterId)) return;
+            RetireAvatarFramingOwner();
+            avatarLoader?.ClaimCharacterSelection();
             pendingModelApply = null;
             pendingBundledModelApply = true;
             pendingModelApplyRemoveOnFailure = false;
@@ -5843,7 +6006,13 @@ namespace AIFren.UnityPoc.UI
         private void RequestCharacterAvatarPreference(string characterId)
         {
             if (avatarLoader == null || managedAssetLibrary == null || string.IsNullOrWhiteSpace(characterId)) return;
-            avatarLoader.ClaimCharacterSelection();
+            RetireCharacterAvatarRequests();
+            if (!Guid.TryParse(characterId, out _))
+            {
+                // An empty-library shell is presentation only, not a character.
+                characterAvatarSwitchInFlight = false;
+                return;
+            }
             CharacterAvatarPreference.Resolution desired = CharacterAvatarPreference.Resolve(
                 characterId,
                 managedAssetLibrary,
@@ -5853,7 +6022,7 @@ namespace AIFren.UnityPoc.UI
                 : desired.Asset != null && avatarLoader.ActiveModelPath == desired.Asset.path;
             if (alreadyLoaded && !modelApplyInProgress)
             {
-                characterAvatarSwitchInFlight = false;
+                if (!BindReadyCharacterFraming(characterId)) return;
                 avatarLoader.SetAvatarVisible(true);
                 avatarLoader.GetComponent<AvatarPresentationResolver>()?.Apply(authoritativeStatePresentation);
                 return;
@@ -5904,8 +6073,8 @@ namespace AIFren.UnityPoc.UI
                     }
                     if (!loaded)
                     {
-                        avatarLoader?.SetAvatarVisible(true);
-                        characterAvatarSwitchInFlight = false;
+                        bool restored = BindReadyCharacterFraming(requestCharacterId);
+                        avatarLoader?.SetAvatarVisible(restored);
                         ApplyStatus("error", avatarLoader != null ? avatarLoader.LastError : "Avatar loader is unavailable.");
                         if (modelLibraryPanel != null && modelLibraryPanel.activeInHierarchy) BuildModelLibraryTiles();
                         continue;
@@ -5915,8 +6084,12 @@ namespace AIFren.UnityPoc.UI
                         if (bundled) PersistBundledAvatarSelection(requestCharacterId);
                         else PersistAvatarSelection(requestCharacterId, asset);
                     }
+                    if (!BindReadyCharacterFraming(requestCharacterId))
+                    {
+                        ApplyStatus("error", "Character avatar framing is unavailable.");
+                        continue;
+                    }
                     avatarLoader?.SetAvatarVisible(true);
-                    characterAvatarSwitchInFlight = false;
                     ApplyStatus("ready", "Visual avatar model loaded.");
                     RefreshModelLibrarySelection();
                     RefreshDisplaySettingsUi();
@@ -5984,10 +6157,15 @@ namespace AIFren.UnityPoc.UI
 
         private IEnumerator ChangeAvatarModelRoutine()
         {
+            string requestedCharacter = activeCharacterId;
+            int requestedGeneration = modelApplyGeneration;
+            if (!CanStartCharacterAvatarSelection(requestedCharacter)) yield break;
             Task<LinuxNativeFilePicker.Result> pickerTask = LinuxNativeFilePicker.PickAsync(
                 "Choose VRM avatar",
                 LinuxNativeFilePicker.AvatarModelFilters);
             yield return new WaitUntil(() => pickerTask.IsCompleted);
+            if (!IsAvatarPickerCompletionCurrent(requestedGeneration, modelApplyGeneration,
+                    requestedCharacter, activeCharacterId, characterSwitchInFlight)) yield break;
             LinuxNativeFilePicker.Result result = pickerTask.Result;
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             LogNativePickerTiming("avatar", result);
@@ -6008,7 +6186,7 @@ namespace AIFren.UnityPoc.UI
             }
             SelectOnlyModelForDeletion(asset.id);
             if (modelLibraryPanel != null && modelLibraryPanel.activeInHierarchy) BuildModelLibraryTiles();
-            RequestManagedAvatarModel(asset, true);
+            RequestManagedAvatarModel(asset, true, true, requestedCharacter);
         }
 
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
@@ -6522,8 +6700,8 @@ namespace AIFren.UnityPoc.UI
             }
             string spokenSubtitleText = plan.Spoken;
             subtitlePages.Clear();
-            subtitlePages.AddRange(plan.Pages);
-            foreach (string page in plan.Pages) hiddenSubtitlePresenter?.Preload(page);
+            subtitlePages.AddRange(plan.Pages.Select(page => page.SpokenText));
+            foreach (SubtitlePage page in plan.Pages) hiddenSubtitlePresenter?.Preload(page);
             subtitlePageWordRanges.Clear();
             subtitlePageWordRanges.AddRange(plan.Ranges);
             LogSubtitlePageOwnership(spokenSubtitleText);
@@ -6544,7 +6722,7 @@ namespace AIFren.UnityPoc.UI
             // Begin atomically replaces the prior session while preserving
             // plain page layout prepared by chunk_queued.
             hiddenSubtitlePresenter?.Begin(new SubtitleSession(
-                new List<string>(subtitlePages), new List<SubtitlePageWordRange>(subtitlePageWordRanges),
+                plan.Pages, new List<SubtitlePageWordRange>(subtitlePageWordRanges),
                 new List<float>(subtitleWordSchedule), generation, Time.unscaledTime));
             // A response may finish while the ordinary card is already shown,
             // without passing through TransitionUiVisibility. A temporary peek
@@ -6642,12 +6820,12 @@ namespace AIFren.UnityPoc.UI
         }
 #endif
 
-        private bool HiddenSubtitlePageFits(string page)
+        private bool HiddenSubtitlePageFits(SubtitlePage page)
         {
             TMP_Text measurement = hiddenSubtitleMeasurementText != null
                 ? hiddenSubtitleMeasurementText : hiddenDialogueText;
             if (measurement == null || hiddenDialogueViewport == null) return true;
-            string formatted = DialoguePresentationParser.FormatSubtitleText(page);
+            string formatted = page.FormattedText;
             float width = Mathf.Max(1f, hiddenDialogueViewport.rect.width - 36f);
             float height = Mathf.Max(1f, hiddenDialogueViewport.rect.height - 20f);
             float previousSize = measurement.fontSize;
@@ -6663,12 +6841,13 @@ namespace AIFren.UnityPoc.UI
             string source = rawResponse ?? string.Empty;
             DialogueDocument semantics = DialoguePresentationParser.ParseDocument(source);
             string spoken = semantics.SpokenText;
-            List<string> pages = SubtitlePagination.Split(
-                semantics.SubtitleSourceText, SubtitleStyle.MaximumPageWords, HiddenSubtitlePageFits);
+            List<SubtitlePage> pages = SubtitlePagination.SplitOwned(
+                semantics, SubtitleStyle.MaximumPageWords, HiddenSubtitlePageFits);
+            List<string> spokenPages = pages.ConvertAll(page => page.SpokenText);
             List<SubtitlePageWordRange> ranges = SubtitleTimingPlan.BuildPageWordRanges(
-                pages, DialoguePresentationParser.SpokenText);
+                spokenPages);
             if (!SubtitleTimingPlan.TryValidatePagesMatchCanonicalText(
-                spoken, pages, ranges, DialoguePresentationParser.SpokenText, out string ownershipError))
+                spoken, spokenPages, ranges, out string ownershipError))
             {
                 Debug.LogError("[AIFren Subtitle] invalid page ownership; refusing hidden subtitle: " + ownershipError);
                 return null;
@@ -6695,7 +6874,7 @@ namespace AIFren.UnityPoc.UI
             string key = SubtitlePlanKey(turnId, chunkIndex);
             if (!preparedSubtitlePlans.ContainsKey(key)) preparedSubtitlePlanOrder.Enqueue(key);
             preparedSubtitlePlans[key] = plan;
-            foreach (string page in plan.Pages) hiddenSubtitlePresenter?.Preload(page);
+            foreach (SubtitlePage page in plan.Pages) hiddenSubtitlePresenter?.Preload(page);
             timer.Stop();
             plan.PreparationMilliseconds = (float)timer.Elapsed.TotalMilliseconds;
             while (preparedSubtitlePlanOrder.Count > PreparedSubtitlePlanLimit)
@@ -6715,6 +6894,9 @@ namespace AIFren.UnityPoc.UI
 
         private void ClearPreparedSubtitlePlans()
         {
+            committedSpeechTimeline = null;
+            committedSpeechRetired = false;
+            publishedSubtitleTurnId = 0;
             preparedSubtitlePlans.Clear();
             preparedSubtitlePlanOrder.Clear();
         }
@@ -7309,7 +7491,7 @@ namespace AIFren.UnityPoc.UI
                 return;
             }
 
-            if (avatarPresentationState == null) avatarPresentationState = AvatarPresentationState.Load(AvatarConfiguration.Load());
+            if (avatarPresentationState == null) avatarPresentationState = AvatarPresentationState.CreateUnbound(AvatarConfiguration.Load());
             AvatarPresentationValues presentation = avatarPresentationState.GetValues(portrait);
             if (useDirectAvatarPresentation)
             {

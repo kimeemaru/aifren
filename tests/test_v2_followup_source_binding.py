@@ -23,7 +23,7 @@ class FollowupSourceBindingTests(unittest.TestCase):
         scope = self.service.truth_scope_provenance()
         self.conversation.add_user_message("My favorite color is green.", truth_scope=scope)
         self.conversation.add_assistant_message(
-            "We saw painted pebbles near the fountain last time.", truth_scope=scope)
+            "We saw sparkly leaves near the fountain last time.", truth_scope=scope)
         self.append_pairs(3)
         self.event_index = len(self.conversation.messages)
         if speaker == "assistant":
@@ -56,7 +56,135 @@ class FollowupSourceBindingTests(unittest.TestCase):
         self.assertIsNotNone(self.authority._recall_anchor)
         return result
 
-    def test_maple_arch_followup_never_selects_earlier_fountain_in_same_episode(self):
+    def test_fresh_occurrence_followup_does_not_wait_for_episode_compaction(self):
+        self.event_index = len(self.conversation.messages)
+        learned = self.service.process_text_turn(self.event, speak=False)
+        self.assertTrue(learned.succeeded, learned.error)
+        validation = self.authority.recall.episode_cache.validate_for_context(
+            self.conversation.messages, allow_historical_recall=True)
+        self.assertFalse(any(row.accepted and row.source_start_index is not None
+            and row.source_start_index <= self.event_index < row.source_end_index_exclusive
+            for row in validation.lower_records))
+        self.recall_event()
+        with patch.object(self.authority.recall.semantic, "retrieve",
+                          side_effect=AssertionError("No generic retrieval for an exact attribute")), \
+                patch.object(self.authority.recall.episode_cache, "validate_for_context",
+                             side_effect=AssertionError("Exact canonical source needs no episode")):
+            result = self.service.process_text_turn("Which place was that?", speak=False)
+        self.assertTrue(result.succeeded,
+            str(self.service._last_memory_authority_diagnostics))
+        self.assertIn("beside the maple arch", result.reply)
+        items = self.service._last_memory_authority_diagnostics["admitted_items"]
+        self.assertEqual(1, len(items))
+        self.assertTrue(items[0]["canonical_record_id"].startswith(
+            f"conversation-record-{self.event_index}-"))
+
+    def test_fresh_source_missing_attribute_does_not_search_an_earlier_place(self):
+        self.service.process_text_turn("We visited a fountain.", speak=False)
+        self.service.process_text_turn("We watched a paper glider together.", speak=False)
+        self.recall_event()
+        result = self.service.process_text_turn("Which place was that?", speak=False)
+        self.assertTrue(result.succeeded, result.error)
+        self.assertTrue(self.service._last_memory_authority_diagnostics["authoritative_no_evidence"])
+        self.assertNotIn("fountain", result.reply)
+        self.assertEqual("complete", self.service._last_memory_authority_diagnostics["retrieval_health"])
+
+    def test_fresh_source_with_two_places_remains_ambiguous(self):
+        self.service.process_text_turn(
+            "We watched a paper glider beside the maple arch. We sat near the lake.", speak=False)
+        self.recall_event()
+        result = self.service.process_text_turn("Which place was that?", speak=False)
+        self.assertTrue(result.succeeded, result.error)
+        self.assertIn("clarify", result.reply)
+        self.assertNotIn("maple arch", result.reply)
+        self.assertNotIn("near the lake", result.reply)
+
+    def test_fresh_anchor_hash_speaker_scope_and_character_stay_required(self):
+        self.service.process_text_turn(self.event, speak=False)
+        self.recall_event()
+        valid = self.authority._recall_anchor
+        for anchor in (replace(valid, speaker_roles=("assistant",)),
+                       replace(valid, canonical_record_ids=("different-source-hash",)),
+                       replace(valid, active_truth_scope_id="different-scope"),
+                       replace(valid, character_id="different-character")):
+            with self.subTest(anchor=anchor):
+                self.authority._recall_anchor = replace(anchor, originating_generation=self.authority._turn_generation)
+                result = self.service.process_text_turn("Which place was that?", speak=False)
+                self.assertNotIn("maple arch", result.reply or "")
+
+    def test_fresh_exact_candidate_requires_complete_canonical_provenance(self):
+        from benchmarks.memory_v2.models import RetrievalQuery
+        from memory_query_decision import decide_memory_query
+        from memory_v2_replacement_shadow import _historical_exclusion
+        self.service.process_text_turn(self.event, speak=False)
+        self.recall_event()
+        query = "Which place was that?"
+        result = self.authority.recall.retrieve(
+            RetrievalQuery(self.h.character_id, query, "2026-09-11T12:00:00+00:00", "ordinary"),
+            recall_anchor=self.authority._recall_anchor, memory_query_decision=decide_memory_query(query))
+        self.assertEqual(1, len(result.candidates))
+        candidate = result.candidates[0]
+        scope = self.service.truth_scope_provenance()["scope_id"]
+        self.assertEqual("", candidate.episode_id, "No invented episode provenance")
+        self.assertEqual("", _historical_exclusion(candidate, scope, allow_recall_anchor=True))
+        proof = candidate.evidence[0]
+        for altered in (replace(candidate, evidence=()), replace(candidate, source_segments=()),
+                        replace(candidate, associated_from="another-record"),
+                        replace(candidate, attribution_state="canonical_interaction_source"),
+                        replace(candidate, evidence=(replace(proof, source_id="another-record"),)),
+                        replace(candidate, evidence=(replace(proof, source_reference="canonical_index:999"),)),
+                        replace(candidate, lane="historical_episode_source")):
+            with self.subTest(altered=altered):
+                self.assertTrue(_historical_exclusion(altered, scope, allow_recall_anchor=True))
+
+    def test_fresh_source_scope_cannot_be_relabelled_by_an_anchor(self):
+        from benchmarks.memory_v2.models import RetrievalQuery
+        from memory_query_decision import decide_memory_query
+        self.service.process_text_turn("Let's roleplay that we're in a synthetic test scene.", speak=False)
+        self.assertEqual("scenario", self.service.truth_scope_provenance()["kind"])
+        self.service.process_text_turn(self.event, speak=False)
+        self.recall_event()
+        anchor = self.authority._recall_anchor
+        self.service.process_text_turn("Back to real life.", speak=False)
+        scope = self.service.truth_scope_provenance()
+        self.assertEqual("real_world", scope["kind"])
+        query = "Which place was that?"
+        result = self.authority.recall.retrieve(
+            RetrievalQuery(self.h.character_id, query, "2026-09-11T12:00:00+00:00", "ordinary"),
+            recall_anchor=replace(anchor, active_truth_scope_id=scope["scope_id"]),
+            memory_query_decision=decide_memory_query(query))
+        self.assertFalse(result.candidates)
+        self.assertTrue(any(lane.lane == "anchor" and lane.error_code == "owner_mismatch"
+                            for lane in result.health.lanes))
+
+    def test_fresh_broader_association_still_requires_a_valid_episode(self):
+        from benchmarks.memory_v2.models import RetrievalQuery
+        from memory_query_decision import decide_memory_query
+        self.service.process_text_turn(self.event, speak=False)
+        self.recall_event()
+        query = "What else was connected to that?"
+        cache = self.authority.recall.episode_cache
+        with patch.object(cache, "validate_for_context", wraps=cache.validate_for_context) as validate:
+            result = self.authority.recall.retrieve(
+                RetrievalQuery(self.h.character_id, query, "2026-09-11T12:00:00+00:00", "ordinary"),
+                recall_anchor=self.authority._recall_anchor,
+                memory_query_decision=decide_memory_query(query))
+        self.assertGreater(validate.call_count, 0)
+        self.assertFalse(any(candidate.lane == "historical_recall_anchor_source"
+                             for candidate in result.candidates))
+
+    def test_fresh_observation_place_keeps_exact_source_for_spotted(self):
+        text = 'We spotted a silver kite together beside the maple arch during our quiet walk.'
+        self.assertTrue(self.service.process_text_turn(text, speak=False).succeeded)
+        self.llm.response = 'I cannot supply that answer.'
+        recalled = self.service.process_text_turn('Do you remember the silver kite?', speak=False)
+        self.assertTrue(recalled.succeeded, recalled.error)
+        self.assertIn('silver kite', recalled.reply)
+        result = self.service.process_text_turn('Which place was that?', speak=False)
+        self.assertTrue(result.succeeded, result.error)
+        self.assertIn('beside the maple arch', result.reply)
+
+    def test_cedar_bridge_followup_never_selects_earlier_fountain_in_same_episode(self):
         self.prepare_history()
         self.recall_event()
         prepared = []
@@ -267,7 +395,8 @@ class FollowupAttributeUniquenessTests(unittest.TestCase):
                 with self.assertRaises(AmbiguousHistoricalAttribute):
                     relation_value(text, relation, require_unique=True)
                 self.assertTrue(relation_value(text, relation), "ordinary existing extraction is unchanged")
-        for text in ("Maybe we watched a meteor beside the bridge.", "We never sat near the lake."):
+        for text in ("Maybe we watched a meteor beside the bridge.", "We never sat near the lake.",
+                     "We never spotted a kite beside the arch.", "Maybe we spotted a kite beside the arch."):
             self.assertEqual("", relation_value(text, "place", require_unique=True))
 
 

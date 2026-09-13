@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from assistant_service import AssistantService, _ResponsePolicy
 from conversation.conversation import Conversation
@@ -300,7 +301,8 @@ class AssistantServiceV2AuthorityTests(unittest.TestCase):
             self.assertFalse(accepted)
             self.assertIn("unsupported_retrospective_claim", category)
 
-    def test_recent_context_keeps_latest_twelve_and_current_query(self):
+    @patch.dict('os.environ', {'AIFREN_CONTEXT_GOVERNOR':'1'})
+    def test_recent_context_uses_budget_and_keeps_current_query(self):
         with tempfile.TemporaryDirectory() as root:
             service, llm, memory, conversation = self._service(
                 root, no_evidence=False,
@@ -324,9 +326,35 @@ class AssistantServiceV2AuthorityTests(unittest.TestCase):
                 if str(item.get("content", "")).startswith(("old user", "old assistant"))
                 or item.get("content") == "current query"
             ]
-            self.assertLessEqual(len(raw), 12)
+            self.assertGreater(len(raw), 12)
+            plan = conversation._last_context_plan
+            self.assertLessEqual(plan.diagnostics["final_tokens"], plan.diagnostics["input_budget_tokens"])
             self.assertEqual("current query", raw[-1]["content"])
             self.assertEqual(0, memory.retrieval_calls)
+
+    @patch.dict('os.environ', {'AIFREN_CONTEXT_GOVERNOR':'1'})
+    def test_cancellation_during_context_preflight_cannot_start_inference(self):
+        import threading
+        with tempfile.TemporaryDirectory() as root:
+            service, llm, _memory, conversation = self._service(root, no_evidence=False)
+            entered, release = threading.Event(), threading.Event()
+            def count(text):
+                entered.set()
+                if not release.wait(3): raise TimeoutError("synthetic tokenizer gate")
+                return len(text) // 3
+            llm.count_context_tokens = count
+            results = []
+            worker = threading.Thread(target=lambda: results.append(service.process_text_turn("Hello.", speak=False)))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                service._cancel_active_turn()
+            finally:
+                release.set(); worker.join(4)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(results[0].succeeded)
+            self.assertEqual([], llm.calls)
+            self.assertFalse(any(m.get("role") == "assistant" for m in conversation.messages))
 
     def test_grounded_current_fact_uses_provider_and_typed_validation(self):
         with tempfile.TemporaryDirectory() as root:

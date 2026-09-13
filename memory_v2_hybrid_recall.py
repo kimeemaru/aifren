@@ -488,6 +488,12 @@ class HybridMemoryV2Recall:
         the anchored canonical source: episode membership, adjacency and a
         matching relation are not proof of event identity.
         """
+        if decision.intent == "grounded_followup_attribute":
+            self._add_exact_anchor_attribute(
+                candidates, anchor, scope_id, candidate_limit, counts,
+                decision=decision, health_lanes=health_lanes,
+            )
+            return
         if (
             anchor is None or self.episode_cache is None
             or anchor.character_id != self.character_id
@@ -553,14 +559,6 @@ class HybridMemoryV2Recall:
                 (self.character_id,),
             ).fetchall()
         }
-        concrete_relation = (
-            decision.requested_relation
-            if decision.intent == "grounded_followup_attribute" else ""
-        )
-        if concrete_relation and (len(anchor_indices) != 1
-                or len(anchor.canonical_record_ids) != 1
-                or len(anchor.speaker_roles) != 1):
-            return
         # A recorded hash includes the entire canonical record (role, scope,
         # provenance and content). Revalidate before using even an exact index;
         # a freshly valid cache must not make an edited old anchor valid again.
@@ -568,22 +566,18 @@ class HybridMemoryV2Recall:
             resolved = resolve_historical_evidence(
                 self.messages, index, valid_scope_ids=valid_scope_ids,
             ).evidence
-            if (resolved is None or resolved.canonical_record_id != record_id
-                    or (concrete_relation and resolved.speaker_role != anchor.speaker_roles[0])):
+            if resolved is None or resolved.canonical_record_id != record_id:
                 health_lanes.append(RetrievalLaneHealth("anchor", "incomplete", "source", "owner_mismatch"))
                 return
-        group_by_index = {}
-        if not concrete_relation:
-            groups = historical_episode_source_groups(
-                self.messages, valid_scope_ids=valid_scope_ids,
-            )
-            group_by_index = {
-                index: group
-                for group in groups
-                for index in range(group.start_index, group.end_index_exclusive)
-            }
+        groups = historical_episode_source_groups(
+            self.messages, valid_scope_ids=valid_scope_ids,
+        )
+        group_by_index = {
+            index: group
+            for group in groups
+            for index in range(group.start_index, group.end_index_exclusive)
+        }
         related: list[tuple[int, int, object, object]] = []
-        anchor_projections = {}
         for record in records:
             start = int(record.source_start_index)
             end = int(record.source_end_index_exclusive)
@@ -592,18 +586,15 @@ class HybridMemoryV2Recall:
             for anchor_index in sorted(anchor_indices):
                 if not start <= anchor_index < end:
                     continue
-                if concrete_relation:
-                    source_start, source_end = anchor_index, anchor_index + 1
-                else:
-                    group = group_by_index.get(anchor_index)
-                    if group is None or not (
-                        start <= group.start_index
-                        and group.end_index_exclusive <= end
-                    ):
-                        continue
-                    source_start, source_end = group.start_index, group.end_index_exclusive
+                group = group_by_index.get(anchor_index)
+                if group is None or not (
+                    start <= group.start_index
+                    and group.end_index_exclusive <= end
+                ):
+                    continue
+                source_start, source_end = group.start_index, group.end_index_exclusive
                 for index in range(source_start, source_end):
-                    if index in anchor_indices and not concrete_relation:
+                    if index in anchor_indices:
                         continue
                     source_decision = resolve_historical_evidence(
                         self.messages, index, valid_scope_ids=valid_scope_ids,
@@ -615,27 +606,6 @@ class HybridMemoryV2Recall:
                         or evidence.speaker_role not in {"user", "assistant"}
                     ):
                         continue
-                    if concrete_relation:
-                        from memory_v2_evidence_sufficiency import AmbiguousHistoricalAttribute
-                        from memory_v2_historical_evidence import MAX_SEARCHABLE_CONTENT_CHARACTERS
-                        if len(str(self.messages[index].get("content", ""))) > MAX_SEARCHABLE_CONTENT_CHARACTERS:
-                            health_lanes.append(RetrievalLaneHealth("anchor", "incomplete", "source", "candidate_bound"))
-                            return
-                        try:
-                            value = relation_value(evidence.searchable_text, concrete_relation, require_unique=True)
-                        except AmbiguousHistoricalAttribute:
-                            counts["recall_anchor_ambiguous"] = 1
-                            return
-                        if not value:
-                            continue
-                        projection = project_source(self.messages, index,
-                            evidence.canonical_record_id, evidence.speaker_role,
-                            _historical_distinctive_terms(_tokens(value)), _tokens,
-                            requested_speech_act=decision.requested_speech_act, allow_whole_source=True)
-                        if not projection.segments:
-                            health_lanes.append(RetrievalLaneHealth("anchor", "incomplete", "source", "candidate_bound"))
-                            return
-                        anchor_projections[index] = projection.segments
                     related.append((abs(index - anchor_index), anchor_index, record, evidence))
         for _distance, anchor_index, record, evidence in sorted(
             related,
@@ -654,8 +624,7 @@ class HybridMemoryV2Recall:
             candidates[memory_id] = _Candidate(
                 memory_id,
                 "historical_recall_anchor_source",
-                (f"Historical {evidence.speaker_role} record: {anchor_projections[evidence.canonical_index][0].text}"
-                 if concrete_relation else evidence.searchable_text),
+                evidence.searchable_text,
                 str(record.truth_scope_id or ""),
                 f"historical_{record.scope_state}_{evidence.speaker_role}_source",
                 associated_from=(
@@ -685,9 +654,89 @@ class HybridMemoryV2Recall:
                 episode_id=record.record_id,
                 episode_source_start_index=record.source_start_index,
                 episode_source_end_index_exclusive=record.source_end_index_exclusive,
-                source_segments=anchor_projections.get(evidence.canonical_index, ()),
             )
             counts["recall_anchor_source"] += 1
+
+    def _add_exact_anchor_attribute(
+        self, candidates, anchor, scope_id, candidate_limit, counts, *, decision, health_lanes,
+    ) -> None:
+        """Project one published canonical identity without waiting for episodes.
+
+        A new occurrence can be authoritative before its derived episode exists.
+        This route resolves only that exact record; broader interaction hops
+        continue to require the separately validated episode range above.
+        """
+        if anchor is None:
+            health_lanes.append(RetrievalLaneHealth("anchor", "unused", "routing", "not_applicable"))
+            return
+        if (anchor.character_id != self.character_id
+                or anchor.active_truth_scope_id != scope_id
+                or len(anchor.canonical_indices) != 1
+                or len(anchor.canonical_record_ids) != 1
+                or len(anchor.speaker_roles) != 1):
+            health_lanes.append(RetrievalLaneHealth("anchor", "incomplete", "source", "owner_mismatch"))
+            return
+        if len(candidates) >= candidate_limit:
+            health_lanes.append(RetrievalLaneHealth("anchor", "incomplete", "source", "candidate_bound"))
+            return
+        valid_scope_ids = {
+            str(row[0]) for row in self.store.connection.execute(
+                "SELECT truth_scope_id FROM truth_scopes WHERE character_id=?",
+                (self.character_id,),
+            ).fetchall()
+        }
+        index, record_id, speaker = (anchor.canonical_indices[0],
+            anchor.canonical_record_ids[0], anchor.speaker_roles[0])
+        evidence = resolve_historical_evidence(
+            self.messages, index, valid_scope_ids=valid_scope_ids,
+        ).evidence
+        if (scope_id not in valid_scope_ids or evidence is None
+                or evidence.canonical_record_id != record_id
+                or evidence.speaker_role != speaker
+                or evidence.source_class != "ordinary_conversation"
+                or (evidence.scope_state != "unknown_scope" and evidence.truth_scope_id != scope_id)):
+            health_lanes.append(RetrievalLaneHealth("anchor", "incomplete", "source", "owner_mismatch"))
+            return
+        from memory_v2_historical_evidence import MAX_SEARCHABLE_CONTENT_CHARACTERS
+        from memory_v2_evidence_sufficiency import AmbiguousHistoricalAttribute
+        if len(str(self.messages[index].get("content", ""))) > MAX_SEARCHABLE_CONTENT_CHARACTERS:
+            health_lanes.append(RetrievalLaneHealth("anchor", "incomplete", "source", "candidate_bound"))
+            return
+        try:
+            value = relation_value(evidence.searchable_text, decision.requested_relation, require_unique=True)
+        except AmbiguousHistoricalAttribute:
+            counts["recall_anchor_ambiguous"] = 1
+            health_lanes.append(RetrievalLaneHealth("anchor", "complete", "source"))
+            return
+        if not value:
+            health_lanes.append(RetrievalLaneHealth("anchor", "complete", "source"))
+            return
+        projection = project_source(self.messages, index, record_id, speaker,
+            _historical_distinctive_terms(_tokens(value)), _tokens,
+            requested_speech_act=decision.requested_speech_act, allow_whole_source=True)
+        if not projection.segments:
+            health_lanes.append(RetrievalLaneHealth("anchor", "incomplete", "source", "candidate_bound"))
+            return
+        memory_id = f"{record_id}:anchor-source:{index}"
+        candidates[memory_id] = _Candidate(
+            memory_id, "historical_recall_anchor_source",
+            f"Historical {speaker} record: {projection.segments[0].text}",
+            str(evidence.truth_scope_id or ""),
+            f"historical_{evidence.scope_state}_{speaker}_source",
+            associated_from=record_id,
+            recall_evidence=(RecallEvidence(
+                evidence.source_class, record_id,
+                source_reference=f"canonical_index:{index}", sequence=index + 1,
+                recorded_at_us=evidence.recorded_at_us,
+            ),),
+            scope_state=evidence.scope_state, speech_act=evidence.speech_act,
+            speaker_role=speaker, source_class=evidence.source_class,
+            attribution_state="canonical_exact_source_anchor",
+            canonical_record_id=record_id, canonical_index=index,
+            source_segments=projection.segments,
+        )
+        counts["recall_anchor_source"] += 1
+        health_lanes.append(RetrievalLaneHealth("anchor", "complete", "source"))
 
     def _add_temporal_neighbors(self, candidates, query, scope_id, candidate_limit, counts) -> None:
         direction = -1 if re.search(r"\b(before|previous)\b", query.current_user_text.casefold()) else (

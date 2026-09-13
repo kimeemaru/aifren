@@ -1,86 +1,43 @@
-# AIFren design decisions
+# Current design decisions
 
-## Continuing character, replaceable implementation
+- **Permanent evidence, explicit authority.** Canonical dialogue remains permanent;
+  V2 owns normal admitted long-term memory, facts/corrections and structured continuity.
+  Derived indexes/episodes are rebuildable, never replacement truth. V1 is explicit
+  compatibility with no normal V2 prompt/write authority or silent error fallback.
+- **One selected storage resolver.** UUID/layout/readiness/timeline determine paths.
+  Selected migration preserves original records in a verified new database. Unknown
+  schema blocks. Reset/Delete are confirmed scoped operations, not guessed file recovery.
+- **Publication and mutation ownership.** Service persistence precedes presentation.
+  Captured character/session/generation/revision identities fence delayed events,
+  commands, speech and avatar callbacks. Hidden History is invalidated lazily.
+- **Responsive working context.** Mandatory authority, coherent immediate dialogue and
+  admitted current continuity take priority over older raw history and optional hints.
+  Capacity is a ceiling, not a utilization target. Exact-source dedup requires
+  proposition equivalence; newer corrections/status survive old source matches.
+- **Admitted memory before prose.** CompanionMemoryRealizer owns the immutable factual
+  core. A model may supply separately bounded present commentary, never historical
+  truth. Named-topic callbacks route through the existing source owner; one-hop source
+  anchors do not survive restart or widen to an episode.
+- **Speech after acceptance.** Full projection precedes synthesis partitioning.
+  One ordered utterance, bounded queues and one CPU synthesizer reduce first-speech
+  delay without speaking unchecked deltas. Audio cancellation is independent of UI.
+- **Presentation is optional and temporary where inferred.** Manual/explicit authority
+  outranks automatic proposals. ACT is a fresh prefix channel; history is inert.
+  Automatic overlays have response leases and graceful release, without clearing
+  blink/lip-sync/gaze or creating mood memory. Unity owns VRM mappings.
+- **Delivery style is a preference.** Natural/Roleplay does not edit personality or
+  canonical history. Machine obligations and governed memory retain dedicated paths.
+  Model prose can still be theatrical; instruction compliance is not subjective quality.
+- **One public application source.** Reviewed source/tests/docs move together; local
+  data/resources stay separate. Private historical archives are not parallel application
+  branches. Privacy review includes every outgoing commit, not only the final tree.
 
-Canonical dialogue persists across application and provider changes. Character
-identity, authored personality, learned facts, current scene, presentation assets
-and voice are distinct. There is no ordinary destructive "new chat" lifecycle.
+The blank History/Memory panel report after reset/switch remains unresolved despite
+passing synthetic reproduction. No session fence was weakened. Known model/speech/
+commentary limits are in [PROJECT.md](../PROJECT.md) and
+[Natural companion delivery](NATURAL_COMPANION_DESIGN.md).
 
-The product principle is to persist relevant facts and infer the experience.
-Sparse, evidence-backed continuity constrains improvisation; it does not attempt
-full world simulation. Active State is not biography or future Relationship State.
-
-## Memory authority and realization
-
-V2 is normal long-term-memory authority. V1 remains deliberate one-launch rollback;
-errors do not silently switch it on. Raw conversation remains permanent source
-truth, and original Viewer/admin corrections have their own durable provenance.
-Embeddings, indexes and episode summaries are rebuildable representations.
-
-Exact source/speaker/scope/current-history boundaries outrank fluent model prose.
-Historical ordering needs an identified canonical anchor. An immediate attribute
-follow-up stays attached to its unique source; absent detail cannot be borrowed
-from another event. Retrieval failure is not proof that a memory never existed.
-
-Local models need not freely regenerate a historical answer. CompanionMemoryRealizer
-normally renders an already-admitted immutable proposition with bounded natural
-surface variation. The same inference may add a present subjective reaction;
-unsafe or missing reactions are dropped without losing the factual answer or
-invoking repair. This is normal realization, not an emergency fallback experience.
-Other providers remain replaceable within the same authority and validation rules.
-
-## Corrections, scopes and current reality
-
-Corrections append/supersede through their owning API and retain evidence history.
-They never rewrite canonical dialogue. Attribute changes preserve object identity;
-replacement is explicit. Independent relation causes remain distinct even with
-identical labels/loci. Removing one cause cannot remove another's consequence.
-
-Scenario time/state and real-world elapsed time remain separate. Genuine human
-participation can supply temporal return context; app closure or elapsed hours
-cannot prove sleep, travel or off-screen activity. Reconnect/startup is not a new
-human interaction and cannot consume a return opportunity.
-
-## Presentation
-
-Unity direct VRM is the normal presentation. Portrait and landscape retain
-independent framing/backgrounds; opening UI never moves or resizes the avatar.
-Character identity is not the avatar file. Imported originals remain user-owned.
-
-Hidden subtitles are speech-only. Nunito SemiBold, restrained outline/shadow,
-180 ms per-word onset and bounded dwell belong to one SubtitleStyle/presenter
-boundary. Saved color/reveal/instant choices remain authoritative. Per-word
-opacity multiplies base RGB without rebuilding text/layout every frame. Temporary
-peek preserves progress; committed Show and interruption cancel immediately.
-
-Expression metadata is optional. Explicit emotion/neutral wins over bounded
-current self-facial emotes; absent requests preserve the face. Body gesture,
-persistent face, authored blink/mouth/gaze overrides and speech retain separate
-owners. No mood, relationship truth or new canonical event is inferred from motion.
-The public tree supports external approved clips but ships no new motion trial.
-
-The Current Scene drawer reveals by hover/click/focus with exit grace. Its exact
-cause-specific commands retain pending/error/revision semantics. Visibility is
-not a mutation. The Memory Viewer/Editor is implemented, bounded and provenance
-aware; silent administrative correction remains distinct from in-world removal.
-
-## Cancellation and resources
-
-Only accepted final responses publish. Persistence, cancellation, character/scope,
-socket and asset generations are authoritative. PTT must retire obsolete speech
-promptly; subtitles cannot delay readiness. Owned local processes are identified
-by durable process identity, never by a port alone. Managed llama.cpp disables
-unneeded per-token logits with `--logits_all false`.
-
-## Validation and remaining work
-
-Public correctness tests use synthetic fixtures with explicit data/preferences
-ownership. Real embedding assertions are separate from structural toy substitutes.
-Native XML/build validation is separate from subjective appearance and acoustic
-quality. No private fixture, log or installed model is implied by public source.
-
-V2 promotion is implemented; pre-1.0 work remains on companion feel, presentation,
-management/backup, cross-platform distribution and hardening. Relationship State
-and controlled external capabilities remain later work, not implied authorization.
-Historical shadow experiments are retained only where useful as disconnected
-research/helpers; their former default/gating statements are superseded.
+Before release-candidate retirement of V1 and one-time legacy migration tools,
+verify all retained development copies are handled. Migration does not establish
+cleanup. Preserve canonical history, valid imported V2 evidence, normal management,
+ongoing recovery and schema upgrades. This source catch-up performs no data cleanup.

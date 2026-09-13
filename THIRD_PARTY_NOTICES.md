@@ -68,3 +68,61 @@ The complete notice is retained at
 The font keeps its own license; generated TMP resources do not change it.
 No newly supplied avatar, external VRMA, motion-trial file or animation pack is
 included in this source sync.
+
+## Optional CPU expression classifier
+
+The optional automatic-expression component uses
+[Cardiff NLP twitter-roberta-base-emotion-latest, pinned revision](https://huggingface.co/cardiffnlp/twitter-roberta-base-emotion-latest/tree/415620c4fbc8bd82b82b9fd46642fcec6519d537).
+Its [model card](https://huggingface.co/cardiffnlp/twitter-roberta-base-emotion-latest/blob/415620c4fbc8bd82b82b9fd46642fcec6519d537/README.md)
+declares MIT. Credit Cardiff NLP and the upstream model authors; preserve the
+model card and applicable MIT notices when distributing weights or derivatives.
+Upstream benchmark claims are not AIFren deployment measurements.
+
+`automatic_expression.py` pins upstream safetensors/configuration/tokenizer and
+verifies SHA-256 identities. `expression_model_export.py` performs an explicit
+local CPU conversion using built-in Transformers, ONNX export and ONNX Runtime
+INT8 quantization. The source safetensors are 498,640,508 bytes. The derived graph
+is 125,860,185 bytes; graph/tokenizer/configuration total 127,970,095 bytes.
+None of these model files belong in Git. Runtime inference is offline/CPU only.
+The tested converter uses ONNX 1.19.1 ([Apache-2.0](https://github.com/onnx/onnx/blob/v1.19.1/LICENSE));
+retain its applicable notices as well as Torch/Transformers and runtime notices.
+
+The previously evaluated
+[SamLowe GoEmotions ONNX model](https://huggingface.co/SamLowe/roberta-base-go_emotions-onnx/tree/c4e1cea7f2827bc2db2f6a7b8ea4a35f28f3868d)
+(MIT) informed the input/uncertainty tests but is not the selected runtime model.
+
+The inspected environment uses these direct runtime packages:
+
+| Package | Inspected version | License / distribution note |
+| --- | --- | --- |
+| ONNX Runtime | 1.29.0 | [MIT](https://github.com/microsoft/onnxruntime/blob/v1.29.0/LICENSE); retain Microsoft and bundled dependency notices from the distributed wheel. |
+| Hugging Face Tokenizers | 0.22.2 | [Apache-2.0](https://github.com/huggingface/tokenizers/blob/v0.22.2/LICENSE); retain the license and applicable notices. |
+| NumPy | 2.5.2 | The installed package declares `BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0`; preserve its complete license collection and any linked native-library notices. |
+
+These version observations do not replace a final runtime SBOM. Model licensing
+does not automatically clear every wheel, native library, or future model
+revision for packaging. Preserve the upstream model card and applicable MIT
+notice with a distributed classifier. The separate optional `gguf` 0.19.0 metadata
+reader is MIT-licensed; it reads local chat-template metadata and is not part of
+classifier inference.
+
+## Natural companion design references
+
+The milestone's original implementation was informed by the following pinned
+source reviews:
+
+- [SillyTavern `8172dcd`](https://github.com/SillyTavern/SillyTavern/tree/8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8):
+  [AGPLv3](https://github.com/SillyTavern/SillyTavern/blob/8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8/LICENSE).
+  Expression/speech responsibility separation informed the design. No
+  implementation was copied or translated, and no AGPL source is incorporated by
+  this milestone. This work does not change AIFren's license.
+- [AIRI `3fcae72`](https://github.com/moeru-ai/airi/tree/3fcae726c566d9937672e81b9829e0b41c6252ed)
+  and [the inspected fork `d499b0b`](https://github.com/dasilva333/airi/tree/d499b0b2d4c030ac94b19621c0ff203909d5a17a):
+  [MIT, copyright Neko Ayaka](https://github.com/moeru-ai/airi/blob/3fcae726c566d9937672e81b9829e0b41c6252ed/LICENSE).
+  Ordered speech segments, cancellation ownership, and separated context sources
+  informed original AIFren changes. No source port is included. Any later source
+  reuse must retain the applicable copyright and MIT permission notice.
+
+The source-to-design mapping is recorded in
+[Natural companion delivery](docs/NATURAL_COMPANION_DESIGN.md). Reference review is
+not permission to bundle another project's models, voices, artwork, or avatars.

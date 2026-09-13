@@ -49,7 +49,9 @@ class ResponseExpressionContextTests(unittest.TestCase):
         return result
 
     def context(self):
-        return self.llm.calls[-1][1].split('[Response expression continuity]')[-1]
+        context, prompt = self.llm.calls[-1]
+        request = prompt + '\n' + '\n'.join(m['content'] for m in context)
+        return request.split('[Response expression continuity]')[-1].split('[End response expression continuity]')[0]
 
     def test_v1_and_v2_same_call_context_tracks_only_published_expression(self):
         for mode in ('v1','v2'):

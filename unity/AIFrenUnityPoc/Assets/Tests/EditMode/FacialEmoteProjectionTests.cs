@@ -99,7 +99,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
         }
 
         // Actual UniVRM validator/merger and a generated blendshape mesh; no private VRM.
-        private sealed class Fixture : IDisposable
+        internal sealed class Fixture : IDisposable
         {
             internal readonly GameObject Root = new GameObject("synthetic facial projection");
             internal readonly AvatarPresentationResolver Resolver;
@@ -108,10 +108,10 @@ namespace AIFren.UnityPoc.Tests.EditMode
             internal readonly ResponsePresentationTurn Owner = new ResponsePresentationTurn();
             internal readonly SkinnedMeshRenderer Renderer;
             internal readonly Vrm10RuntimeExpression Runtime;
-            internal readonly VRM10Expression Happy, Mouth, Blink;
+            internal readonly VRM10Expression Happy, Mouth, Blink, Sad, Angry;
             private readonly Mesh mesh;
             private readonly VRM10Object vrm;
-            internal Fixture()
+            internal Fixture(bool extra = false)
             {
                 var model = new GameObject("model"); model.transform.SetParent(Root.transform);
                 var instance = model.AddComponent<Vrm10Instance>(); instance.enabled = false;
@@ -124,12 +124,23 @@ namespace AIFren.UnityPoc.Tests.EditMode
                 Mouth = ScriptableObject.CreateInstance<VRM10Expression>();
                 Blink = ScriptableObject.CreateInstance<VRM10Expression>();
                 vrm.Expression.Happy = Happy; vrm.Expression.Aa = Mouth; vrm.Expression.Blink = Blink;
+                if (extra)
+                {
+                    mesh.AddBlendShapeFrame("synthetic-sad", 100, new[] { Vector3.down, Vector3.zero, Vector3.zero }, new Vector3[3], new Vector3[3]);
+                    mesh.AddBlendShapeFrame("synthetic-angry", 100, new[] { Vector3.left, Vector3.zero, Vector3.zero }, new Vector3[3], new Vector3[3]);
+                    Sad = ScriptableObject.CreateInstance<VRM10Expression>();
+                    Angry = ScriptableObject.CreateInstance<VRM10Expression>();
+                    Sad.MorphTargetBindings = new[] { new MorphTargetBinding { RelativePath="", Index=1, Weight=1 } };
+                    Angry.MorphTargetBindings = new[] { new MorphTargetBinding { RelativePath="", Index=2, Weight=1 } };
+                    vrm.Expression.Sad = Sad; vrm.Expression.Angry = Angry;
+                }
                 Runtime = (Vrm10RuntimeExpression)Activator.CreateInstance(typeof(Vrm10RuntimeExpression),
                     BindingFlags.Instance | BindingFlags.NonPublic, null, new object[] { instance, null, false }, null);
                 Face = Root.AddComponent<AvatarExpressionController>();
                 Set(Face, "runtime", Runtime);
                 var capabilities = (List<AvatarExpressionCapability>)Get(Face, "capabilities");
                 capabilities.Add(new AvatarExpressionCapability(new ExpressionKey(ExpressionPreset.happy), Happy));
+                if (extra) { capabilities.Add(new AvatarExpressionCapability(new ExpressionKey(ExpressionPreset.sad), Sad)); capabilities.Add(new AvatarExpressionCapability(new ExpressionKey(ExpressionPreset.angry), Angry)); }
                 Body = Root.AddComponent<AvatarAnimationController>(); Set(Body, "head", Root.transform);
                 Resolver = Root.AddComponent<AvatarPresentationResolver>(); Resolver.Configure();
             }
@@ -143,7 +154,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             public void Dispose()
             {
                 Runtime.Dispose(); UnityEngine.Object.DestroyImmediate(Root);
-                foreach (var x in new UnityEngine.Object[] { vrm, Happy, Mouth, Blink, mesh }) UnityEngine.Object.DestroyImmediate(x);
+                foreach (var x in new UnityEngine.Object[] { vrm, Happy, Mouth, Blink, Sad, Angry, mesh }) UnityEngine.Object.DestroyImmediate(x);
             }
         }
         private static object Get(object x, string name) => x.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(x);

@@ -203,7 +203,9 @@ class ContextBuildingTests(unittest.TestCase):
         self.assertIn("real assistant", contents)
         self.assertFalse(any("scenario-a" in item or "scenario-b" in item for item in contents))
 
-        provider_messages = OpenAICompatibleLLM._messages(local_context, "character")
+        provider = OpenAICompatibleLLM(api_key="synthetic", base_url="http://127.0.0.1:9/v1", model="synthetic")
+        self.addCleanup(provider.client.close)
+        provider_messages = provider._messages(local_context, "character")
         self.assertTrue(all(set(item) == {"role", "content"} for item in provider_messages))
         self.assertNotIn("scope-", str(provider_messages))
 

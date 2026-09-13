@@ -86,3 +86,22 @@ Never use a whole-database replacement as character-scoped maintenance.
 Earlier `*_shadow`, import and evaluation modules document research predating normal
 V2 authority. Their opt-in names do not define the current default. In particular,
 legacy V1 mirrors stay `legacy_unverified`; normal catch-up never promotes them.
+
+## Selected character storage
+
+CharacterRegistry resolves a local `memory_v2.sqlite3` (WAL/SHM beside it), canonical
+namespace and timeline generation. The schema retains character/scope ownership
+checks and validates expected database identity. Missing/corrupt local storage is
+explicitly unavailable, never implicit shared-store or V1 recovery.
+
+`character_copy.py` and `character_rows.py` enumerate current owned original/derived
+schema. Selected migration copies from a consistent snapshot into a new empty DB,
+preserves original identity/provenance and validates per-table digests/integrity/
+foreign keys. Unknown schema blocks. CharacterOperationService coordinates leases,
+journals and registry publication; old copies remain reported until confirmed cleanup.
+Reset/Delete use the same ownership boundary and a new timeline epoch to fence stale
+writers. Conversation JSON cannot substitute for original Viewer/state corrections.
+
+Named-topic personal past-value callbacks use the shared query decision and canonical
+admission after restart. Exact one-turn follow-up anchors still expire on restart;
+ambiguity and lookup unavailability remain separate from healthy absence.

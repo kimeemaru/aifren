@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime
 
+from character_storage_runtime import continuity_write_scope
 from memory.embeddings import EmbeddingModel
 
 
@@ -1064,10 +1065,11 @@ class Memory:
     ):
 
         with self._lock:
-            save_memories(
-                self.memories,
-                getattr(self, "memory_file", MEMORY_FILE),
-            )
+            with continuity_write_scope(self):
+                save_memories(
+                    self.memories,
+                    getattr(self, "memory_file", MEMORY_FILE),
+                )
 
     def subscribe_mutations(self, observer):
         """Observe successful V1 mutations without taking authority from V1.

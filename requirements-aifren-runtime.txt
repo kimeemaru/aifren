@@ -5,6 +5,8 @@
 # runtime and the existing local host API.
 websockets==16.1
 openai==2.53.0
+# Read-only embedded template metadata; no model/tensor loading.
+gguf==0.19.0
 # Managed Local mode uses the same OpenAI-compatible transport through this
 # optional resident server. Linux setup builds a verified CUDA runtime with a
 # portable CPU baseline on a supported NVIDIA host and installs the normal CPU

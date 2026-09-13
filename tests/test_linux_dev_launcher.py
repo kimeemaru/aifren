@@ -49,33 +49,11 @@ class LinuxDevLauncherTests(unittest.TestCase):
         )
         self.assertEqual(2, rejected.returncode)
 
-    def test_acceptance_diagnostic_hook_runs_before_owned_backend_cleanup(self):
+    def test_public_launcher_has_no_excluded_acceptance_script_dependency(self):
         payload = SHELL.read_text(encoding="utf-8")
-        capture = payload.index("--capture-running-backend")
-        stop = payload.index("--stop")
-        self.assertLess(capture, stop)
+        self.assertNotIn("run_memory_v2_development_acceptance.py", payload)
         self.assertIn('trap \'exit 130\' INT', payload)
         self.assertIn('trap \'exit 143\' TERM', payload)
-        self.assertLess(
-            payload.index("inherited_staged_data_root="),
-            payload.index('source "$repository_root/.env"'),
-        )
-        self.assertGreater(
-            payload.index(
-                'export AIFREN_DEVELOPMENT_STAGED_DATA_ROOT="$inherited_staged_data_root"'
-            ),
-            payload.index('source "$repository_root/.env"'),
-        )
-        self.assertLess(
-            payload.index("--v2-acceptance-ready"),
-            payload.index('echo "Launching Linux player:'),
-        )
-
-        normal = subprocess.run(
-            [str(SHELL), "current", "--validate-arguments"],
-            cwd=ROOT, text=True, capture_output=True,
-        )
-        self.assertEqual(0, normal.returncode, normal.stderr)
 
     def test_shortcut_installer_writes_a_valid_desktop_entry_for_dev_controls(self):
         with TemporaryDirectory() as directory:
@@ -156,16 +134,16 @@ class DevelopmentButtonRouteTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root=Path(directory); scripts=root/'scripts';scripts.mkdir()
             shell=scripts/SHELL.name;shutil.copyfile(SHELL,shell);shell.chmod(0o700)
-            runtime=root/'.venv-aifren/bin/python';runtime.parent.mkdir(parents=True)
+            runtime=root/'external runtime/bin/python';runtime.parent.mkdir(parents=True)
             # Controlled child hooks, no backend, Unity, network or model launch.
-            runtime.write_text('#!'+sys.executable+'\nimport json,os,sys\nfrom pathlib import Path\nwith open(os.environ["QA_RECORD"],"a") as f:f.write(json.dumps({"kind":"backend","args":sys.argv[1:],"authority":os.environ.get("AIFREN_MEMORY_AUTHORITY")})+"\\n")\n')
+            runtime.write_text('#!'+sys.executable+'\nimport json,os,sys\nfrom pathlib import Path\nwith open(os.environ["QA_RECORD"],"a") as f:f.write(json.dumps({"kind":"backend","args":sys.argv[1:],"authority":os.environ.get("AIFREN_MEMORY_AUTHORITY"),"data_root":os.environ.get("AIFREN_DATA_ROOT")})+"\\n")\n')
             runtime.chmod(0o700)
             player=root/'unity/AIFrenUnityPoc/Builds/LinuxDevelopment/AIFrenPoc.x86_64';player.parent.mkdir(parents=True)
-            player.write_text('#!'+sys.executable+'\nimport json,os,sys\nwith open(os.environ["QA_RECORD"],"a") as f:f.write(json.dumps({"kind":"player","exe":sys.argv[0],"args":sys.argv[1:],"authority":os.environ.get("AIFREN_MEMORY_AUTHORITY")})+"\\n")\n')
+            player.write_text('#!'+sys.executable+'\nimport json,os,sys\nwith open(os.environ["QA_RECORD"],"a") as f:f.write(json.dumps({"kind":"player","exe":sys.argv[0],"args":sys.argv[1:],"authority":os.environ.get("AIFREN_MEMORY_AUTHORITY"),"data_root":os.environ.get("AIFREN_DATA_ROOT")})+"\\n")\n')
             player.chmod(0o700);before=player.read_bytes()
             build=scripts/'build_aifren_linux.sh'
             build.write_text('#!/bin/sh\n[ "${1:-}" = "--development" ] || exit 8\n[ "${QA_BUILD_FAIL:-0}" = "0" ] || exit 9\nexit 0\n');build.chmod(0o700)
-            (root/'.env').write_text('AIFREN_MEMORY_AUTHORITY=v1\n')
+            (root/'.env').write_text('AIFREN_MEMORY_AUTHORITY=v1\nAIFREN_PYTHON='+__import__('shlex').quote(str(runtime))+'\nAIFREN_DATA_ROOT='+__import__('shlex').quote(str(root/'normal-data'))+'\n')
             record=root/'calls.jsonl';environment={k:v for k,v in os.environ.items() if not k.startswith('AIFREN_')}
             environment['QA_RECORD']=str(record)
             for action in ['current','rebuild']:
@@ -189,3 +167,17 @@ class DevelopmentButtonRouteTests(unittest.TestCase):
             result=subprocess.run([str(shell),'rebuild','development'],cwd=root,env=dict(environment,QA_BUILD_FAIL='1'),capture_output=True,timeout=10)
             self.assertEqual(result.returncode,9)
             self.assertEqual(player.read_bytes(),before);self.assertEqual(record.read_bytes(),record_before)
+            plan=root/'finite-plan.json';plan.write_text('{}')
+            with (root/'.env').open('a') as saved:saved.write('AIFREN_DEVELOPMENT_QA_PLAN=\n')
+            rejected=subprocess.run([str(shell),'current','development'],cwd=root,
+                env=dict(environment,AIFREN_DEVELOPMENT_QA_PLAN=str(plan)),capture_output=True,timeout=10)
+            self.assertEqual(2,rejected.returncode)
+            self.assertEqual(record_before,record.read_bytes(),'Ungated automation started a child')
+            accepted=subprocess.run([str(shell),'current','development'],cwd=root,
+                env=dict(environment,AIFREN_DEVELOPMENT_QA_PLAN=str(plan),AIFREN_ENABLE_DEVELOPMENT_QA='1',AIFREN_DATA_ROOT=str(root/'isolated-data')),
+                capture_output=True,timeout=10)
+            self.assertEqual(0,accepted.returncode,accepted.stderr)
+            last=[json.loads(line) for line in record.read_text().splitlines() if json.loads(line)['kind']=='player'][-1]
+            self.assertIn('-aifren-qa-plan',last['args']);self.assertIn(str(plan),last['args'])
+            self.assertEqual(str(root/'isolated-data'),last['data_root'])
+            self.assertFalse((root/'normal-data').exists())

@@ -43,3 +43,12 @@ regular-file paths and digests; an allowlist is not a license grant. Do not pack
 a live environment or data directory wholesale. Portable Python/native/model/GPU
 redistribution still needs a final version-specific SBOM/license review. No portable
 package, public release or new tag is implied by this source sync.
+
+## Optional expression runtime
+
+The Cardiff expression model is a separately installed, pinned MIT-declared local
+resource; source/configuration hashes are in automatic_expression.py. No weights,
+converted graph, tokenizer cache or generated voice data is included. Preserve
+model/card and runtime dependency notices for any later distribution. Existing
+public binary resources are unchanged in this catch-up; no new avatar, motion pack,
+font, background or recording is admitted.

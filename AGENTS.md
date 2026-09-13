@@ -28,3 +28,27 @@ local imported resources need their own explicit distribution review.
 
 Do not claim model, acoustic or human experience acceptance from synthetic tests.
 Keep release diagnostics disabled by default and bounded when enabled.
+
+## Current delivery and public workflow
+
+Memory V2 and the responsive governor are normal. Required context may exceed the
+soft working target but never the hard budget; no fill-the-window regression.
+Natural/Roleplay, responsive speech, opt-in ACT and CPU expressions use existing
+settings owners. Automatic faces are leased temporary overlays, not durable emotion.
+Keep canonical speech projection before chunking and one cancellable utterance owner.
+
+CharacterRegistry owns local/legacy layout, UUID and timeline paths. Management
+requires selected UUID/revision confirmation; missing local data never selects
+shared/V1/seed truth. Preserve writer leases and character/session/generation fences,
+including late A events after A→B→A. All destructive QA uses synthetic stores.
+The intermittent blank-panel report remains unresolved; passing synthetic switching
+is not proof of its repair.
+
+This public checkout is the single active application codebase. Include code,
+synthetic regression and necessary docs in each change. Complete reviewed slices
+can land on main; keep unfinished work on a branch. Run targeted development tests
+and appropriate final validation once. Review outgoing tree AND commits for privacy
+before every public push. Do not maintain another application implementation that
+requires periodic export. Historical internal archives are not runtime dependencies.
+Never invent private fixtures or require unavailable machine-local assets. Runtime
+data, logs, model files, preferences and private QA evidence do not belong in Git.

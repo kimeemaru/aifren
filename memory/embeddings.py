@@ -7,17 +7,9 @@ from sentence_transformers import SentenceTransformer
 # Local Embedding Model
 # ============================================================
 
-BASE_DIR = os.path.dirname(
-    os.path.dirname(
-        os.path.abspath(__file__)
-    )
-)
+from runtime_layout import resource_path
 
-MODEL_DIR = os.path.join(
-    BASE_DIR,
-    "models",
-    "all-MiniLM-L6-v2"
-)
+MODEL_DIR = str(resource_path("models/all-MiniLM-L6-v2"))
 
 
 class EmbeddingModel:

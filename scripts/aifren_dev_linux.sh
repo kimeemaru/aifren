@@ -23,6 +23,9 @@ inherited_staged_data_root="${AIFREN_DEVELOPMENT_STAGED_DATA_ROOT:-}"
 inherited_staged_character_id="${AIFREN_DEVELOPMENT_STAGED_CHARACTER_ID:-}"
 inherited_resource_root="${AIFREN_RESOURCE_ROOT:-}"
 inherited_player_log="${AIFREN_UNITY_PLAYER_LOG:-}"
+inherited_native_plan="${AIFREN_DEVELOPMENT_QA_PLAN:-}"
+inherited_native_gate="${AIFREN_ENABLE_DEVELOPMENT_QA:-}"
+inherited_data_root="${AIFREN_DATA_ROOT:-}"
 
 usage() {
     cat <<'EOF'
@@ -71,6 +74,10 @@ if [[ -f "$repository_root/.env" ]]; then
     set +a
 fi
 
+# Reuse an explicitly selected environment without relocating source or data.
+# Keep the path as supplied: resolving a venv's Python symlink loses its packages.
+runtime="${AIFREN_PYTHON:-$runtime}"
+
 if [[ -n "$inherited_session_diagnostics_dir" || -n "$inherited_session_capture_id" ]]; then
     export AIFREN_DEVELOPMENT_SESSION_DIAGNOSTICS_DIR="$inherited_session_diagnostics_dir"
     export AIFREN_DEVELOPMENT_SESSION_CAPTURE_ID="$inherited_session_capture_id"
@@ -85,6 +92,23 @@ fi
 export AIFREN_MEMORY_AUTHORITY="$memory_authority"
 # Disposable application routing is separately gated by its attested owner.
 # Ordinary V2 authority never grants test automation permissions.
+
+# Forward the existing finite native plan only for an explicitly isolated
+# Development check. The player validates the plan before accessing preferences.
+if [[ -n "$inherited_native_plan" || -n "${AIFREN_DEVELOPMENT_QA_PLAN:-}" ]]; then
+    if [[ "$development_build" != true || "$inherited_native_gate" != 1 ||
+          -z "$inherited_data_root" || ! -f "$inherited_native_plan" ]]; then
+        echo "A finite player plan requires explicit Development QA, data root and existing plan." >&2
+        exit 2
+    fi
+    # Saved normal configuration cannot redirect a finite check into live data.
+    export AIFREN_DATA_ROOT="$inherited_data_root"
+    export AIFREN_ENABLE_DEVELOPMENT_QA=1
+    export AIFREN_RESOURCE_ROOT="$inherited_resource_root"
+    export AIFREN_DEVELOPMENT_STAGED_DATA_ROOT="$inherited_staged_data_root"
+    export AIFREN_DEVELOPMENT_STAGED_CHARACTER_ID="$inherited_staged_character_id"
+    reset_arguments+=("-aifren-qa-plan" "$inherited_native_plan")
+fi
 
 if [[ ! -x "$runtime" ]]; then
     echo "AIFren's Linux runtime is missing." >&2
@@ -151,12 +175,6 @@ cleanup() {
     if [[ -n "$warning_forwarder_pid" ]] && kill -0 "$warning_forwarder_pid" 2>/dev/null; then
         kill "$warning_forwarder_pid" 2>/dev/null || true
         wait "$warning_forwarder_pid" 2>/dev/null || true
-    fi
-    if [[ -n "$session_diagnostics_dir" && -n "$session_capture_id" ]]; then
-        "$runtime" "$repository_root/scripts/run_memory_v2_development_acceptance.py" \
-            --capture-running-backend \
-            --session-output "$session_diagnostics_dir" \
-            --capture-id "$session_capture_id" || true
     fi
     "$runtime" "$ensure_backend" \
         --stop \

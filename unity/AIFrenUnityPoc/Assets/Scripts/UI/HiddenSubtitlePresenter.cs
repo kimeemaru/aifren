@@ -9,7 +9,7 @@ namespace AIFren.UnityPoc.UI
 
     internal sealed class SubtitleSession
     {
-        internal readonly List<string> Pages;
+        internal readonly List<SubtitlePage> Pages;
         internal readonly List<SubtitlePageWordRange> Ranges;
         internal List<float> WordTimes;
         internal int Generation;
@@ -23,6 +23,9 @@ namespace AIFren.UnityPoc.UI
         internal float StopElapsed;
 
         internal SubtitleSession(List<string> pages, List<SubtitlePageWordRange> ranges, List<float> wordTimes, int generation, float startedAt)
+            : this(pages?.ConvertAll(SubtitlePage.FromMarkup), ranges, wordTimes, generation, startedAt) { }
+
+        internal SubtitleSession(List<SubtitlePage> pages, List<SubtitlePageWordRange> ranges, List<float> wordTimes, int generation, float startedAt)
         {
             Pages = pages; Ranges = ranges; WordTimes = wordTimes; Generation = generation; StartedAt = startedAt;
         }
@@ -30,8 +33,8 @@ namespace AIFren.UnityPoc.UI
 
     internal interface IHiddenSubtitleRenderTarget
     {
-        void Preload(string page);
-        void ShowPage(string page, int shownWords);
+        void Preload(SubtitlePage page);
+        void ShowPage(SubtitlePage page, int shownWords);
         void SetRenderable(bool renderable);
         void SetAlpha(float alpha);
         void SetWordOpacities(float[] values, int count);
@@ -63,14 +66,14 @@ namespace AIFren.UnityPoc.UI
         internal HiddenSubtitlePresenter(IHiddenSubtitleRenderTarget target) { this.target = target; }
         internal void ConfigureReveal(float rate, bool instantText)
         { wordsPerSecond = Mathf.Max(.1f, rate); instant = instantText; }
-        internal void Preload(string page) { if (!string.IsNullOrWhiteSpace(page)) target.Preload(page); }
+        internal void Preload(string page) { if (!string.IsNullOrWhiteSpace(page)) Preload(SubtitlePage.FromMarkup(page)); }
+        internal void Preload(SubtitlePage page) { if (page != null && !string.IsNullOrWhiteSpace(page.SpokenText)) target.Preload(page); }
 
         internal void Begin(SubtitleSession value)
         {
             if (value == null || value.Pages == null || value.Pages.Count == 0) { Cancel(); return; }
-            if (!SubtitleTimingPlan.TryValidatePageDefinitions(value.Pages, value.Ranges,
-                value.WordTimes != null ? value.WordTimes.Count : 0,
-                DialoguePresentationParser.SpokenText, out string error))
+            if (!SubtitleTimingPlan.TryValidatePageDefinitions(value.Pages.ConvertAll(page => page.SpokenText), value.Ranges,
+                value.WordTimes != null ? value.WordTimes.Count : 0, out string error))
             { Debug.LogError("[AIFren Subtitle] refusing invalid page ownership: " + error); Cancel(); return; }
             int largest = 0;
             foreach (var range in value.Ranges) largest = Mathf.Max(largest, range.LastWordIndex - range.FirstWordIndex + 1);
@@ -176,8 +179,16 @@ namespace AIFren.UnityPoc.UI
         private float Elapsed(float now) => Mathf.Max(0f, now - ClockOrigin);
         private int DueOnPage(float now)
         {
-            if (instant) return PageCount;
             int global = session.Ranges[pageIndex].FirstWordIndex;
+            if (instant)
+            {
+                // Responsive speech has a complete page layout but only an
+                // announced prefix of audio timing. Instant text must not expose
+                // a future chunk or end the utterance before it is available.
+                while (global <= session.Ranges[pageIndex].LastWordIndex
+                    && !float.IsPositiveInfinity(session.WordTimes[global])) global++;
+                return global - session.Ranges[pageIndex].FirstWordIndex;
+            }
             while (global <= session.Ranges[pageIndex].LastWordIndex && session.WordTimes[global] <= Elapsed(now)) global++;
             return global - session.Ranges[pageIndex].FirstWordIndex;
         }
@@ -286,24 +297,25 @@ namespace AIFren.UnityPoc.UI
             preparedPages.Clear(); preparedPageOrder.Clear();
             if (visible != null) { visible.text = string.Empty; visible.maxVisibleWords = 0; }
         }
-        public void Preload(string page)
+        public void Preload(string page) => Preload(SubtitlePage.FromMarkup(page));
+        public void Preload(SubtitlePage page)
         {
-            string sourcePage = page ?? string.Empty;
-            GetOrPrepare(sourcePage);
+            if (page != null) GetOrPrepare(page);
         }
-        public void ShowPage(string page, int visibleWords)
+        public void ShowPage(string page, int visibleWords) => ShowPage(SubtitlePage.FromMarkup(page), visibleWords);
+        public void ShowPage(SubtitlePage page, int visibleWords)
         {
-            if (visible == null) return;
-            string sourcePage = page ?? string.Empty;
+            if (visible == null || page == null) return;
+            string key = PageKey(page);
             Vector2 size = viewport.rect.size;
             bool resized = layoutSize != size;
             if (resized) { preparedPages.Clear(); preparedPageOrder.Clear(); layoutSize = size; }
-            if (resized || !string.Equals(activePage, sourcePage, StringComparison.Ordinal))
+            if (resized || !string.Equals(activePage, key, StringComparison.Ordinal))
             {
-                PreparedPage prepared = GetOrPrepare(sourcePage);
+                PreparedPage prepared = GetOrPrepare(page);
                 visible.fontSize = prepared.FontSize;
                 visible.maxVisibleWords = int.MaxValue;
-                visible.text = prepared.FormattedText; activePage = sourcePage;
+                visible.text = prepared.FormattedText; activePage = key;
                 visible.ForceMeshUpdate(true, true);
                 // TMP builds inactive geometry but invokes OnPreRenderText only
                 // for an active renderer. Prepare its alpha map before enabling.
@@ -367,11 +379,16 @@ namespace AIFren.UnityPoc.UI
                 }
             return 0f;
         }
-        private PreparedPage GetOrPrepare(string sourcePage)
+        private static string PageKey(SubtitlePage page) => page.SpokenText + "\u001f" + page.FormattedText;
+
+        private PreparedPage GetOrPrepare(SubtitlePage page)
         {
-            if (preparedPages.TryGetValue(sourcePage, out PreparedPage cached)) return cached;
+            string key = PageKey(page);
+            if (preparedPages.TryGetValue(key, out PreparedPage cached)) return cached;
             LayoutPreparationCount++;
-            string full = DialoguePresentationParser.FormatSubtitleText(sourcePage);
+            // The complete document already classified every span. Page
+            // fragments must never reacquire action/quotation semantics.
+            string full = page.FormattedText;
             float width = Mathf.Max(1f, viewport.rect.width - 36f);
             float height = Mathf.Max(1f, viewport.rect.height - 20f);
             float size = SubtitleStyle.FontSize;
@@ -382,8 +399,8 @@ namespace AIFren.UnityPoc.UI
                 if (sizingText.GetPreferredValues(full, width, 0f).y <= height) break;
             }
             var prepared = new PreparedPage { FormattedText = full, FontSize = Mathf.Max(SubtitleStyle.MinimumFontSize, size) };
-            preparedPages[sourcePage] = prepared;
-            preparedPageOrder.Enqueue(sourcePage);
+            preparedPages[key] = prepared;
+            preparedPageOrder.Enqueue(key);
             while (preparedPageOrder.Count > PreparedPageLimit)
             {
                 string expired = preparedPageOrder.Dequeue();

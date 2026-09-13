@@ -176,7 +176,13 @@ class V2RuntimeRecoveryTests(unittest.TestCase):
             return original(message, **kwargs)
         with patch.object(self.h.writer, "observe_canonical_user_continuity",
                           side_effect=missed):
-            self.assertTrue(self.service.process_text_turn("I'm cooking dinner.").succeeded)
+            calls = len(self.llm.calls)
+            result = self.service.process_text_turn("I'm cooking dinner.")
+            self.assertFalse(result.succeeded)
+            self.assertIn("current-state update could not be completed", result.error)
+            self.assertEqual(calls, len(self.llm.calls))
+            self.assertEqual("I'm cooking dinner.", self.conversation.messages[-1]["content"])
+            self.assertEqual("user", self.conversation.messages[-1]["role"])
             self.assertTrue(self.service.process_text_turn("I'm reading Dune.").succeeded)
         self.reopen()
         self.assertIn("reading Dune", str(self.h.repository.lookup_actor_state(

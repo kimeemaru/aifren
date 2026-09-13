@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import re
 
 
-MEMORY_QUERY_DECISION_VERSION = 4
+MEMORY_QUERY_DECISION_VERSION = 5
 
 _USER_HISTORY = re.compile(
     r"\bdo\s+you\s+know\s+(?:whether|if)\s+i\s+(?:ever\s+)?"
@@ -78,6 +78,17 @@ _GENERIC_RECOLLECTION = re.compile(
 _HISTORICAL_FACT_REQUEST = re.compile(
     r"^(?:what|which|where|who|when)\b.{0,65}\b(?:did|was|were|had)\s+(?:i|we|you|my|our)\b"
     r".*\b(?:before|after|previously|used\s+to|long\s+ago)\b", re.I,
+)
+# A named topic return followed by a personal past-value question is a recall
+# request even without the words "remember" or "said". The topic is data, not
+# an immediate-answer anchor, and must be resolved against canonical evidence.
+_TOPIC_RETURN = re.compile(
+    r"^(?:back\s+to|returning\s+to|regarding|about|as\s+for)\s+"
+    r"(?P<topic>[\w'’ -]{1,72})\s*[:,.!?—–]\s*"
+    r"(?P<request>(?:what|which|where|who|when|do|did|can|could)\b.+)$", re.I,
+)
+_PERSONAL_PAST_VALUE = re.compile(
+    r"^(?:what|which|where|who|when)\b.{0,65}\bdid\s+(i|you|we)\s+[a-z]+\b", re.I,
 )
 _CURRENT_FACT = re.compile(
     r"\bwhat(?:\s+(?:is|are)|'s)\s+my\s+(?:current\s+)?(?:name|favou?rite|preference)\b|"
@@ -187,6 +198,7 @@ class MemoryQueryDecision:
     version: int = MEMORY_QUERY_DECISION_VERSION
     requested_slots: tuple[MemoryQuerySlot, ...] = ()
     source_order: MemorySourceOrder | None = None
+    topic_return: bool = False
 
     @property
     def historical(self) -> bool:
@@ -222,6 +234,7 @@ class MemoryQueryDecision:
             "memory_query_decision_version": self.version,
             "memory_source_order": self.source_order.direction if self.source_order else "none",
             "memory_order_anchor_kind": self.source_order.anchor_kind if self.source_order else "none",
+            "memory_topic_return": self.topic_return,
         }
 
 
@@ -268,6 +281,10 @@ def _retrieval_slots(text: str) -> tuple[str, ...]:
     lower = text.casefold()
     favorite = tuple(dict.fromkeys(
         match for match in re.findall(r"\bfavou?rite\s+([a-z0-9]+)", lower)
+        # In "what color was my favorite before/after ...", the temporal
+        # operator starts a clause; it is not a preference-property noun.
+        # Fall through to the existing named-property lookup, never the value.
+        if match not in {"before", "after"}
     ))
     if favorite:
         # One bounded coordinated favorite list, e.g. "favorite color and
@@ -346,7 +363,8 @@ def decide_memory_query(query_text: object) -> MemoryQueryDecision:
     closed structural decision; raw query text is not retained in diagnostics.
     """
     raw_query = " ".join(str(query_text or "").split())
-    clauses = _request_clauses(raw_query)
+    topic_return = _TOPIC_RETURN.fullmatch(_unquoted_query(raw_query))
+    clauses = _request_clauses(topic_return["request"] if topic_return else raw_query)
     query = " and ".join(clauses)
     relation = _relation(query)
     terms = _subject_terms(query)
@@ -412,6 +430,15 @@ def decide_memory_query(query_text: object) -> MemoryQueryDecision:
         speaker = "user"
         time_semantics = "current"
         reason = "explicit_current_fact_grammar"
+    elif topic_return and (past := _PERSONAL_PAST_VALUE.match(query)):
+        applicable = True
+        speaker = {"i": "user", "you": "assistant", "we": "shared"}[past[1].lower()]
+        intent = {"user": "user_historical_source", "assistant": "assistant_historical_source",
+                  "shared": "shared_historical_conversation"}[speaker]
+        time_semantics = "historical"
+        reason = "ordinary_topic_past_value"
+        exact_source = True
+        speech_act = "assertion"
     elif matches(_GENERIC_RECOLLECTION) or matches(_HISTORICAL_FACT_REQUEST):
         applicable = True
         intent = "generic_recollection"
@@ -453,6 +480,12 @@ def decide_memory_query(query_text: object) -> MemoryQueryDecision:
         applicable and time_semantics == "historical" and
         (intent in {"user_historical_source", "assistant_historical_source"} or relation == "preference")
     ) else None
+    if topic_return and applicable:
+        reference = re.sub(r"^(?:the|my|your|our)\s+", "", topic_return["topic"].strip(), flags=re.I)
+        # Deictic topic labels cannot revive a prior turn's routing handle.
+        if reference.casefold() in {"it", "that", "this", "them", "those", "that topic", "this topic"}:
+            reference = ""
+        terms = _subject_terms(reference)
     return MemoryQueryDecision(
         applicable=applicable,
         intent=intent,
@@ -470,6 +503,7 @@ def decide_memory_query(query_text: object) -> MemoryQueryDecision:
         reason=reason,
         requested_slots=requested_slots,
         source_order=order,
+        topic_return=bool(topic_return and applicable),
     )
 
 
