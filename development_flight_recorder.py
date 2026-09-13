@@ -109,6 +109,7 @@ _SAFE_STRING_KEYS = {
     "performance_profile", "candidate_cost_method",
 }
 _SAFE_NUMBER_KEYS = {
+    "view_alias", "view_count",
     "turn_id", "playback_id", "chunk_index", "pid", "unity_pid", "frame",
     "characters", "words", "prompt_tokens", "generated_tokens", "duration_ms",
     "duration_seconds", "tok_s", "active_jobs", "pending_jobs", "queue_depth",
@@ -394,6 +395,24 @@ class DevelopmentFlightRecorder:
             self._thread = None
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=1.0)
+
+    def mark_view(self, stage: str, request_id: str | None, count: int) -> None:
+        # Bounded recorder-local aliases only: no identity/query/payload is serialized.
+        with self._lock:
+            if not self._enabled:
+                return
+            if not hasattr(self, "_view_aliases"):
+                self._view_aliases = {}
+                self._view_alias_sequence = 0
+            alias = 0
+            if request_id:
+                if request_id not in self._view_aliases:
+                    if len(self._view_aliases) >= 128:
+                        self._view_aliases.pop(next(iter(self._view_aliases)))
+                    self._view_alias_sequence += 1
+                    self._view_aliases[request_id] = self._view_alias_sequence
+                alias = self._view_aliases[request_id]
+        self.mark("view_" + stage, view_alias=alias, view_count=count)
 
     def mark(self, event: str, **metadata: Any) -> None:
         with self._lock:

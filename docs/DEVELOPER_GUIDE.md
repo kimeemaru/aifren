@@ -159,6 +159,25 @@ The future V1/legacy-tool retirement gate is in PROJECT.md. Migration alone does
 not confirm retained-copy cleanup. Preserve valid V1-origin records in V2, canonical
 history, ordinary management/recovery and future schema upgrades during retirement.
 
+### History and Memory recovery
+
+History has **Refresh** in its header. Memory uses its existing query button:
+**Search** when the query changes, **Refresh** otherwise, and **Retry** after a
+failed or timed-out read. The lane, status and scope filters remain visible; an
+empty V1 archive or filtered page says nothing about all V2 memory. Loading,
+successful empty results and unavailable/15-second timeout states are distinct.
+Refresh preserves same-binding History navigation and unchanged-record editor
+drafts. Changing character or timeline retires them. A last successful page can
+remain visible during a same-owner retry and is explicitly labelled as such.
+
+Refresh does not invoke generation, import/rebuild memory, modify canonical data or
+restart the backend. If disconnected/unbound it uses the normal connection/snapshot
+handshake. There is no unbounded automatic retry loop. Development flight recording
+includes read counts, request aliases, fence rejection stages and deferred/rendered
+model counts; use its existing incident/manual dump for blank-view reports. Finite
+synthetic QA can deliberately drop one response to prove timeout/Retry. This does
+not reproduce or establish the root cause of the intermittent reset/switch report.
+
 ## Separate application source and existing runtime data
 
 The launcher loads its ignored `.env` before starting the backend. Supported local

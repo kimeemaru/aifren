@@ -103,7 +103,7 @@ class MemoryViewerTests(unittest.TestCase):
 
         self.assertIn("canonical prompt-facing", v1["authority_label"])
         self.assertIn("canonical prompt-facing authority", v1["items"][0]["authority"])
-        self.assertIn("separate from canonical Memory V1", v2["authority_label"])
+        self.assertIn("V2 current and historical records", v2["authority_label"])
         self.assertIn("governed structured authority", v2["items"][0]["authority"])
         self.assertNotIn("canonical Memory V1", v2["items"][0]["authority"])
 

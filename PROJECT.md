@@ -36,7 +36,10 @@ ambiguous references clarify. Expired one-turn anchors are not restored.
 
 - Intermittent blank History/Memory panels after reset and live switching remain
   unresolved. Synthetic reset/switch checks pass; restart recovery does not prove
-  the reported live refresh issue fixed. Character/session fences remain enabled.
+  the reported live refresh issue fixed. History Refresh and Memory Refresh/Retry
+  now recover read views without restarting, with explicit loading, empty and
+  failure states. This is a mitigation, not an established incident root-cause fix.
+  Character/session fences remain enabled.
 - Natural delivery can still be verbose, include roleplay openings or append
   unnecessary questions. Ordinary free dialogue is not generally semantically
   verified. Governed memory has a stricter admission boundary.

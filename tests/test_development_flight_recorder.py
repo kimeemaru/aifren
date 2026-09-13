@@ -25,6 +25,17 @@ class DevelopmentFlightRecorderTests(unittest.TestCase):
         self.assertFalse(valid_capture_id("../../private"))
         self.assertFalse(valid_capture_id("20260825T123456-ABCDEF"))
 
+    def test_view_trace_uses_bounded_local_aliases_never_request_identity(self):
+        for stage in ("history_built", "history_sent"):
+            self.recorder.mark_view(stage, "synthetic-request-not-for-output", 5)
+        events = list(self.recorder._events)[-2:]
+        self.assertEqual(events[0]["view_alias"], events[1]["view_alias"])
+        self.assertEqual(5, events[0]["view_count"])
+        self.assertNotIn("synthetic-request-not-for-output", json.dumps(events))
+        for number in range(200):
+            self.recorder.mark_view("memory_sent", str(number), 0)
+        self.assertLessEqual(len(self.recorder._view_aliases), 128)
+
     def test_service_content_is_reduced_to_counts(self):
         secret = "private dialogue must never be stored"
         self.recorder.observe_service_event("assistant_response", {

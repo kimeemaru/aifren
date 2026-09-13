@@ -538,6 +538,45 @@ class WebSocketTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(self.service.development_qa_calls))
         self.assertIn("first portrait test", self.service.development_qa_calls[0])
 
+    async def test_view_refresh_is_correlated_read_only_and_recovers_after_failure(self):
+        import copy
+        import uuid
+        before = copy.deepcopy(self.service.conversation.messages)
+        before_files = {p.relative_to(self.temp.name): p.read_bytes()
+                        for p in Path(self.temp.name).rglob("*") if p.is_file() and "logs" not in p.relative_to(self.temp.name).parts}
+        for _ in range(3):
+            request = str(uuid.uuid4())
+            await self.client.send(json.dumps({"command": "get_snapshot", "request_id": request}))
+            response = await self.receive_until(lambda value: value.get("request_id") == request)
+            self.assertEqual("snapshot", response["type"])
+            self.assertEqual(len(before), len(response["data"]["conversation"]))
+        reader = self.service.memory_view_page
+        for fail in (True, False):
+            request = str(uuid.uuid4())
+            def unavailable(**query):
+                raise ValueError("Synthetic read failure")
+            self.service.memory_view_page = unavailable if fail else reader
+            await self.client.send(json.dumps({"command": "memory_view_query", "request_id": request,
+                "character_id": "character-a", "memory_lane": "v2_claims"}))
+            response = await self.receive_until(lambda value: value.get("error", {}).get("request_id") == request
+                or value.get("event", {}).get("data", {}).get("request_id") == request)
+            self.assertEqual("command_error" if fail else "event", response["type"])
+        self.assertEqual(before, self.service.conversation.messages)
+        self.assertEqual([], self.service.submitted)
+        self.assertEqual([], self.service.memory_view_mutations)
+        self.assertEqual(before_files, {p.relative_to(self.temp.name): p.read_bytes()
+                        for p in Path(self.temp.name).rglob("*") if p.is_file() and "logs" not in p.relative_to(self.temp.name).parts})
+
+    async def test_snapshot_failure_never_masquerades_as_empty_history(self):
+        import uuid
+        request = str(uuid.uuid4())
+        self.host._character_switching = True
+        await self.client.send(json.dumps({"command": "get_snapshot", "request_id": request}))
+        result = await self.receive_until(lambda value: value.get("error", {}).get("request_id") == request)
+        self.assertEqual("snapshot_unavailable", result["error"]["code"])
+        self.assertNotIn("data", result)
+        self.host._character_switching = False
+
     async def test_memory_view_query_is_bounded_character_scoped_and_frontend_neutral(self):
         request_id = str(__import__("uuid").uuid4())
         await self.client.send(json.dumps({

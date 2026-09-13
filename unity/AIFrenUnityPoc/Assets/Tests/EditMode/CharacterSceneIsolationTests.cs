@@ -131,7 +131,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             var viewer = (MemoryViewerState)Get("memoryViewerState");
             viewer.ChangeCharacter("A");
             string request = viewer.BeginRequest();
-            Assert.That(viewer.Accept(request, new MemoryViewPage { character_id = "A", lane = viewer.Lane,
+            Assert.That(viewer.Accept(request, new MemoryViewPage { availability = "ready", character_id = "A", lane = viewer.Lane,
                 items = new[] { new MemoryViewItem { record_id = "synthetic-row", lane = viewer.Lane } } }), Is.True);
 
             Call("BeginCharacterPresentationTransition");

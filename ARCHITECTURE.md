@@ -84,8 +84,17 @@ Runtime write leases fence old workers. Switch/reset events capture UUID, sessio
 and generation when produced. Scene/Viewer mutations also require revision/action
 tokens. A→B→A does not make an old A event current again. Empty snapshots replace
 old arrays. History updates mark hidden views dirty; visible updates are coalesced.
-The intermittent reported blank-panel issue remains unresolved; these fences must
-not be weakened to hide it.
+View refresh is a correlated, read-only operation through existing snapshots and
+Memory Viewer queries. Same-binding History refresh replaces only its model, keeps
+navigation and defers hidden rendering. Memory retains an editor draft only for an
+unchanged record under the same live binding. Switch/reset retires outgoing models,
+drafts and requests. A 15-second read deadline exposes Retry; repeated clicks
+coalesce and superseded/retired responses remain fenced. Unavailable results never
+become successful empty views. An unbound client uses the existing handshake, not a
+fabricated binding or backend restart. Development recorder stages contain counts,
+closed rejection reasons and bounded local aliases, never view contents or identities.
+The intermittent reported blank-panel root cause remains unresolved; these fences
+must not be weakened to hide it.
 
 ## Responsive context planning
 

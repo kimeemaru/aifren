@@ -436,7 +436,19 @@ class AIFrenWebSocketHost:
             return
 
         if command == "get_snapshot":
-            await self._send_snapshot(websocket)
+            request_id = self._command_request_id.get()
+            if request_id:
+                try:
+                    request_id = str(uuid.UUID(request_id))
+                except (ValueError, TypeError):
+                    await self._send_command_error(websocket, "invalid_snapshot_request", "Invalid refresh request.")
+                    return
+            try:
+                if self._character_switching:
+                    raise RuntimeError("binding_in_progress")
+                await self._send_snapshot(websocket, request_id=request_id)
+            except Exception:
+                await self._send_command_error(websocket, "snapshot_unavailable", "Couldn't refresh history. Retry when the character is ready.")
             return
 
         if command == "memory_view_query":
@@ -496,6 +508,7 @@ class AIFrenWebSocketHost:
                         "authority_label": "Memory Viewer unavailable; memory authority is unchanged",
                         "warning": f"Memory Viewer failed safely ({type(error).__name__}).",
                     }
+            development_flight_recorder().mark_view("memory_built", request_id, len(page.get("items") or []))
             await self._send_json(websocket, {
                 "type": "event", **reply_owner, "event": {"type": "memory_view_page", "data": {
                     "request_id": request_id, "memory_page": page,
@@ -1616,7 +1629,7 @@ class AIFrenWebSocketHost:
         }
         self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self._broadcast(message)))
 
-    async def _send_snapshot(self, websocket) -> None:
+    async def _send_snapshot(self, websocket, *, request_id: str = "") -> None:
         if self._character_switching:
             return
         if self._frontend_snapshot_ready_at is None and websocket is self._client:
@@ -1662,11 +1675,12 @@ class AIFrenWebSocketHost:
         if callable(get_volume):
             volume = get_volume()
 
-        self._log("Snapshot sent with active model, voice, and TTS status.")
+        development_flight_recorder().mark_view("history_built", request_id, len(conversation))
+        self._log("Snapshot prepared with active model, voice, and TTS status.")
         await self._send_json(
             websocket,
             {
-                "type": "snapshot",
+                "type": "snapshot", "request_id": request_id,
                 **self._binding_envelope(),
                 "data": {
                     **self._binding_envelope(),
@@ -1942,9 +1956,21 @@ class AIFrenWebSocketHost:
     async def _send_json(self, websocket, message: dict[str, Any]) -> None:
         try:
             await websocket.send(json.dumps(self._json_safe(message), ensure_ascii=False))
+            self._record_view_send(message, "sent")
         except Exception:
+            self._record_view_send(message, "send_failed")
             if websocket is self._client:
                 self._client = None
+
+    @staticmethod
+    def _record_view_send(message, stage):
+        if message.get("type") == "snapshot":
+            development_flight_recorder().mark_view("history_" + stage, message.get("request_id"),
+                len((message.get("data") or {}).get("conversation") or []))
+        elif (message.get("event") or {}).get("type") == "memory_view_page":
+            data = message["event"].get("data") or {}
+            development_flight_recorder().mark_view("memory_" + stage, data.get("request_id"),
+                len((data.get("memory_page") or {}).get("items") or []))
 
     @staticmethod
     def _json_safe(value: Any) -> Any:

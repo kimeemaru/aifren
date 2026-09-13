@@ -24,7 +24,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
                 var state = (MemoryViewerState)typeof(AIFrenPocController).GetField("memoryViewerState", flags).GetValue(controller);
                 state.ChangeCharacter("synthetic");
                 var item = new AIFren.UnityPoc.Protocol.MemoryViewItem { record_id = "synthetic-row", lane = "v1", content = "A detailed synthetic preference with enough text to wrap differently after narrowing the current viewport.", editable = true };
-                Assert.That(state.Accept(state.BeginRequest(), new AIFren.UnityPoc.Protocol.MemoryViewPage { character_id = "synthetic", lane = "v1", items = new[] { item } }), Is.True);
+                Assert.That(state.Accept(state.BeginRequest(), new AIFren.UnityPoc.Protocol.MemoryViewPage { availability = "ready", character_id = "synthetic", lane = "v1", items = new[] { item } }), Is.True);
                 var panel = (GameObject)typeof(AIFrenPocController).GetField("memoryViewerPanel", flags).GetValue(controller);
                 panel.SetActive(true); Canvas.ForceUpdateCanvases();
                 typeof(AIFrenPocController).GetMethod("RefreshMemoryViewerPage", flags).Invoke(controller, null);

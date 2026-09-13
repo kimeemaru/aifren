@@ -22,6 +22,8 @@ namespace AIFren.UnityPoc.Protocol
         internal CharacterSessionOwner Current { get; private set; }
         private long latestGeneration = -1;
         internal bool Switching { get; private set; }
+        internal string RejectionReason { get; private set; } = "none";
+        private bool Reject(string reason) { RejectionReason = reason; return false; }
 
         internal void Reset() { Current = null; latestGeneration = -1; Switching = false; }
         internal void InvalidateCurrent() { Current = null; }
@@ -29,12 +31,13 @@ namespace AIFren.UnityPoc.Protocol
 
         internal bool Accept(ServerMessage message)
         {
-            if (message == null) return false;
+            RejectionReason = "none";
+            if (message == null) return Reject("missing_message");
             var incoming = new CharacterSessionOwner(message.character_id, message.character_session, message.character_generation);
             if (message.type == "event" && message.@event?.type == "character_switching")
             {
                 if (string.IsNullOrWhiteSpace(incoming.CharacterId) || !string.IsNullOrEmpty(incoming.Session)
-                    || incoming.Generation <= latestGeneration) return false;
+                    || incoming.Generation <= latestGeneration) return Reject("switch_generation");
                 latestGeneration = incoming.Generation; Current = null; Switching = true; return true;
             }
             if (message.type == "snapshot")
@@ -43,17 +46,24 @@ namespace AIFren.UnityPoc.Protocol
                 if (!incoming.IsValid || data == null || data.character?.character_id != incoming.CharacterId
                     || data.character_id != incoming.CharacterId || data.character_session != incoming.Session
                     || data.character_generation != incoming.Generation || incoming.Generation < latestGeneration)
-                    return false;
+                    return Reject("snapshot_identity");
                 if (!Switching && Current != null && incoming.Generation == latestGeneration && !Current.Matches(incoming))
-                    return false;
+                    return Reject("snapshot_binding");
                 // A failed attempted switch can settle the new generation back
                 // to the original ID. Only the authoritative snapshot binds it.
                 latestGeneration = incoming.Generation; Current = incoming; Switching = false; return true;
             }
-            if (incoming.IsValid) return IsCurrent(incoming);
+            if (incoming.IsValid)
+            {
+                if (Switching || Current == null) return Reject("no_binding");
+                if (Current.CharacterId != incoming.CharacterId) return Reject("character");
+                if (Current.Generation != incoming.Generation) return Reject("generation");
+                if (Current.Session != incoming.Session) return Reject("session");
+                return true;
+            }
             // Global settings/readiness do not own character content. Character
             // events and scoped command failures require a captured bind stamp.
-            return !IsScopedMessage(message);
+            return !IsScopedMessage(message) || Reject("missing_owner");
         }
 
         internal static bool IsScopedCommand(string command)

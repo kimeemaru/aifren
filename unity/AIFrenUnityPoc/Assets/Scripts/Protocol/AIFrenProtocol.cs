@@ -57,6 +57,7 @@ namespace AIFren.UnityPoc.Protocol
     [Serializable]
     public sealed class ServerMessage
     {
+        public string request_id;
         public string character_id;
         public string character_session;
         public long character_generation;

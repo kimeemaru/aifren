@@ -148,7 +148,7 @@ class MemoryViewer:
                     scope_filter=scope_filter, limit=limit, offset=offset,
                 )
                 items = [self._claim_item(item) for item in result["items"]]
-                authority = "Memory V2 facts/claims · separate from canonical Memory V1"
+                authority = "Memory V2 facts/claims · V2 current and historical records"
             elif lane == "episodes":
                 if self.episode_cache is None:
                     raise RuntimeError("Episode cache diagnostics are unavailable")

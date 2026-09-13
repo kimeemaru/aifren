@@ -51,7 +51,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             state.ChangeCharacter("character-a");
             string requestA = state.BeginRequest();
             MemoryViewItem item = new MemoryViewItem { record_id = "v1:1", content = "A" };
-            Assert.That(state.Accept(requestA, new MemoryViewPage {
+            Assert.That(state.Accept(requestA, new MemoryViewPage { availability = "ready",
                 character_id = "character-a", lane = "v1", items = new[] { item },
             }), Is.True);
             Assert.That(state.Select(item), Is.True);
@@ -60,11 +60,11 @@ namespace AIFren.UnityPoc.Tests.EditMode
 
             Assert.That(state.Selected, Is.Null);
             Assert.That(state.Page, Is.Null);
-            Assert.That(state.Accept(requestA, new MemoryViewPage {
+            Assert.That(state.Accept(requestA, new MemoryViewPage { availability = "ready",
                 character_id = "character-a", lane = "v1", items = new[] { item },
             }), Is.False);
             string requestB = state.BeginRequest();
-            Assert.That(state.Accept(requestB, new MemoryViewPage {
+            Assert.That(state.Accept(requestB, new MemoryViewPage { availability = "ready",
                 character_id = "character-b", lane = "v1", items = new MemoryViewItem[0],
             }), Is.True);
         }
@@ -79,7 +79,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             MemoryViewItem item = new MemoryViewItem {
                 record_id = "claim-a", lane = "v2_claims", content = "Synthetic claim",
             };
-            Assert.That(state.Accept(pageRequest, new MemoryViewPage {
+            Assert.That(state.Accept(pageRequest, new MemoryViewPage { availability = "ready",
                 character_id = "character-a", lane = "v2_claims", items = new[] { item },
             }), Is.True);
             Assert.That(state.Select(item), Is.True);
@@ -90,7 +90,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             Assert.That(state.Selected, Is.Null);
             Assert.That(state.Detail, Is.Null);
             Assert.That(state.PendingDetailRequestId, Is.Empty);
-            Assert.That(state.AcceptDetail(detailRequest, new MemoryViewDetail {
+            Assert.That(state.AcceptDetail(detailRequest, new MemoryViewDetail { availability = "ready",
                 character_id = "character-a", lane = "v2_claims", record_id = "claim-a",
                 detail = new MemoryViewDetailData { kind = "claim_provenance" },
             }), Is.False);
@@ -106,12 +106,12 @@ namespace AIFren.UnityPoc.Tests.EditMode
             MemoryViewItem item = new MemoryViewItem {
                 record_id = "claim-a", lane = "v2_claims", content = "Synthetic claim",
             };
-            Assert.That(state.Accept(pageRequest, new MemoryViewPage {
+            Assert.That(state.Accept(pageRequest, new MemoryViewPage { availability = "ready",
                 character_id = "character-a", lane = "v2_claims", items = new[] { item },
             }), Is.True);
             Assert.That(state.Select(item), Is.True);
             string detailRequest = state.BeginDetailRequest();
-            MemoryViewDetail detail = new MemoryViewDetail {
+            MemoryViewDetail detail = new MemoryViewDetail { availability = "ready",
                 character_id = "character-a", lane = "v2_claims", record_id = "claim-a",
                 detail = new MemoryViewDetailData {
                     kind = "claim_provenance",
@@ -141,7 +141,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             for (int index = 0; index < items.Length; index++)
                 items[index] = new MemoryViewItem { record_id = "v1:" + index, content = "Synthetic " + index };
 
-            Assert.That(state.Accept(request, new MemoryViewPage {
+            Assert.That(state.Accept(request, new MemoryViewPage { availability = "ready",
                 character_id = "character-a", lane = "v1", items = items,
             }), Is.True);
             Assert.That(state.Page.items.Length, Is.EqualTo(MemoryViewerState.PageSize));

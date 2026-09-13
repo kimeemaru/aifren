@@ -146,7 +146,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             var owner = fence.Current;
             var page = Event("C", "c-reset", 2);
             page.@event = new BackendEvent { type = "memory_view_page", data = new BackendEventData {
-                request_id = "old-c-request", memory_page = new MemoryViewPage { character_id = "C", lane = "v2_claims" }
+                request_id = "old-c-request", memory_page = new MemoryViewPage { availability = "ready", character_id = "C", lane = "v2_claims" }
             } };
             foreach (var late in new[] { Switching("C", 2), reset, page, Snapshot("C", "c-before", 1) })
                 Assert.That(fence.Accept(late), Is.False);

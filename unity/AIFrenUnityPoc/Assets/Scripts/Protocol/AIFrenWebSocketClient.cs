@@ -26,6 +26,13 @@ namespace AIFren.UnityPoc.Protocol
         private Task receiveTask;
         private readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
         private readonly CharacterSessionFence characterSession = new CharacterSessionFence();
+        private string snapshotRequestId;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        // Finite synthetic transport tests only; never enabled by normal requests/settings.
+        internal string DropNextViewResponseForTest;
+#endif
+        // Structural observations only. Request IDs are aliased inside the recorder, never emitted.
+        internal event Action<string, string, int> ViewObserved;
 
         public CharacterSessionOwner CharacterOwner => characterSession.Current;
         public bool CharacterSwitching => characterSession.Switching;
@@ -68,9 +75,26 @@ namespace AIFren.UnityPoc.Protocol
             });
         }
 
-        public async Task RequestSnapshotAsync()
+        public async Task RequestSnapshotAsync(string requestId = null)
         {
-            await SendCommandAsync(new ClientCommand { command = "get_snapshot" });
+            if (!string.IsNullOrEmpty(requestId)) snapshotRequestId = requestId;
+            await SendCommandAsync(new ClientCommand { command = "get_snapshot", request_id = requestId });
+        }
+
+        internal void RetireSnapshotRequest(string id)
+        { if (id == snapshotRequestId) snapshotRequestId = null; }
+
+        private void ObserveView(string stage, ServerMessage message)
+        {
+            string kind; string id; int count;
+            if (message?.type == "snapshot")
+            { kind = "history"; id = message.request_id; count = message.data?.conversation?.Length ?? -1; }
+            else if (message?.@event?.type == "memory_view_page")
+            { kind = "memory"; id = message.@event.data?.request_id; count = message.@event.data?.memory_page?.items?.Length ?? -1; }
+            else if (message?.@event?.type == "memory_view_detail")
+            { kind = "detail"; id = message.@event.data?.request_id; count = message.@event.data?.memory_detail?.detail != null ? 1 : 0; }
+            else return;
+            ViewObserved?.Invoke(kind + "_" + stage, id, count);
         }
 
         public async Task RequestConsoleLogAsync()
@@ -360,23 +384,36 @@ namespace AIFren.UnityPoc.Protocol
             // socket identity on every queued message; equal endpoints are not
             // ownership. Main-thread presentation never sees retired packets.
             while (receivedMessages.TryDequeue(out var received))
-                if (ReferenceEquals(received.owner, socket) && socket != null)
+            {
+                ObserveView("received", received.message);
+                if (!ReferenceEquals(received.owner, socket) || socket == null)
+                { ObserveView("reject_connection", received.message); continue; }
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+                bool dropHistory = DropNextViewResponseForTest == "history" && received.message?.type == "snapshot"
+                    && !string.IsNullOrEmpty(received.message.request_id);
+                bool dropMemory = DropNextViewResponseForTest == "memory" && received.message?.@event?.type == "memory_view_page";
+                if (dropHistory || dropMemory)
+                { DropNextViewResponseForTest = null; ObserveView("qa_dropped", received.message); continue; }
+#endif
+                if (received.message?.type == "snapshot"
+                    && received.message.data != null && received.message.data.transport_version < 9)
                 {
-                    if (received.message?.type == "snapshot"
-                        && received.message.data != null && received.message.data.transport_version < 9)
-                    {
-                        // Never admit an old unbound snapshot as character
-                        // content, but do not leave normal startup waiting.
-                        characterSession.InvalidateCurrent();
-                        message = new ServerMessage { type = "command_error", error = new CommandError {
-                            code = "unsupported_backend_version",
-                            message = "The running backend is older than this player. Restart AIFren with the current Development launcher."
-                        } };
-                        return true;
-                    }
-                    if (!characterSession.Accept(received.message)) continue;
-                    message = received.message; return true;
+                    characterSession.InvalidateCurrent();
+                    message = new ServerMessage { type = "command_error", error = new CommandError {
+                        code = "unsupported_backend_version",
+                        message = "The running backend is older than this player. Restart AIFren with the current Development launcher."
+                    } };
+                    return true;
                 }
+                if (received.message?.type == "snapshot" && !string.IsNullOrEmpty(received.message.request_id)
+                    && received.message.request_id != snapshotRequestId)
+                { ObserveView("reject_request", received.message); continue; }
+                if (!characterSession.Accept(received.message))
+                { ObserveView("reject_" + characterSession.RejectionReason, received.message); continue; }
+                if (received.message?.type == "snapshot") RetireSnapshotRequest(received.message.request_id);
+                ObserveView("accepted", received.message);
+                message = received.message; return true;
+            }
             message = null; return false;
         }
 
@@ -387,6 +424,7 @@ namespace AIFren.UnityPoc.Protocol
             cancellation = null;
             socket = null;
             characterSession.Reset();
+            snapshotRequestId = null;
 
             if (previousCancellation != null)
             {

@@ -18,8 +18,11 @@ namespace AIFren.UnityPoc.UI
         public string StatusFilter { get; private set; } = "current";
         public string ScopeFilter { get; private set; } = "applicable";
         public int Offset { get; private set; }
-        public string PendingRequestId { get; private set; } = string.Empty;
-        public string PendingDetailRequestId { get; private set; } = string.Empty;
+        public readonly ViewRequestState PageRequest = new ViewRequestState();
+        public readonly ViewRequestState DetailRequest = new ViewRequestState();
+        public string PendingRequestId => PageRequest.RequestId;
+        public bool SelectionPreserved { get; private set; }
+        public string PendingDetailRequestId => DetailRequest.RequestId;
         public MemoryViewPage Page { get; private set; }
         public MemoryViewItem Selected { get; private set; }
         public MemoryViewDetail Detail { get; private set; }
@@ -35,15 +38,15 @@ namespace AIFren.UnityPoc.UI
         public void InvalidatePage()
         {
             Offset = 0;
-            PendingRequestId = string.Empty;
+            PageRequest.Reset();
             Page = null;
             ClearSelection();
         }
 
-        public string BeginRequest()
+        public string BeginRequest(double now = 0, bool coalesce = false)
         {
-            PendingRequestId = Guid.NewGuid().ToString();
-            return PendingRequestId;
+            SelectionPreserved = false;
+            return PageRequest.Begin(now, coalesce);
         }
 
         public bool Accept(string requestId, MemoryViewPage page)
@@ -60,17 +63,24 @@ namespace AIFren.UnityPoc.UI
                 page.items = bounded;
                 page.has_more = true;
             }
+            bool available = page.availability == "ready" && page.items != null;
+            PageRequest.Complete(requestId, page.items?.Length ?? 0, available);
+            SelectionPreserved = false;
+            if (!available) return true; // Keep a same-owner last successful page, labelled stale.
+            MemoryViewItem previous = Selected;
             Page = page;
-            PendingRequestId = string.Empty;
-            ClearSelection();
+            if (previous != null && page.items != null)
+                foreach (var item in page.items)
+                    if (SameRecord(previous, item))
+                    { Selected = item; SelectionPreserved = true; break; }
+            if (!SelectionPreserved) ClearSelection();
             return true;
         }
 
-        public string BeginDetailRequest()
+        public string BeginDetailRequest(double now = 0)
         {
-            PendingDetailRequestId = Guid.NewGuid().ToString();
             Detail = null;
-            return PendingDetailRequestId;
+            return DetailRequest.Begin(now);
         }
 
         public bool AcceptDetail(string requestId, MemoryViewDetail detail)
@@ -89,44 +99,42 @@ namespace AIFren.UnityPoc.UI
                 truncated |= Bound(ref detail.detail.lower_episode_ids, 8);
                 if (truncated) detail.has_more = true;
             }
-            Detail = detail;
-            PendingDetailRequestId = string.Empty;
+            DetailRequest.Complete(requestId, 1, detail.availability == "ready");
+            if (!DetailRequest.Failed) Detail = detail;
             return true;
         }
 
         public void ClearSelection()
         {
+            SelectionPreserved = false;
             Selected = null;
             Detail = null;
-            PendingDetailRequestId = string.Empty;
+            DetailRequest.Reset();
         }
 
         public void CycleLane()
         {
             Lane = Next(Lanes, Lane);
-            Offset = 0;
-            ClearSelection();
+            InvalidatePage();
         }
 
         public void CycleStatus()
         {
             StatusFilter = Next(StatusFilters, StatusFilter);
-            Offset = 0;
-            ClearSelection();
+            InvalidatePage();
         }
 
         public void CycleScope()
         {
             ScopeFilter = Next(ScopeFilters, ScopeFilter);
-            Offset = 0;
-            ClearSelection();
+            InvalidatePage();
         }
 
         public bool PreviousPage()
         {
             if (Offset <= 0) return false;
             Offset = Math.Max(0, Offset - PageSize);
-            ClearSelection();
+            Page = null; PageRequest.Reset(); ClearSelection();
             return true;
         }
 
@@ -134,7 +142,7 @@ namespace AIFren.UnityPoc.UI
         {
             if (Page == null || !Page.has_more) return false;
             Offset += PageSize;
-            ClearSelection();
+            Page = null; PageRequest.Reset(); ClearSelection();
             return true;
         }
 
@@ -147,7 +155,7 @@ namespace AIFren.UnityPoc.UI
                 {
                     Selected = candidate;
                     Detail = null;
-                    PendingDetailRequestId = string.Empty;
+                    DetailRequest.Reset();
                     return true;
                 }
             }
@@ -158,7 +166,7 @@ namespace AIFren.UnityPoc.UI
         {
             switch (lane)
             {
-                case "v1": return "V1 Memories";
+                case "v1": return "V1 Archive";
                 case "v2_claims": return "V2 Facts / Claims";
                 case "episodes": return "V2 Episodes";
                 case "open_threads": return "Open Threads";
@@ -173,6 +181,14 @@ namespace AIFren.UnityPoc.UI
             if (content.Length > 74) content = content.Substring(0, 71) + "…";
             string status = string.IsNullOrWhiteSpace(item.status) ? "unknown" : item.status;
             return "[" + status + "] " + content;
+        }
+
+        private static bool SameRecord(MemoryViewItem a, MemoryViewItem b)
+        {
+            return b != null && a.record_id == b.record_id && a.lane == b.lane
+                && a.content == b.content && a.updated_at == b.updated_at && a.status == b.status
+                && a.category == b.category && a.importance == b.importance && a.scope == b.scope
+                && a.editable == b.editable && a.retirable == b.retirable;
         }
 
         private static string Next(string[] values, string current)

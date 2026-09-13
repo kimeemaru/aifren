@@ -445,6 +445,28 @@ namespace AIFren.UnityPoc.UI
                         scroll.verticalNormalizedPosition = step.value == "bottom" ? 0 : 1;
                     break;
                 case "history": QaClosePanels(); ToggleHistoryPanel(); break;
+                case "view_drop":
+                    if (!NativeQaSession.Active || (step.value != "history" && step.value != "memory")) throw new InvalidOperationException();
+                    client.DropNextViewResponseForTest = step.value;
+                    goto case "view_refresh";
+                case "view_refresh":
+                    if (step.value == "history") historyRefreshButton.onClick.Invoke();
+                    else if (step.value == "memory") memoryViewerRefreshButton.onClick.Invoke();
+                    else throw new InvalidOperationException();
+                    break;
+                case "view_assert":
+                    string[] viewExpectation = step.value.Split(':');
+                    ViewRequestState view = viewExpectation[0] == "history" ? historyViewRequest : memoryViewerState.PageRequest;
+                    int count = viewExpectation[0] == "history" ? messages.Count : memoryViewerState.Page?.items?.Length ?? 0;
+                    bool statusMatches = viewExpectation.Length >= 2 && view.Status.ToString() == viewExpectation[1];
+                    bool countMatches = viewExpectation.Length < 3 || (viewExpectation[2] == "nonempty" ? count > 0 : count == 0);
+                    MarkView("qa_assert_" + (statusMatches && countMatches ? "passed" : "failed"), null, count);
+                    if (!statusMatches || !countMatches) throw new InvalidOperationException();
+                    break;
+                case "view_draft_assert":
+                    if (memoryViewerContentInput.text != step.value) throw new InvalidOperationException();
+                    break;
+                case "view_dump": developmentFlightRecorder?.ManualDump(); break;
                 case "history_back": NavigateHistoryBack(); break;
                 case "history_previous": ChangeHistoryPage(-1); break;
                 case "console": QaClosePanels(); ToggleConsolePanel(); break;

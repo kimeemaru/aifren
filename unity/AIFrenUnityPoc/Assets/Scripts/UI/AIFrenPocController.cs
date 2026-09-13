@@ -657,6 +657,7 @@ namespace AIFren.UnityPoc.UI
                 // Conversation messages commonly arrive as a user/assistant pair.
                 // Render the visible history once after draining that event burst,
                 // and do no TMP/layout work at all while the panel is hidden.
+                CheckViewRequests(Time.realtimeSinceStartup);
                 RefreshHistoryIfVisible();
 
                 if (assistantStreamPresentationDirty &&
@@ -1127,6 +1128,7 @@ namespace AIFren.UnityPoc.UI
 
             if (message.type == "snapshot")
             {
+                if (HandleViewSnapshot(message)) return;
                 ApplySnapshot(message.data);
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
                 if (developmentProfileQa && !developmentProfileQaStarted)
@@ -1158,6 +1160,7 @@ namespace AIFren.UnityPoc.UI
 
             if (message.type == "command_error")
             {
+                if (HandleViewError(message.error)) return;
                 if (message.error != null && message.error.code != null && message.error.code.Contains("avatar_cues"))
                     AvatarCuesSaveFailed(message.error.message);
                 if (message.error != null && message.error.code != null && message.error.code.Contains("companion_preferences"))
@@ -1309,13 +1312,21 @@ namespace AIFren.UnityPoc.UI
             }
             else if (backendEvent.type == "memory_view_page" && data != null)
             {
-                if (memoryViewerState.Accept(data.request_id, data.memory_page))
+                bool accepted = memoryViewerState.Accept(data.request_id, data.memory_page);
+                MarkView(accepted ? (memoryViewerState.PageRequest.Failed ? "memory_unavailable" : "memory_model") : "memory_reject_request", data.request_id,
+                    memoryViewerState.Page?.items?.Length ?? 0);
+                if (accepted)
+                {
+                    memoryModelRequestId = data.request_id;
                     RefreshMemoryViewerPage();
+                    if (memoryViewerState.Selected != null && memoryViewerState.DetailRequest.Failed)
+                        RequestMemoryViewerDetail(memoryViewerState.Selected);
+                }
             }
             else if (backendEvent.type == "memory_view_detail" && data != null)
             {
                 if (memoryViewerState.AcceptDetail(data.request_id, data.memory_detail))
-                    RefreshMemoryViewerDetail();
+                { RefreshMemoryViewerDetail(); UpdateMemoryViewStatus(); }
             }
             else if (backendEvent.type == "memory_view_mutation_result" && data != null)
             {
@@ -1325,6 +1336,7 @@ namespace AIFren.UnityPoc.UI
                         StringComparison.Ordinal))
                     return;
                 memoryViewerRetireConfirmation = false;
+                memoryViewerState.PageRequest.Observe(0, data.accepted);
                 if (!data.accepted)
                 {
                     SetMemoryViewerWarning(string.IsNullOrWhiteSpace(data.message)
@@ -1712,6 +1724,7 @@ namespace AIFren.UnityPoc.UI
 
             if (characterChanged || bindingChanged)
             {
+                messages.Clear(); canonicalMessageIds.Clear(); historyIndex.Rebuild(messages); historyDirty = true;
                 presentationTurn.Reset();
                 sceneDrawer?.CloseImmediately(); sceneDrawerRowsKey = null;
                 ClearPendingContinuityControl();
@@ -1719,22 +1732,9 @@ namespace AIFren.UnityPoc.UI
                 ResetCharacterScopedAvatarPresentation();
             }
             memoryViewerState.ChangeCharacter(activeCharacterId);
-            if (bindingChanged) { memoryViewerState.InvalidatePage(); RefreshMemoryViewerPage(); }
+            if (characterChanged || bindingChanged) { memoryViewerState.InvalidatePage(); RefreshMemoryViewerPage(); }
 
-            // A snapshot is authoritative at connection/reconnection time.
-            // Replacing this list never depends on UI visibility.
-            messages.Clear();
-            canonicalMessageIds.Clear();
-            if (snapshot.conversation != null)
-            {
-                messages.AddRange(snapshot.conversation);
-                foreach (ConversationMessage message in snapshot.conversation)
-                    if (!string.IsNullOrWhiteSpace(message.message_id))
-                        canonicalMessageIds.Add(message.message_id);
-            }
-            historyIndex.Rebuild(messages);
-            SelectLatestHistoryDay();
-            historyDirty = true;
+            ApplyHistoryView(snapshot, !(characterChanged || bindingChanged || initialCharacterIdentity || settlingCharacterTransition));
 
             if (characterNameLabel != null) characterNameLabel.text = characterName;
 
@@ -1813,6 +1813,7 @@ namespace AIFren.UnityPoc.UI
             if (characterChanged || initialCharacterIdentity || bindingChanged || settlingCharacterTransition)
                 RequestCharacterAvatarPreference(activeCharacterId);
 
+            ResumeMemoryRefresh();
             if (memoryViewerPanel != null && memoryViewerPanel.activeInHierarchy
                     && (characterChanged || initialCharacterIdentity || bindingChanged || settlingCharacterTransition))
                 RequestMemoryViewerPage();
@@ -1857,17 +1858,13 @@ namespace AIFren.UnityPoc.UI
             // Transport has retired the old binding before this notification.
             // Clear only derived/current presentation; canonical data stays backend-owned.
             characterSwitchInFlight = true;
+            ClearOutgoingViews();
             RetireCharacterAvatarRequests();
             presentationTurn.Reset();
             avatarAnimation?.StopSpeech();
             sceneDrawer?.CloseImmediately(); sceneDrawerRowsKey = null;
             authoritativeContinuity = null;
             ClearPendingContinuityControl();
-            memoryViewerState.InvalidatePage();
-            memoryViewerRetireConfirmation = false;
-            RefreshMemoryViewerPage();
-            messages.Clear(); canonicalMessageIds.Clear(); historyIndex.Rebuild(messages);
-            historyDirty = true; RefreshHistoryIfVisible();
             ClearTransientAssistantPresentationForSnapshot();
             authoritativeStatePresentation = null;
             ResetCharacterScopedAvatarPresentation();
@@ -3432,7 +3429,10 @@ namespace AIFren.UnityPoc.UI
             float y = -8f;
             if (historyIndex.RenderableCount == 0)
             {
-                AddHistoryTextRow("No renderable conversation messages.", 16f, theme.mutedText,
+                string emptyLabel = historyViewRequest.Describe("history", 0);
+                if (string.IsNullOrEmpty(emptyLabel)) emptyLabel = messages.Count == 0
+                    ? "No conversation messages in this timeline." : "No displayable messages in this history.";
+                AddHistoryTextRow(emptyLabel, 16f, theme.mutedText,
                     TextAlignmentOptions.MidlineLeft, ref y, 34f);
             }
             else if (historyLevel == HistoryNavigationLevel.Years)
@@ -3523,7 +3523,9 @@ namespace AIFren.UnityPoc.UI
             Canvas.ForceUpdateCanvases();
             if (historyScroll != null && (followLatest || historyLevel != HistoryNavigationLevel.Messages))
                 historyScroll.verticalNormalizedPosition = historyLevel == HistoryNavigationLevel.Messages ? 0f : 1f;
+            UpdateHistoryViewStatus();
             historyDirty = false;
+            MarkView("history_rendered", historyModelRequestId, activeHistoryTextRows);
         }
 
         private void ResetHistoryRowPool()
@@ -4027,7 +4029,14 @@ namespace AIFren.UnityPoc.UI
             TMP_Text title = CreateText(panel.transform, "Conversation history", 22f, Ink, TextAlignmentOptions.MidlineLeft);
             Stretch(title.rectTransform, new Vector2(0.06f, 0.89f), new Vector2(0.34f, 0.98f), Vector2.zero, Vector2.zero);
             historyPathLabel = CreateText(panel.transform, string.Empty, 14f, theme.mutedText, TextAlignmentOptions.MidlineLeft);
-            Stretch(historyPathLabel.rectTransform, new Vector2(.34f, .89f), new Vector2(.64f, .98f), Vector2.zero, Vector2.zero);
+            Stretch(historyPathLabel.rectTransform, new Vector2(.34f, .89f), new Vector2(.48f, .98f), Vector2.zero, Vector2.zero);
+            historyRefreshButton = CreateButton(panel.transform, "Refresh", Panel);
+            Stretch(historyRefreshButton.GetComponent<RectTransform>(), new Vector2(.49f, .89f), new Vector2(.64f, .98f), Vector2.zero, Vector2.zero);
+            historyRefreshButton.onClick.AddListener(RequestHistoryRefresh);
+            historyViewStatus = CreateText(panel.transform, string.Empty, 14f, theme.mutedText, TextAlignmentOptions.MidlineLeft);
+            Stretch(historyViewStatus.rectTransform, new Vector2(.055f, .81f), new Vector2(.945f, .885f), Vector2.zero, Vector2.zero);
+            historyViewStatus.enableWordWrapping = true;
+            UpdateHistoryViewStatus();
             historyBackButton = CreateButton(panel.transform, "Back", Panel);
             Stretch(historyBackButton.GetComponent<RectTransform>(), new Vector2(.65f, .89f), new Vector2(.75f, .98f), Vector2.zero, Vector2.zero);
             historyBackButton.onClick.AddListener(NavigateHistoryBack);
@@ -4036,7 +4045,7 @@ namespace AIFren.UnityPoc.UI
             closeButton.onClick.AddListener(CloseHistoryPanel);
 
             GameObject viewport = CreatePanel(panel.transform, "Viewport", new Color(0f, 0f, 0f, 0.18f));
-            Stretch(viewport.GetComponent<RectTransform>(), new Vector2(0.045f, 0.05f), new Vector2(0.955f, 0.875f), Vector2.zero, Vector2.zero);
+            Stretch(viewport.GetComponent<RectTransform>(), new Vector2(0.045f, 0.05f), new Vector2(0.955f, 0.805f), Vector2.zero, Vector2.zero);
             GameObject textViewport = new GameObject("History Text Viewport", typeof(RectTransform), typeof(RectMask2D));
             textViewport.transform.SetParent(viewport.transform, false);
             Stretch(textViewport.GetComponent<RectTransform>(), Vector2.zero, new Vector2(.955f, 1f), Vector2.zero, Vector2.zero);
@@ -4584,6 +4593,7 @@ namespace AIFren.UnityPoc.UI
         {
             if (client == null || string.IsNullOrWhiteSpace(characterId) || characterSwitchInFlight || characterCreateInFlight || CharacterMaintenanceBusy) return;
             characterSwitchInFlight = true;
+            ClearOutgoingViews();
             RefreshCharacterSettings();
             ApplyStatus("thinking", "Switching character…");
             _ = client.SelectCharacterAsync(characterId);
@@ -5488,13 +5498,15 @@ namespace AIFren.UnityPoc.UI
                 new Vector2(.875f, .855f), Vector2.zero, Vector2.zero);
             if (memoryViewerSearchInput.placeholder is TMP_Text searchPlaceholder)
                 searchPlaceholder.text = "Search this lane";
-            Button search = CreateButton(memoryViewerPanel.transform, "Search", Accent);
+            Button search = memoryViewerRefreshButton = CreateButton(memoryViewerPanel.transform, "Refresh", Accent);
+            memoryViewerSearchInput.onValueChanged.AddListener(_ => UpdateMemoryViewStatus());
             Stretch(search.GetComponent<RectTransform>(), new Vector2(.885f, .805f),
                 new Vector2(.965f, .855f), Vector2.zero, Vector2.zero);
             search.onClick.AddListener(() =>
             {
-                memoryViewerState.Query = memoryViewerSearchInput.text ?? string.Empty;
-                memoryViewerState.InvalidatePage();
+                string query = memoryViewerSearchInput.text ?? string.Empty;
+                if (query != memoryViewerState.Query)
+                { memoryViewerState.Query = query; memoryViewerState.InvalidatePage(); }
                 RequestMemoryViewerPage();
             });
 
@@ -5622,11 +5634,27 @@ namespace AIFren.UnityPoc.UI
 
         private void RequestMemoryViewerPage()
         {
-            if (client == null || characterSwitchInFlight || client.CharacterOwner == null
-                || string.IsNullOrWhiteSpace(activeCharacterId)) return;
+            if (client == null)
+            { memoryViewerState.PageRequest.Observe(0, false); UpdateMemoryViewStatus(); return; }
+            if (client.State != ConnectionState.Connected || characterSwitchInFlight
+                || client.CharacterOwner == null || client.CharacterOwner.CharacterId != activeCharacterId)
+            {
+                memoryRefreshAfterResync = true;
+                memoryViewerState.PageRequest.Reset(true);
+                UpdateMemoryViewStatus();
+                RequestHistoryRefresh();
+                return;
+            }
             memoryViewerState.ChangeCharacter(activeCharacterId);
-            string requestId = memoryViewerState.BeginRequest();
-            SetMemoryViewerWarning("Loading one bounded page…");
+            string requestId = memoryViewerState.BeginRequest(Time.realtimeSinceStartup, true);
+            if (requestId == null) return;
+            MarkView("memory_requested", requestId, 0);
+            MarkView("memory_lane_" + memoryViewerState.Lane, requestId, memoryViewerState.Offset);
+            MarkView("memory_status_" + memoryViewerState.StatusFilter, requestId, 0);
+            MarkView("memory_scope_" + memoryViewerState.ScopeFilter, requestId, string.IsNullOrEmpty(memoryViewerState.Query) ? 0 : 1);
+            // A filter/lane change clears the old rows immediately. Same-page refresh keeps safe drafts.
+            if (memoryViewerState.Page == null) RefreshMemoryViewerPage();
+            UpdateMemoryViewStatus();
             _ = client.QueryMemoryViewAsync(
                 requestId, activeCharacterId, memoryViewerState.Lane,
                 memoryViewerState.Query, memoryViewerState.StatusFilter,
@@ -5638,6 +5666,8 @@ namespace AIFren.UnityPoc.UI
         private void RefreshMemoryViewerPage()
         {
             RefreshMemoryViewerControls();
+            bool preserveSelection = memoryViewerState.Selected != null;
+            float scrollPosition = memoryViewerScroll != null ? memoryViewerScroll.verticalNormalizedPosition : 1f;
             MemoryViewPage page = memoryViewerState.Page;
             if (memoryViewerAuthority != null)
             {
@@ -5672,21 +5702,21 @@ namespace AIFren.UnityPoc.UI
                 }
                 RectTransform rowsRect = memoryViewerRows as RectTransform;
                 if (rowsRect != null) rowsRect.sizeDelta = new Vector2(0f, Mathf.Max(40f, rowTop));
-                if (memoryViewerScroll != null) memoryViewerScroll.verticalNormalizedPosition = 1f;
+                if (memoryViewerScroll != null) memoryViewerScroll.verticalNormalizedPosition = preserveSelection ? scrollPosition : 1f;
             }
-            SetMemoryViewerWarning(page != null && !string.IsNullOrWhiteSpace(page.warning)
-                ? page.warning
-                : (page != null && page.items != null && page.items.Length == 0
-                    ? "No records match this bounded view." : string.Empty));
-            SelectMemoryViewerItem(null);
+            if (!preserveSelection) SelectMemoryViewerItem(null);
+            else RefreshMemorySelection();
+            UpdateMemoryViewStatus();
+            MarkView("memory_rendered", memoryModelRequestId, memoryPageButtons.Count);
+
         }
 
         private void RefreshMemoryViewerControls()
         {
-            SetTopControlLabel(memoryViewerLaneButton, MemoryViewerState.LaneLabel(memoryViewerState.Lane));
-            SetTopControlLabel(memoryViewerStatusButton,
+            if (memoryViewerLaneButton != null) SetTopControlLabel(memoryViewerLaneButton, MemoryViewerState.LaneLabel(memoryViewerState.Lane));
+            if (memoryViewerStatusButton != null) SetTopControlLabel(memoryViewerStatusButton,
                 "Status: " + CultureInfo.InvariantCulture.TextInfo.ToTitleCase(memoryViewerState.StatusFilter));
-            SetTopControlLabel(memoryViewerScopeButton,
+            if (memoryViewerScopeButton != null) SetTopControlLabel(memoryViewerScopeButton,
                 "Scope: " + CultureInfo.InvariantCulture.TextInfo.ToTitleCase(memoryViewerState.ScopeFilter));
             if (memoryViewerPreviousButton != null) memoryViewerPreviousButton.interactable = memoryViewerState.Offset > 0;
             if (memoryViewerNextButton != null)
@@ -5743,12 +5773,13 @@ namespace AIFren.UnityPoc.UI
             {
                 RequestMemoryViewerDetail(item);
             }
+            UpdateMemoryViewStatus();
         }
 
         private void RequestMemoryViewerDetail(MemoryViewItem item, int offset = 0)
         {
             if (client == null || item == null || string.IsNullOrWhiteSpace(activeCharacterId)) return;
-            string requestId = memoryViewerState.BeginDetailRequest();
+            string requestId = memoryViewerState.BeginDetailRequest(Time.realtimeSinceStartup);
             if (memoryViewerMoreDetailButton != null) memoryViewerMoreDetailButton.interactable = false;
             memoryViewerDetails.text += "\n\nLoading bounded diagnostic detail…";
             _ = client.QueryMemoryViewDetailAsync(
@@ -5839,7 +5870,8 @@ namespace AIFren.UnityPoc.UI
         private void SaveSelectedMemory()
         {
             MemoryViewItem item = memoryViewerState.Selected;
-            if (client == null || item == null || !item.editable) return;
+            if (client == null || item == null || !item.editable || memoryViewerState.PageRequest.Pending
+                || memoryViewerState.PageRequest.Failed || characterSwitchInFlight) return;
             int importance = item.importance > 0 ? item.importance : 5;
             if (string.Equals(item.lane, "v1", StringComparison.Ordinal)
                     && (!int.TryParse(memoryViewerImportanceInput.text, out importance)
@@ -5848,7 +5880,7 @@ namespace AIFren.UnityPoc.UI
                 SetMemoryViewerWarning("V1 importance must be an integer from 1 to 10.");
                 return;
             }
-            string requestId = memoryViewerState.BeginRequest();
+            string requestId = memoryViewerState.BeginRequest(Time.realtimeSinceStartup);
             _ = client.MutateMemoryViewAsync(
                 requestId, Guid.NewGuid().ToString(), activeCharacterId,
                 string.Equals(item.lane, "v1", StringComparison.Ordinal)
@@ -5861,7 +5893,8 @@ namespace AIFren.UnityPoc.UI
         private void RetireSelectedMemory()
         {
             MemoryViewItem item = memoryViewerState.Selected;
-            if (client == null || item == null || !item.retirable) return;
+            if (client == null || item == null || !item.retirable || memoryViewerState.PageRequest.Pending
+                || memoryViewerState.PageRequest.Failed || characterSwitchInFlight) return;
             if (!memoryViewerRetireConfirmation)
             {
                 memoryViewerRetireConfirmation = true;
@@ -5873,7 +5906,7 @@ namespace AIFren.UnityPoc.UI
                     : "Confirm reversible V2 retirement. Provenance and history remain stored.");
                 return;
             }
-            string requestId = memoryViewerState.BeginRequest();
+            string requestId = memoryViewerState.BeginRequest(Time.realtimeSinceStartup);
             _ = client.MutateMemoryViewAsync(
                 requestId, Guid.NewGuid().ToString(), activeCharacterId,
                 string.Equals(item.lane, "v1", StringComparison.Ordinal)

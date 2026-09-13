@@ -63,6 +63,9 @@ namespace AIFren.UnityPoc.UI
         private readonly Queue<ResourceRecord> resources = new Queue<ResourceRecord>(ResourceCapacity);
         private readonly Queue<float> recentFiftyMsFrames = new Queue<float>();
         private AIFrenWebSocketClient client;
+        private readonly Dictionary<string, int> viewAliases = new Dictionary<string, int>();
+        private readonly Queue<string> viewAliasOrder = new Queue<string>();
+        private int nextViewAlias;
         private Capture capture;
         private float nextResourceAt;
         private float automaticArmedAt;
@@ -82,12 +85,16 @@ namespace AIFren.UnityPoc.UI
         internal void Initialize(AIFrenWebSocketClient websocketClient)
         {
             client = websocketClient;
+            client.ViewObserved += MarkView;
             automaticArmedAt = Time.realtimeSinceStartup + 10f;
             Mark("unity_recorder_started");
             int processId;
             using (Process process = Process.GetCurrentProcess()) processId = process.Id;
             _ = client.StartDevelopmentFlightRecorderAsync(processId);
         }
+
+        private void OnDestroy()
+        { if (client != null) client.ViewObserved -= MarkView; }
 
         internal void ObserveTransportEvent() { transportEventsThisFrame++; }
 
@@ -120,6 +127,20 @@ namespace AIFren.UnityPoc.UI
             AddBounded(events, record, EventCapacity);
             while (events.Count > 0 && Time.realtimeSinceStartup - events.Peek().Realtime > 30f) events.Dequeue();
             if (capture != null) capture.PostEvents.Add(record);
+        }
+
+        internal void MarkView(string stage, string requestId, int count)
+        {
+            int alias = 0;
+            if (!string.IsNullOrEmpty(requestId))
+            {
+                if (!viewAliases.TryGetValue(requestId, out alias))
+                {
+                    if (viewAliases.Count >= 128) viewAliases.Remove(viewAliasOrder.Dequeue());
+                    alias = ++nextViewAlias; viewAliases[requestId] = alias; viewAliasOrder.Enqueue(requestId);
+                }
+            }
+            Mark("view_" + stage, playbackId: alias, value: count);
         }
 
         internal void ManualDump()

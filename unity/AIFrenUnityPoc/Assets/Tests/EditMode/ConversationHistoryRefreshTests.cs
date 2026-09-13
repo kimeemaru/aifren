@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using AIFren.UnityPoc.UI;
+using AIFren.UnityPoc.Protocol;
 using NUnit.Framework;
 using TMPro;
 using UnityEngine;
@@ -116,11 +117,13 @@ namespace AIFren.UnityPoc.Tests.EditMode
         [Test]
         public void EmptyHistoryCanOpenAndReopenWithoutInventingASelection()
         {
+            ViewState.Observe(0, true);
             Method("ToggleHistoryPanel").Invoke(controller, null);
-            StringAssert.Contains("No renderable conversation messages", RenderedText());
+            StringAssert.Contains("No conversation messages in this timeline", RenderedText());
             Method("CloseHistoryPanel").Invoke(controller, null);
+            ViewState.Observe(0, true);
             Method("ToggleHistoryPanel").Invoke(controller, null);
-            StringAssert.Contains("No renderable conversation messages", RenderedText());
+            StringAssert.Contains("No conversation messages in this timeline", RenderedText());
         }
 
         [Test]
@@ -223,6 +226,48 @@ namespace AIFren.UnityPoc.Tests.EditMode
                 "A bounded page must not approach the prior ~580 MB lifetime rebuild.");
             Assert.Less(heapGrowth, 64L * 1024L * 1024L,
                 "The managed heap must grow with one page, not the archive lifetime.");
+        }
+
+        private ViewRequestState ViewState => (ViewRequestState)Field("historyViewRequest").GetValue(controller);
+
+        [Test]
+        public void AcceptedHiddenRefreshReplacesStalledHierarchyWhenReopened()
+        {
+            AddMessage("user", "Old synthetic model");
+            Method("ToggleHistoryPanel").Invoke(controller, null);
+            Method("CloseHistoryPanel").Invoke(controller, null);
+            var snapshot = new SnapshotData { conversation = new[] {
+                new ConversationMessage { role = "user", content = "Recovered synthetic model", timestamp = "2026-08-25T12:00:00Z" }
+            } };
+            Method("ApplyHistoryView").Invoke(controller, new object[] { snapshot, true, "synthetic-request" });
+            Assert.That(HistoryDirty, Is.True);
+            StringAssert.DoesNotContain("Recovered synthetic model", RenderedText());
+            Method("ToggleHistoryPanel").Invoke(controller, null);
+            StringAssert.Contains("Recovered synthetic model", RenderedText());
+            Assert.That(ViewState.Status, Is.EqualTo(ViewLoadStatus.Ready));
+        }
+
+        [Test]
+        public void FailedHistoryReadRetainsModelAndDoesNotClaimEmpty()
+        {
+            AddMessage("user", "Retained synthetic message");
+            Method("ApplyHistoryView").Invoke(controller, new object[] {
+                new SnapshotData { storage_unavailable = true, conversation = new ConversationMessage[0] }, true, "failed-read" });
+            Assert.That(Messages.Count, Is.EqualTo(1));
+            Assert.That(ViewState.Status, Is.EqualTo(ViewLoadStatus.Unavailable));
+            StringAssert.Contains("Couldn't load", ViewState.Describe("history", Messages.Count));
+        }
+
+        [Test]
+        public void SameOwnerRefreshKeepsBrowsedPage()
+        {
+            for (int i = 0; i < 170; i++) AddMessage("user", "Synthetic " + i);
+            Method("ToggleHistoryPanel").Invoke(controller, null);
+            Method("ChangeHistoryPage").Invoke(controller, new object[] { -1 });
+            var snapshot = new SnapshotData { conversation = Messages.Cast<ConversationMessage>().ToArray() };
+            Method("ApplyHistoryView").Invoke(controller, new object[] { snapshot, true, "refresh" });
+            Method("RefreshHistoryIfVisible").Invoke(controller, null);
+            Assert.That(SelectedHistoryPage, Is.EqualTo(1));
         }
 
         private IList Messages => (IList)Field("messages").GetValue(controller);
