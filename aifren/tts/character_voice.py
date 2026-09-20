@@ -9,6 +9,7 @@ from aifren.character.voice_profile import CharacterVoiceProfiles, VoiceProfile
 from aifren.tts.clone_runtime import CloneRuntime, CloneCancelled
 from aifren.tts.tts import ContinuousPlaybackTTS
 
+PREVIEW_TEXT = "Hello. This is a preview of my voice."
 
 class CharacterVoiceTTS(ContinuousPlaybackTTS):
     # This provider never speaks uncommitted generation deltas.
@@ -105,6 +106,22 @@ class CharacterVoiceTTS(ContinuousPlaybackTTS):
         identity, cancel, character = job
         return identity == self._voice_job_id and not cancel.is_set() and character == self.character_id
 
+    def owns_voice_preview(self, job_id):
+        with self._profile_lock:
+            return job_id == self._voice_job_id and not self._voice_job_cancel.is_set()
+
+    def stop_voice_preview(self, job):
+        # Retire the job and capture its PCM owner under the same lock used
+        # before a conversational replacement claims synthesis. The subsequent
+        # stop is conditional; a new reply may start after this lock releases.
+        with self._profile_lock:
+            if not self._job_current(job):
+                return None
+            generation = self.playback_generation
+            self.cancel_voice_job()
+            self._voice_status = "cancelled"
+        return self.stop_if_generation(generation)
+
     def edit_voice(self, action, payload, *, job, guard):
         identity, cancel, character = job
         def current():
@@ -119,7 +136,7 @@ class CharacterVoiceTTS(ContinuousPlaybackTTS):
             if action in {"prepare", "preview"}:
                 if profile.engine == "kokoro":
                     prepared = (self.kokoro.prepare_cancellable_stream_chunk(
-                        "Hello. This is a preview of my voice.", cancelled=cancel) if action == "preview" else None)
+                        PREVIEW_TEXT, cancelled=cancel) if action == "preview" else None)
                 else:
                     # Temporary conditioning input is character-owned and removed
                     # after this job. Save publishes a separate verified copy.
@@ -129,13 +146,16 @@ class CharacterVoiceTTS(ContinuousPlaybackTTS):
                         reference.write_bytes(data)
                         self.runtime.request(profile, reference, cancelled=cancel)
                         prepared = (self.runtime.request(profile, reference,
-                            text="Hello. This is a preview of my voice.", cancelled=cancel) if action == "preview" else None)
+                            text=PREVIEW_TEXT, cancelled=cancel) if action == "preview" else None)
                 current()
                 if action == "preview":
                     # Dispatch uses the very same cancellation/PCM owner as speech.
                     with self._profile_lock:
                         current()
-                        self.begin_prepared_stream(prepared, cancelled=cancel)
+                        self.begin_prepared_stream(prepared, cancelled=cancel, metadata={
+                            "voice_preview": True, "preview_job_id": identity,
+                            "content": PREVIEW_TEXT, "subtitle_content": PREVIEW_TEXT,
+                        })
                         self.finish_prepared_stream()
             elif action == "save":
                 with self._profile_lock:

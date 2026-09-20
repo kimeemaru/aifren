@@ -382,8 +382,10 @@ class AIFrenWebSocketHost:
                 return
             action = command_data.get("action")
             if action in {"get", "cancel", "stop"}:
-                if action != "get":
-                    self.service.stop_speaking(interrupted=True)
+                job = getattr(self, "_character_voice_job", None)
+                if (action != "get" and job is not None
+                        and command_data.get("voice_operation_id") == getattr(self, "_character_voice_request_id", None)):
+                    self.service.stop_voice_preview(job)
                 await self._send_json(websocket, {"type": "character_voice", **reply_owner,
                     "request_id": self._command_request_id.get(), "data": {"tts": self._tts_snapshot()}})
                 return
@@ -408,6 +410,8 @@ class AIFrenWebSocketHost:
             self.service.stop_speaking(interrupted=True)
             job = provider.begin_voice_job()
             request_id = self._command_request_id.get()
+            self._character_voice_job = job
+            self._character_voice_request_id = request_id
             await self._send_json(websocket, {"type": "character_voice", **reply_owner,
                 "request_id": request_id, "data": {"tts": self._tts_snapshot()}})
             async def run_voice_operation():
@@ -417,6 +421,10 @@ class AIFrenWebSocketHost:
                         raise RuntimeError("Character voice owner was retired.")
                     self.service.require_character_binding(**binding)
                 result = await asyncio.to_thread(provider.edit_voice, action, payload, job=job, guard=guard)
+                if getattr(self, "_character_voice_task", None) is asyncio.current_task():
+                    # The native/file operation is complete before the final
+                    # acknowledgement. A next click may arrive while sending it.
+                    self._character_voice_task = None
                 if result is not None and provider._job_current(job):
                     try:
                         guard()
@@ -1314,6 +1322,14 @@ class AIFrenWebSocketHost:
                 selected_model=settings["local_model"], api_key=settings["local_api_key"],
                 **self._runtime_operation_args(operation),
             )
+            if (self._owns_model_operation(operation) and result.get("state") == "ready"
+                    and result.get("ownership") == "managed"
+                    and result.get("active_model") == settings["local_model"]):
+                from aifren.llm.local_template import installed_policy_role
+                # GGUF vocabulary metadata can take seconds to traverse. The
+                # transport must keep accepting Stop/settings during this read.
+                result["_application_policy_role"] = await asyncio.to_thread(
+                    installed_policy_role, settings["local_model"])
         except asyncio.CancelledError:
             if self._owns_model_operation(operation):
                 cancel = getattr(operation.runtime, "cancel_operation", None)
@@ -1342,8 +1358,7 @@ class AIFrenWebSocketHost:
                 self.service.replace_llm(create_llm())
                 if (result.get("ownership") == "managed"
                         and result.get("active_model") == getattr(self.service.llm, "model", None)):
-                    from aifren.llm.local_template import installed_policy_role
-                    self.service.llm.application_policy_role = installed_policy_role(self.service.llm.model)
+                    self.service.llm.application_policy_role = result.pop("_application_policy_role", "user")
                 if getattr(getattr(self.service, "llm", None), "is_available", True) is False:
                     raise RuntimeError("Local adapter is unavailable")
                 report = getattr(self.service, "report_model_runtime_available", None)

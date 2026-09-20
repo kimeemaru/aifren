@@ -19,6 +19,7 @@ from test_websocket_transport import FakeService
 class CharacterVoiceTransportTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_cwd = Path.cwd()
+        self.original_environment = dict(os.environ)
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.registry = CharacterRegistry(self.root)
@@ -35,6 +36,7 @@ class CharacterVoiceTransportTests(unittest.IsolatedAsyncioTestCase):
 
         self.service.require_character_binding = require_character_binding
         self.service.stop_speaking = lambda **_: (self.service.tts.cancel_voice_job(), self.service.tts.stop())
+        self.service.stop_voice_preview = self.service.tts.stop_voice_preview
         self.host = AIFrenWebSocketHost(service=self.service, port=0, application_dir=self.root)
         await self.host.start()
         self.client = await websockets.connect(f"ws://127.0.0.1:{self.host.port}")
@@ -44,6 +46,8 @@ class CharacterVoiceTransportTests(unittest.IsolatedAsyncioTestCase):
         await self.host.stop()
         self.service.tts.close()
         os.chdir(self.original_cwd)
+        os.environ.clear()
+        os.environ.update(self.original_environment)
         self.temporary.cleanup()
 
     async def command(self, action, **values):
@@ -103,6 +107,63 @@ class CharacterVoiceTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.service.tts.playback_thread)
         self.assertFalse(self.registry.runtime_paths(self.character.character_id)["voice_profile"].exists())
         self.assertEqual(self.service.submitted, [])
+
+    async def test_old_preview_stop_does_not_stop_a_newer_reply(self):
+        await self.command("prepare")
+        await self.result()
+        stop = Mock()
+        self.service.stop_speaking = stop
+        # The normal service retires the preview job as it claims a new turn.
+        self.service.tts.cancel_voice_job()
+        await self.command("stop", voice_operation_id="voice-test")
+        await self.result()
+        stop.assert_not_called()
+
+    async def test_final_acknowledgement_allows_the_next_operation(self):
+        for _ in range(3):
+            await self.command("prepare")
+            result = await self.result()
+            self.assertEqual(result["type"], "character_voice")
+            self.assertEqual(result["data"]["tts"]["character_voice"]["state"], "ready")
+
+    async def test_stop_matches_current_preview_operation(self):
+        await self.command("prepare")
+        await self.result()
+        stop = Mock()
+        self.service.stop_voice_preview = stop
+        await self.command("stop", voice_operation_id="another-request")
+        await self.result()
+        stop.assert_not_called()
+        await self.command("stop", voice_operation_id="voice-test")
+        await self.result()
+        stop.assert_called_once_with(self.host._character_voice_job)
+
+    async def test_preview_stop_after_validation_cannot_stop_replacement_playback(self):
+        provider = self.service.tts
+        job = provider.begin_voice_job()
+        old = provider._next_playback_generation()
+        provider._mark_playback_active(old)
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        original = provider.stop_if_generation
+
+        def delayed_conditional_stop(generation):
+            entered.set()
+            release.wait(5)
+            return original(generation)
+
+        provider.stop_if_generation = delayed_conditional_stop
+        task = asyncio.create_task(asyncio.to_thread(provider.stop_voice_preview, job))
+        self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+        # Replacement starts after the preview job was validated and retired,
+        # but before its stop reaches the shared playback owner.
+        provider.cancel_voice_job()
+        replacement = provider._next_playback_generation()
+        provider._mark_playback_active(replacement)
+        release.set()
+        self.assertIsNone(await asyncio.wait_for(task, 3))
+        self.assertEqual(provider.playback_generation, replacement)
+        self.assertEqual(provider.playback_debug_state()["playing"], replacement)
 
 
 if __name__ == "__main__":

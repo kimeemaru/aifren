@@ -544,12 +544,17 @@ class AssistantService:
     ) -> None:
         """Forward actual local playback start without coupling to a frontend."""
         with self._speech_generation_lock:
+            preview = bool(chunk_metadata and chunk_metadata.get("voice_preview") is True)
+            if preview:
+                owns_preview = getattr(type(self.tts), "owns_voice_preview", None)
+                if not callable(owns_preview) or not owns_preview(self.tts, chunk_metadata.get("preview_job_id")):
+                    return
             stream_speech = self._pending_stream_speech
             if stream_speech is not None and stream_speech.get("speech_generation") == self._speech_generation:
                 self._pending_stream_speech = None
             else:
                 stream_speech = None
-            if chunk_metadata is not None and stream_speech is None:
+            if chunk_metadata is not None and stream_speech is None and not preview:
                 # A late continuous transition cannot fall back to direct
                 # speech and reopen a cancelled subtitle/lip-sync session.
                 return
@@ -573,6 +578,11 @@ class AssistantService:
                 )
             if chunk_metadata is not None:
                 event_data.update(chunk_metadata)
+            if preview:
+                # A voice preview is audio, never another canonical turn or a
+                # new timing sample attached to the previous conversation.
+                self._emit("tts_state", **event_data)
+                return
             callback_at = time.monotonic()
             self._mark_turn_timing("first_chunk_ready" if chunk_metadata is not None else "tts_synthesis_complete", callback_at)
             self._mark_turn_timing("playback_started", callback_at)
@@ -5906,6 +5916,25 @@ class AssistantService:
                 self._emit("open_thread_contextual_shadow", **{key: value for key, value in result.items() if key != "proposal"})
         except Exception as error:
             self._emit("open_thread_contextual_shadow", state="failed", reason=type(error).__name__)
+
+    def stop_voice_preview(self, job) -> None:
+        """A delayed preview control cannot retire a conversational reply."""
+        provider = self.tts
+        stop = getattr(type(provider), "stop_voice_preview", None)
+        if not callable(stop):
+            return
+        playback_id = stop(provider, job)
+        if not playback_id:
+            return
+        with self._speech_generation_lock:
+            if self.tts is not provider:
+                return
+            with self._tts_state_lock:
+                if self._active_tts_playback_id == playback_id:
+                    self._active_tts_playback_id = 0
+                    self._active_stream_playback = None
+            self._emit("tts_state", state="stopped", playback_id=playback_id,
+                       streamed=True, interrupted=True, voice_preview=True)
 
     def stop_speaking(self, *, interrupted: bool = False) -> None:
         """Immediately invalidate local speech; presentation observes only."""

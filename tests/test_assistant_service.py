@@ -976,6 +976,27 @@ class AssistantServiceTests(unittest.TestCase):
         self.assertEqual("stopped", events[1].data["state"])
         self.assertEqual(42, events[1].data["playback_id"])
 
+    def test_voice_preview_has_own_text_and_cannot_update_conversation_timing(self):
+        class PreviewTTS(FakeTTS):
+            def owns_voice_preview(self, identity): return identity == 7
+        self.service.tts = PreviewTTS()
+        events = []
+        self.service.subscribe(events.append)
+        before = list(self.conversation.messages)
+        self.service._current_turn_timing = {"synthetic": True}
+        self.service._on_tts_playback_started(1.5, [], [], 42,
+            chunk_metadata={"voice_preview": True, "preview_job_id": 7, "content": "Synthetic voice preview."})
+        self.assertEqual(events[0].data["content"], "Synthetic voice preview.")
+        self.assertTrue(events[0].data["voice_preview"])
+        self.assertEqual(self.service._current_turn_timing, {"synthetic": True})
+        self.assertEqual(self.conversation.messages, before)
+        self.assertNotIn(42, self.service._playback_turn_timings)
+        events.clear()
+        self.service._on_tts_playback_started(1.5, [], [], 43,
+            chunk_metadata={"voice_preview": True, "preview_job_id": 6})
+        self.assertEqual(events, [])
+        self.assertEqual(self.service._active_tts_playback_id, 42)
+
     def test_stale_natural_completion_cannot_clear_newer_playback_state(self):
         events = []
         self.service.subscribe(events.append)
@@ -990,6 +1011,23 @@ class AssistantServiceTests(unittest.TestCase):
         self.tts.playback_finished_callback(11)
         self.assertEqual(0, self.service._active_tts_playback_id)
         self.assertEqual(11, events[-1].data["playback_id"])
+
+    def test_preview_stop_does_not_retire_newer_speech_or_expression_owner(self):
+        class PreviewTTS(FakeTTS):
+            def stop_voice_preview(self, job): return 42
+        self.service.tts = PreviewTTS()
+        self.service._active_tts_playback_id = 43
+        self.service._active_stream_playback = {"turn_id": 5}
+        generation = self.service._speech_generation
+        self.service._retire_automatic_expression = unittest.mock.Mock()
+        events = []
+        self.service.subscribe(events.append)
+        self.service.stop_voice_preview(object())
+        self.assertEqual(self.service._active_tts_playback_id, 43)
+        self.assertEqual(self.service._active_stream_playback, {"turn_id": 5})
+        self.assertEqual(self.service._speech_generation, generation)
+        self.service._retire_automatic_expression.assert_not_called()
+        self.assertEqual(events[-1].data["playback_id"], 42)
 
     def test_explicit_stop_clears_service_playback_state_before_tts_cleanup(self):
         self.tts.playback_started_callback(1.0, [], [], 23)
