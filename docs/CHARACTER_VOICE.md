@@ -1,5 +1,10 @@
 # Character voices
 
+Implementation status: the backend has been exercised with real local speech.
+The new client controls still require a matching Unity build and native validation;
+the validation host lacked a valid Editor entitlement. Do not treat this branch as
+a completed portable player or a voice-similarity guarantee.
+
 Kokoro remains the default responsive speech engine. The character voice controls
 in **Settings → Audio → Character voice** also support an explicitly installed,
 reference-conditioned GPT-SoVITS v2ProPlus runtime on CPU. This is zero-shot

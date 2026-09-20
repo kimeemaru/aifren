@@ -1,5 +1,3 @@
-#define DEVELOPMENT_BUILD // Private release builds intentionally retain hidden avatar QA.
-
 using System;
 using System.Collections;
 using System.Reflection;
@@ -31,6 +29,10 @@ namespace AIFren.UnityPoc.Avatar
         private object happyKey;
         private object surprisedKey;
         private Transform head;
+        private Transform chest;
+        private Quaternion chestBaseRotation;
+        private float performanceIntensity;
+        private bool attentivePresentation;
         private Transform leftShoulder;
         private Transform rightShoulder;
         private Transform leftUpperArm;
@@ -89,6 +91,8 @@ namespace AIFren.UnityPoc.Avatar
             if (humanoidAnimator != null && humanoidAnimator.avatar != null && humanoidAnimator.avatar.isHuman)
             {
                 head = humanoidAnimator.GetBoneTransform(HumanBodyBones.Head);
+                chest = humanoidAnimator.GetBoneTransform(HumanBodyBones.UpperChest) ?? humanoidAnimator.GetBoneTransform(HumanBodyBones.Chest);
+                if (chest != null) chestBaseRotation = chest.localRotation;
                 if (head != null) headBaseRotation = head.localRotation;
                 leftShoulder = humanoidAnimator.GetBoneTransform(HumanBodyBones.LeftShoulder);
                 rightShoulder = humanoidAnimator.GetBoneTransform(HumanBodyBones.RightShoulder);
@@ -120,6 +124,8 @@ namespace AIFren.UnityPoc.Avatar
 
         public void ClearAvatar()
         {
+            if (chest != null) chest.localRotation = chestBaseRotation;
+            chest = null;
             StopSpeech();
             vrmaGesturePlayer?.ClearAvatar();
             StopAuthoredGesture();
@@ -297,13 +303,6 @@ namespace AIFren.UnityPoc.Avatar
                 Debug.Log("[AvatarGesture] started native VRMA " + intent + ".");
                 return true;
             }
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-            if (intent == AvatarGestureIntent.Wave)
-            {
-                Debug.LogWarning("[AvatarGesture] no QA VRMA is ready; Wave was not played.");
-                return false;
-            }
-#endif
             if (intent == AvatarGestureIntent.Wave && TryStartAuthoredWave())
             {
                 StartGesture(intent, now, GetAuthoredWaveClip().length);
@@ -377,9 +376,22 @@ namespace AIFren.UnityPoc.Avatar
             // or replace UniVRM's optional look-at setup.
             float yaw = Mathf.Sin(time * .37f) * .7f;
             float pitch = Mathf.Sin(time * .23f + .8f) * .35f;
+            if (chest != null && performanceIntensity > 0f)
+                chest.localRotation = chestBaseRotation * Quaternion.Euler(
+                    Mathf.Sin(time * 1.1f) * .35f * performanceIntensity, 0f, 0f);
+            if (attentivePresentation && !sleepingPresentation)
+                pitch -= .8f * performanceIntensity;
             if (head != null) head.localRotation = headBaseRotation * Quaternion.Euler(pitch, yaw, 0f);
             ApplyGesture(time, pitch, yaw);
         }
+
+        public void SetSubtlePerformance(bool enabled, float intensity)
+        {
+            performanceIntensity = enabled && !float.IsNaN(intensity) ? Mathf.Clamp01(intensity) : 0f;
+            if (performanceIntensity == 0f && chest != null) chest.localRotation = chestBaseRotation;
+        }
+
+        public void SetAttentivePresentation(bool attentive) => attentivePresentation = attentive;
 
         private void ApplyGesture(float now, float idlePitch, float idleYaw)
         {

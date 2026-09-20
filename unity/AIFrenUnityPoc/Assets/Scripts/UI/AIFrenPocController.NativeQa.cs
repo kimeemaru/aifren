@@ -407,6 +407,22 @@ namespace AIFren.UnityPoc.UI
                     else if (step.value == "reset") ResetAvatarExpression();
                     else throw new InvalidOperationException();
                     break;
+                case "character_voice":
+                    if (step.value == "engine") voiceEngineButton.onClick.Invoke();
+                    else if (step.value == "reference") voiceReferenceInput.text = step.name;
+                    else if (step.value == "transcript") voiceTranscriptInput.text = step.name;
+                    else if (step.value == "prepare") voicePrepareButton.onClick.Invoke();
+                    else if (step.value == "preview") voicePreviewButton.onClick.Invoke();
+                    else if (step.value == "save") voiceSaveButton.onClick.Invoke();
+                    else if (step.value == "stop" || step.value == "cancel" || step.value == "get") SendCharacterVoice(step.value);
+                    else throw new InvalidOperationException();
+                    break;
+                case "performance":
+                    if (step.value == "on") subtlePerformanceToggle.isOn = true;
+                    else if (step.value == "off") subtlePerformanceToggle.isOn = false;
+                    else if (System.Enum.TryParse<AvatarGestureIntent>(step.value, out var previewIntent)) PreviewPerformanceGesture(previewIntent);
+                    else throw new InvalidOperationException();
+                    break;
                 case "companion_preferences":
                     if (step.value == "natural" || step.value == "roleplay") SetConversationStyleDraft(step.value);
                     else if (step.value == "speech_on" || step.value == "speech_off") responsiveSpeechToggle.isOn = step.value == "speech_on";

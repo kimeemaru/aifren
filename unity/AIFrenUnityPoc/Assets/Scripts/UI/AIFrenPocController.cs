@@ -615,6 +615,7 @@ namespace AIFren.UnityPoc.UI
 
         private void Update()
         {
+            CheckCharacterVoiceDeadline();
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             developmentFlightRecorder?.SetPresentationState(
                 interfaceHidden,
@@ -1146,6 +1147,14 @@ namespace AIFren.UnityPoc.UI
                 return;
             }
 
+            if (message.type == "character_voice" && message.data?.tts != null)
+            {
+                if (message.request_id != characterVoiceRequest) return;
+                ReceiveCharacterVoice(message.data.tts.character_voice, message.request_id);
+                RefreshTtsModelUi(message.data.tts);
+                return;
+            }
+
             if (message.type == "avatar_cues_settings")
             {
                 ReceiveAvatarCuesSetting(message.data.explicit_avatar_cues, true);
@@ -1161,6 +1170,7 @@ namespace AIFren.UnityPoc.UI
             if (message.type == "command_error")
             {
                 if (HandleViewError(message.error)) return;
+                if (HandleCharacterVoiceError(message.error)) return;
                 if (message.error != null && message.error.code != null && message.error.code.Contains("avatar_cues"))
                     AvatarCuesSaveFailed(message.error.message);
                 if (message.error != null && message.error.code != null && message.error.code.Contains("companion_preferences"))
@@ -1497,7 +1507,14 @@ namespace AIFren.UnityPoc.UI
                             "; current=" + streamedSubtitleTurnId + ".");
                         return;
                     }
-                    if (data.streamed && !string.IsNullOrWhiteSpace(data.content))
+                    if (data.voice_preview && !string.IsNullOrWhiteSpace(data.content))
+                    {
+                        streamedSubtitleMode = false;
+                        streamedSubtitleTurnId = 0;
+                        subtitleResponseReceivedAt = Time.unscaledTime;
+                        BeginSubtitleResponse(data.subtitle_content ?? data.content);
+                    }
+                    else if (data.streamed && !string.IsNullOrWhiteSpace(data.content))
                     {
                         streamedSubtitleMode = true;
                         streamedSubtitleTurnId = data.turn_id;
@@ -1858,6 +1875,7 @@ namespace AIFren.UnityPoc.UI
             // Transport has retired the old binding before this notification.
             // Clear only derived/current presentation; canonical data stays backend-owned.
             characterSwitchInFlight = true;
+            RetireCharacterVoiceView();
             ClearOutgoingViews();
             RetireCharacterAvatarRequests();
             presentationTurn.Reset();
@@ -2303,6 +2321,7 @@ namespace AIFren.UnityPoc.UI
 
         private void ApplyStatus(string state, string message)
         {
+            avatarAnimation?.SetAttentivePresentation(state == "thinking" || state == "listening");
             detail = string.IsNullOrWhiteSpace(message) ? string.Empty : message;
 
             switch (state)
@@ -3364,6 +3383,7 @@ namespace AIFren.UnityPoc.UI
                 ? avatarLoader.GetComponent<AvatarPresentationResolver>()
                 : null;
             stateResolver?.Apply(authoritativeStatePresentation);
+            PreviewSubtlePerformance();
             if (!useDirectAvatarPresentation && avatarSurface != null)
             {
                 avatarSurface.gameObject.SetActive(true);
@@ -4332,8 +4352,8 @@ namespace AIFren.UnityPoc.UI
             Transform characterSettings = settingsTabContent["Character"]; y = -18f;
             AddSettingsHeading(characterSettings, "CHARACTER", ref y);
             currentCharacterValue = AddSettingsValue(characterSettings, "Current", ref y);
-            TMP_Text switchHint = CreateText(characterSettings, "Choose a character below. Each character remembers its avatar and framing. Background and voice remain global.", 15f, new Color(.72f, .72f, .82f, 1f), TextAlignmentOptions.MidlineLeft);
-            PlaceTop(switchHint.rectTransform, y, 32f); y -= 38f;
+            TMP_Text switchHint = CreateText(characterSettings, "Choose a character below. Each character remembers its avatar and framing. Each character also keeps its voice in Audio settings; backgrounds remain global.", 15f, new Color(.72f, .72f, .82f, 1f), TextAlignmentOptions.MidlineLeft);
+            PlaceTop(switchHint.rectTransform, y, 56f); y -= 64f;
             GameObject characterListViewport = CreatePanel(characterSettings, "Character List Viewport", theme.surfaceMuted);
             PlaceTop(characterListViewport.GetComponent<RectTransform>(), y, 150f);
             characterListViewport.AddComponent<RectMask2D>();
@@ -4460,6 +4480,7 @@ namespace AIFren.UnityPoc.UI
             ((RectTransform)models).sizeDelta = new Vector2(0f, 1160f);
 
             Transform audio = settingsTabContent["Audio"]; y = -18f;
+            AddCharacterVoiceControls(audio, ref y);
             AddSettingsHeading(audio, "SPEECH", ref y); volumeLabel = AddSettingsValue(audio, "TTS volume", ref y); volumeSlider = CreateSlider(audio, 0f, 1f, 1f); PlaceTop(volumeSlider.GetComponent<RectTransform>(), y, 30f); volumeSlider.onValueChanged.AddListener(SetVolume); AddPointerUpHandler(volumeSlider.gameObject, FlushTtsVolume); y -= 46f;
             AddResponsiveSpeechControls(audio, ref y);
             earlySpeechToggle = CreateToggle(audio, "Legacy generation streaming", true); PlaceTop(earlySpeechToggle.GetComponent<RectTransform>(), y, 34f); earlySpeechToggle.onValueChanged.AddListener(SetEarlySpeech); y -= 42f;
@@ -4491,6 +4512,7 @@ namespace AIFren.UnityPoc.UI
             Button changeModelButton = CreateButton(appearance, "Change Model…", Panel); PlaceTop(changeModelButton.GetComponent<RectTransform>(), y, StandardControlHeight, .55f, .74f); changeModelButton.onClick.AddListener(OpenModelLibrary);
             Button resetModelButton = CreateButton(appearance, "Reset to Default", Panel); PlaceTop(resetModelButton.GetComponent<RectTransform>(), y, StandardControlHeight, .76f, .95f); resetModelButton.onClick.AddListener(() => RequestBundledAvatarModel()); y -= 52f;
             AddAvatarCueControls(appearance, ref y);
+            AddPerformanceControls(appearance, ref y);
             AddAutomaticExpressionControls(appearance, ref y);
             AddSettingsHeading(appearance, "AVATAR LIGHTING", ref y);
             avatarLightingValue = AddSettingsValue(appearance, "Brightness", ref y);
@@ -4593,6 +4615,7 @@ namespace AIFren.UnityPoc.UI
         {
             if (client == null || string.IsNullOrWhiteSpace(characterId) || characterSwitchInFlight || characterCreateInFlight || CharacterMaintenanceBusy) return;
             characterSwitchInFlight = true;
+            RetireCharacterVoiceView();
             ClearOutgoingViews();
             RefreshCharacterSettings();
             ApplyStatus("thinking", "Switching character…");
@@ -4787,6 +4810,7 @@ namespace AIFren.UnityPoc.UI
         private void RefreshTtsModelUi(TtsSnapshot tts)
         {
             if (tts == null) return;
+            ReceiveCharacterVoice(tts.character_voice);
             authoritativeEarlySpeech = tts.early_speech_configured;
             if (pendingEarlySpeech.HasValue && pendingEarlySpeech.Value == tts.early_speech_configured)
                 pendingEarlySpeech = null;

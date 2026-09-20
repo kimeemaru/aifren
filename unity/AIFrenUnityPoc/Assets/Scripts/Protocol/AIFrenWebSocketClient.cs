@@ -194,6 +194,18 @@ namespace AIFren.UnityPoc.Protocol
             });
         }
 
+        public Task CharacterVoiceAsync(string action, string requestId, CharacterSessionOwner owner,
+            string engine = "kokoro", string language = "en", string transcript = "", string reference = "", string revision = "", string operationId = null)
+        {
+            return SendCommandAsync(new ClientCommand {
+                command = "character_voice", action = action, request_id = requestId,
+                character_id = owner?.CharacterId, character_session = owner?.Session,
+                voice_engine = engine, voice_language = language, voice_transcript = transcript,
+                voice_reference = reference, voice_revision = revision,
+                voice_operation_id = operationId,
+            });
+        }
+
         public async Task SetCompanionPreferencesAsync(string style, bool responsiveSpeech, bool automaticExpressions)
         {
             await SendCommandAsync(new ClientCommand {
