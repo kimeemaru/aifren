@@ -49,6 +49,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
                 Set(animation, "rightUpperArmBaseRotation", Quaternion.identity);
                 Assert.That(animation.PlayGesture(AvatarGestureIntent.Wave), Is.True);
                 Assert.That(animation.ActiveGesture, Is.EqualTo(AvatarGestureIntent.Wave));
+                Assert.That(Get(animation, "authoredGestureActive"), Is.False);
                 Assert.That(animation.PlayGesture(AvatarGestureIntent.Nod), Is.False);
                 arm.transform.localRotation = Quaternion.Euler(15,20,30);
                 animation.RetireResponseMotion();
@@ -79,6 +80,7 @@ namespace AIFren.UnityPoc.Tests.EditMode
             finally { Object.DestroyImmediate(host); Object.DestroyImmediate(chest); }
         }
 
+        private static object Get(object target, string name) => target.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(target);
         private static void Set(object target, string name, object value) => target.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).SetValue(target, value);
 
         [Test]

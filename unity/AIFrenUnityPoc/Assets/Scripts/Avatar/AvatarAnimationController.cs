@@ -303,12 +303,8 @@ namespace AIFren.UnityPoc.Avatar
                 Debug.Log("[AvatarGesture] started native VRMA " + intent + ".");
                 return true;
             }
-            if (intent == AvatarGestureIntent.Wave && TryStartAuthoredWave())
-            {
-                StartGesture(intent, now, GetAuthoredWaveClip().length);
-                Debug.Log("[AvatarGesture] started authored " + intent + ".");
-                return true;
-            }
+            // If no reviewed VRMA is ready, use the existing Humanoid
+            // procedural gesture. Do not revive the legacy FBX trial path.
             if (!CanPlay(intent))
             {
                 Debug.LogWarning("[AvatarGesture] cannot start " + intent + "; required Humanoid bones are unavailable.");
