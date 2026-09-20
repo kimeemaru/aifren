@@ -28,6 +28,35 @@ READY_TIMEOUT_SECONDS = 60.0
 OWNERSHIP_DESCRIPTOR = "backend-owner.json"
 
 
+def package_environment(layout, data_root=None):
+    """A bundle never inherits development code/data/model overrides."""
+    forbidden = {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "HF_HOME", "HF_TOKEN",
+                 "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE",
+                 "HF_HUB_CACHE", "HF_ASSETS_CACHE", "HF_TOKEN_PATH", "HF_XET_CACHE",
+                 "TORCH_HOME", "OPENAI_API_KEY", "GOOGLE_API_KEY"}
+    forbidden.update({"LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "LLAMA_CPP_LIB_PATH"})
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in forbidden and not key.startswith("AIFREN_")}
+    environment.update(PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1",
+                       AIFREN_RESOURCE_ROOT=str(layout.resource_root),
+                       HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
+                       HF_HUB_DISABLE_IMPLICIT_TOKEN="1",
+                       AIFREN_KOKORO_DEVICE="cpu")
+    if sys.platform.startswith("linux"):
+        runtime = layout.package_root / "runtime/python"
+        libraries = [runtime / "lib"]
+        for site in ("dist-packages", "site-packages"):
+            for vendor in ("cuda_runtime", "cublas", "cudnn", "cuda_nvrtc", "cusparse", "cusolver", "cufft", "curand", "nccl", "nvjitlink", "nvtx", "cufile"):
+                path = runtime / "lib/python3.12" / site / "nvidia" / vendor / "lib"
+                if path.is_dir(): libraries.append(path)
+        environment["LD_LIBRARY_PATH"] = os.pathsep.join(str(path) for path in libraries)
+    if data_root is not None:
+        environment.update(AIFREN_DATA_ROOT=str(data_root),
+                           HF_HOME=str(data_root / "model-cache"),
+                           TORCH_HOME=str(data_root / "model-cache"))
+    return environment
+
+
 @dataclass(frozen=True)
 class FriendPackageLayout:
     package_root: Path
@@ -60,6 +89,12 @@ class FriendPackageLayout:
                 raise RuntimeError(f"The packaged AIFren {label} is unavailable: {path}")
         if not self.seed_data_root.is_dir():
             raise RuntimeError(f"The packaged AIFren seed data is unavailable: {self.seed_data_root}")
+        assembly = self.package_root / "AIFrenPoc_Data/Managed/AIFren.UnityPoc.dll"
+        # Older clients ignore the package preference argument and would use
+        # host PlayerPrefs. Fail before opening data or launching such a client.
+        if (not assembly.is_file() or assembly.stat().st_size > 32 * 1024 * 1024
+                or "-aifren-preferences-file".encode("utf-16le") not in assembly.read_bytes()):
+            raise RuntimeError("The packaged player lacks isolated persistent preferences. Rebuild the current client before launching this bundle.")
 
 
 def backend_command(
@@ -70,7 +105,10 @@ def backend_command(
     """Build an argv list so spaces never pass through shell parsing."""
     return [
         str(python),
-        str(layout.backend),
+        "-I",
+        "-c",
+        "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module('aifren.backend_host',run_name='__main__')",
+        str(layout.resource_root),
         "--resource-root", str(layout.resource_root),
         "--data-root", str(data_root),
         "--seed-data-root", str(layout.seed_data_root),
@@ -83,13 +121,13 @@ def _checker(
     *arguments: str,
     owner_token: str = "",
 ) -> subprocess.CompletedProcess[str]:
-    environment = dict(os.environ)
+    environment = package_environment(layout)
     if owner_token:
         environment["AIFREN_BACKEND_OWNER_TOKEN"] = owner_token
     else:
         environment.pop("AIFREN_BACKEND_OWNER_TOKEN", None)
     return subprocess.run(
-        [str(python), str(layout.checker), *arguments],
+        [str(python), "-I", str(layout.checker), *arguments],
         cwd=layout.resource_root,
         env=environment,
         text=True,
@@ -193,28 +231,22 @@ def ensure_backend(
     *,
     ready_timeout: float = READY_TIMEOUT_SECONDS,
 ) -> BackendAuthority:
-    """Reuse a proven package backend, recognize external AIFren, or start one."""
-    classification = _checker(python, layout, "--classify")
-    if classification.returncode == 0:
+    """Reuse a proven package backend or start one; never attach another owner."""
+    if _backend_port_is_open():
         descriptor = _read_descriptor(data_root, layout)
         if descriptor is not None:
             token = str(descriptor["owner_token"])
             if _checker(python, layout, "--owner-check", owner_token=token).returncode == 0:
                 print("Recovered the ready AIFren package backend.")
                 return BackendAuthority(owner_token=token, recovered=True)
-        print("A compatible external AIFren backend is already ready; it will not be stopped.")
-        return BackendAuthority()
-    if classification.returncode == 2:
-        raise RuntimeError("Port 8765 is owned by a non-AIFren listener; it will not be stopped.")
-    if _backend_port_is_open():
         raise RuntimeError(
-            "Port 8765 is already listening but could not prove AIFren readiness; "
-            "no competing backend was started."
+            "Port 8765 has no matching package owner. Close that application before launching this bundle; "
+            "it will not be stopped or reused, and no competing backend was started."
         )
 
     data_root.mkdir(parents=True, exist_ok=True)
     owner_token = str(uuid.uuid4())
-    environment = dict(os.environ)
+    environment = package_environment(layout, data_root)
     environment["AIFREN_BACKEND_OWNER_TOKEN"] = owner_token
     environment["AIFREN_RESOURCE_ROOT"] = str(layout.resource_root)
     environment["AIFREN_DATA_ROOT"] = str(data_root)
@@ -233,7 +265,7 @@ def ensure_backend(
     # A release launcher never retains arbitrary child stdout, even for the
     # lifetime after readiness. Backend errors use existing structured transport.
     process = subprocess.Popen(
-        backend_command(python, layout, data_root),
+            backend_command(python, layout, data_root),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **launch_options,
     )
     _write_descriptor(data_root, layout, owner_token, process.pid)
@@ -246,7 +278,7 @@ def ensure_backend(
                 f"The AIFren backend exited with code {process.returncode}; "
                 "use the existing reconnect/console controls."
             )
-        if _checker(python, layout).returncode == 0:
+        if _checker(python, layout, "--owner-check", owner_token=owner_token).returncode == 0:
             print(f"AIFren backend is ready (PID {process.pid}).")
             return BackendAuthority(owner_token=owner_token, process=process)
         time.sleep(0.25)
@@ -346,17 +378,27 @@ def launch_friend(
     *,
     data_root: Path | None = None,
     player_arguments: tuple[str, ...] = (),
+    portable: bool = False,
 ) -> int:
     layout = FriendPackageLayout.from_package_root(package_root)
     layout.validate()
-    data = absolute_path(data_root or packaged_user_data_root())
+    if data_root is not None and portable:
+        raise RuntimeError("Choose either portable mode or an explicit data directory.")
+    # Only an explicit CLI selection can override package data, never a stale
+    # development AIFREN_DATA_ROOT environment variable.
+    environment = package_environment(layout)
+    data = absolute_path(data_root or (layout.package_root / "UserData" if portable else
+                                      packaged_user_data_root(environment=environment)))
+    if any(argument.casefold() in {"-aifren-preferences-file", "-aifren-qa-plan"} for argument in player_arguments):
+        raise RuntimeError("Package preferences and QA isolation are owned by the launcher.")
     python = absolute_path(sys.executable)
     with WindowsLaunchMutex(data):
         authority = ensure_backend(python, layout, data)
         try:
             player = subprocess.Popen(
-                [str(layout.player), *player_arguments, "-logFile", os.devnull],
+                [str(layout.player), *player_arguments, "-aifren-preferences-file", str(data / "presentation.json"), "-logFile", os.devnull],
                 cwd=layout.package_root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=package_environment(layout, data),
             )
             return int(player.wait())
         finally:
@@ -367,6 +409,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Launch a packaged AIFren friend build.")
     parser.add_argument("--package-root", required=True, type=Path)
     parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--portable", action="store_true", help="Keep this bundle's data/preferences in its UserData directory.")
     parser.add_argument("player_arguments", nargs=argparse.REMAINDER)
     options = parser.parse_args()
     arguments = tuple(options.player_arguments)
@@ -377,9 +420,10 @@ def main() -> int:
             options.package_root,
             data_root=options.data_root,
             player_arguments=arguments,
+            portable=options.portable,
         )
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-        print("AIFren launch failed; check runtime availability and listener ownership.", file=sys.stderr)
+        print(f"AIFren launch failed: {error}", file=sys.stderr)
         return 1
 
 

@@ -56,8 +56,30 @@ class LinuxPackageSelectionTests(unittest.TestCase):
                 self.assertNotIn(b"SENTINEL", path.read_bytes())
         seed = self.output / "runtime/app/seed_data"
         self.assertEqual([], json.loads((seed / "conversation.json").read_text()))
+        settings = json.loads((seed / ".aifren_local_settings.json").read_text())
+        self.assertEqual(settings["model_mode"], "local")
+        self.assertEqual(settings["local_model"], "")
+        self.assertFalse(settings["local_auto_start"])
         self.assertFalse((self.output / "runtime/app/.aifren_local_settings.json").exists())
         subprocess.run(["bash", "-n", str(self.output / "run-aifren.sh")], check=True)
+        launcher = (self.output / "run-aifren.sh").read_text()
+        self.assertLess(launcher.index("unset LD_PRELOAD LD_LIBRARY_PATH"), launcher.index("exec "))
+
+    def test_offline_default_must_be_a_reviewed_included_model(self):
+        with self.assertRaisesRegex(ValueError, "default_model_not_in_reviewed_inventory"):
+            PACKAGE.compose_linux_package(self.source, self.staging, self.output,
+                                          self.inputs, default_model="external.gguf")
+        self.assertFalse(self.output.exists())
+        name = "runtime/app/models/llama/synthetic.gguf"
+        path = self.staging / name
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"synthetic model")
+        self.inputs.append({"path": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+        PACKAGE.compose_linux_package(self.source, self.staging, self.output,
+                                      self.inputs, default_model="synthetic.gguf")
+        settings = json.loads((self.output / "runtime/app/seed_data/.aifren_local_settings.json").read_text())
+        self.assertEqual(settings["local_model"], "synthetic.gguf")
+        self.assertTrue(settings["local_auto_start"])
 
     def test_symlink_source_file_or_parent_rejected_before_copy(self):
         for relative in ("backend_host.py", "aifren"):
@@ -111,7 +133,7 @@ class LinuxPackageSelectionTests(unittest.TestCase):
     def test_selected_application_sources_include_their_local_import_dependencies(self):
         # Inspect only approved application source, never discover runtime data.
         selected = set(PACKAGE.application_inputs())
-        allowed_roots = {"benchmarks", "scripts", "conversation", "memory", "memory_v2_store",
+        allowed_roots = {"aifren", "tools", "benchmarks", "scripts", "conversation", "memory", "memory_v2_store",
                          "llm", "tts", "stt", "voice"}
         for name in sorted(selected):
             if not name.endswith(".py"):

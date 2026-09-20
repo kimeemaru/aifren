@@ -154,6 +154,14 @@ responsive speech on, ACT preview and automatic CPU expressions off. Natural is
 selectable guidance with known narration/question limitations. Install optional
 expression dependencies/model explicitly; no turn silently downloads weights.
 
+The character voice integration adds **Audio > Character voice**: engine,
+reference WAV, transcript, language, Prepare, Preview/Stop and explicit Save/Cancel.
+See [character voices](CHARACTER_VOICE.md) for the reviewed runtime and ownership
+boundary. It requires a client built from the matching source. CPU reference
+conditioning is an opt-in alternative, not a latency replacement for Kokoro.
+**Appearance > Body performance** adds optional subtle breathing/attention and
+semantic motion previews. It defaults off and uses the existing animation owner.
+
 Settings > Character > Manage previews one name/UUID/revision and operation scope.
 New characters use character-local continuity. Existing legacy layouts require
 confirmed selected migration; the tool verifies original records and reports retained
@@ -165,6 +173,34 @@ explicit/resumable. Never use file disappearance as permission to restore a time
 The future V1/legacy-tool retirement gate is in PROJECT.md. Migration alone does
 not confirm retained-copy cleanup. Preserve valid V1-origin records in V2, canonical
 history, ordinary management/recovery and future schema upgrades during retirement.
+
+### Local distribution candidates
+
+Linux and Windows selectors now share one explicit source/resource inventory.
+Neither accepts a live environment or character directory as a recursive input.
+Stage reviewed, platform-matching files separately and pass a JSON list of
+`{"path":"package/relative/file","sha256":"..."}` records:
+
+```bash
+python scripts/package_linux.py --source-root . --staging-root /path/to/staging \
+  --inputs /path/to/reviewed-inputs.json --output /path/to/fresh-candidate \
+  --default-model reviewed-included-model.gguf
+# Windows uses package_unity.py with the same arguments and optional --archive.
+```
+
+The optional default must name an included, reviewed GGUF; no developer model or
+settings are discovered. Generated seed settings select local operation. Packages
+scrub inherited development overrides and launch the bundled interpreter in
+isolated mode. `--portable` keeps private state under the package's `UserData`;
+otherwise the per-user application-data location is used. The matching client
+uses a typed preference file in that data directory, without changing HOME/XDG or
+host Unity preferences. Older clients are rejected before launch.
+
+A selected inventory is not a working platform certification. Validate native
+libraries, licenses, offline models, a fresh extraction, restart and directory move.
+The current Windows path still needs a validated Windows runtime and adaptation
+of POSIX-only continuity locking/filesystem guards; do not disable those guards.
+Cross-compilation or Wine alone does not certify Windows graphical/audio behavior.
 
 ### History and Memory recovery
 

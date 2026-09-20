@@ -3,6 +3,8 @@ import tempfile
 
 import importlib.util
 import json
+import hashlib
+import shutil
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -46,6 +48,10 @@ class WindowsPackagingTests(unittest.TestCase):
         )
         (repository / 'aifren/runtime').mkdir(parents=True)
         (repository / 'aifren/runtime/runtime_layout.py').write_text("# layout\n", encoding="utf-8")
+        for name in PACKAGER._selector.application_inputs():
+            path = repository / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists(): path.write_text("# synthetic allowed source\n")
 
         models = repository / "models"
         (models / "kokoro-82m").mkdir(parents=True)
@@ -73,15 +79,24 @@ class WindowsPackagingTests(unittest.TestCase):
             root = Path(directory)
             repository, runtime = self._fake_repository(root)
             output = root / "Output With Spaces" / "AIFren"
-
-            result = PACKAGER.compose_windows_package(
-                repository, output, python_runtime=runtime, validate_runtime=False
-            )
+            staging = root / "Reviewed staging"
+            sources = {
+                "AIFrenPoc.exe": repository / "unity/AIFrenUnityPoc/Builds/Windows/AIFrenPoc.exe",
+                "UnityPlayer.dll": repository / "unity/AIFrenUnityPoc/Builds/Windows/UnityPlayer.dll",
+                "runtime/python/python.exe": runtime / "Scripts/python.exe",
+                "runtime/app/models/kokoro-82m/config.json": repository / "models/kokoro-82m/config.json",
+                "runtime/app/models/llama/test.gguf": repository / "models/llama/test.gguf",
+            }
+            inputs = []
+            for name, source in sources.items():
+                target = staging / name; target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+                inputs.append({"path": name, "sha256": hashlib.sha256(target.read_bytes()).hexdigest()})
+            result = PACKAGER.compose_windows_package(repository, staging, output, inputs)
 
             self.assertEqual(output, result)
             self.assertTrue((output / "AIFrenPoc.exe").is_file())
-            self.assertTrue((output / "AIFrenPoc_Data").is_dir())
-            self.assertTrue((output / "runtime" / "python" / "Scripts" / "python.exe").is_file())
+            self.assertTrue((output / "runtime" / "python" / "python.exe").is_file())
             app = output / "runtime" / "app"
             self.assertTrue((app / 'backend_host.py').is_file())
             self.assertTrue((app / "models" / "kokoro-82m" / "config.json").is_file())
@@ -93,12 +108,16 @@ class WindowsPackagingTests(unittest.TestCase):
                 [], json.loads((app / "seed_data" / "conversation.json").read_text(encoding="utf-8"))
             )
             self.assertEqual(
-                "Synthetic fixture.\n",
+                "You are a friendly AI companion.\n",
                 (app / "seed_data" / "characters" / "default" / "personality.md").read_text(encoding="utf-8"),
             )
             self.assertTrue((output / "Launch AIFren.cmd").is_file())
             metadata = json.loads((output / "package.json").read_text(encoding="utf-8"))
-            self.assertEqual("%LOCALAPPDATA%/AIFren", metadata["writable_data"])
+            self.assertEqual("windows-x64", metadata["platform"])
+            self.assertIn("--portable", metadata["writable_data"])
+            self.assertEqual(inputs, metadata["inputs"])
+            with self.assertRaises(ValueError):
+                PACKAGER.compose_windows_package(repository, staging, output, inputs)
 
     def test_backend_command_is_an_argv_list_with_space_safe_absolute_roots(self) -> None:
         root = Path(tempfile.gettempdir()) / "Package With Spaces"
@@ -107,11 +126,30 @@ class WindowsPackagingTests(unittest.TestCase):
             Path("/tmp/Python Runtime/python.exe"), layout, Path("/tmp/User Data/AIFren")
         )
         self.assertEqual("/tmp/Python Runtime/python.exe", command[0])
-        self.assertEqual(str(layout.backend), command[1])
-        self.assertEqual(str(layout.resource_root), command[3])
-        self.assertEqual("/tmp/User Data/AIFren", command[5])
-        self.assertEqual(str(layout.seed_data_root), command[7])
+        self.assertEqual("-I", command[1])
+        self.assertEqual("-c", command[2])
+        self.assertIn("aifren.backend_host", command[3])
+        self.assertEqual(str(layout.resource_root), command[4])
+        self.assertEqual(str(layout.resource_root), command[6])
+        self.assertEqual("/tmp/User Data/AIFren", command[8])
+        self.assertEqual(str(layout.seed_data_root), command[10])
         self.assertNotIn("shell", " ".join(command).lower())
+
+    def test_package_rejects_older_player_before_it_can_use_host_preferences(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            layout = LAUNCHER.FriendPackageLayout.from_package_root(root)
+            for path in (layout.player, layout.backend, layout.checker):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"synthetic")
+            layout.seed_data_root.mkdir()
+            assembly = root / "AIFrenPoc_Data/Managed/AIFren.UnityPoc.dll"
+            assembly.parent.mkdir(parents=True)
+            assembly.write_bytes(b"old client")
+            with self.assertRaisesRegex(RuntimeError, "isolated persistent preferences"):
+                layout.validate()
+            assembly.write_bytes("-aifren-preferences-file".encode("utf-16le"))
+            layout.validate()
 
     def test_existing_windows_developer_powershell_test_path_remains_available(self) -> None:
         ensure = ROOT / "scripts" / "ensure_aifren_backend.ps1"
@@ -133,25 +171,44 @@ class WindowsPackagingTests(unittest.TestCase):
             ready = subprocess.CompletedProcess([], 0, "aifren\n", "")
             owned = subprocess.CompletedProcess([], 0, "owned\n", "")
 
-            with mock.patch.object(LAUNCHER, "_checker", side_effect=(ready, owned)) as checker, \
+            with mock.patch.object(LAUNCHER, "_checker", return_value=owned) as checker, \
+                    mock.patch.object(LAUNCHER, "_backend_port_is_open", return_value=True), \
                     mock.patch.object(LAUNCHER.subprocess, "Popen") as popen:
                 authority = LAUNCHER.ensure_backend(Path("python.exe"), layout, data)
 
             self.assertTrue(authority.owned)
             self.assertTrue(authority.recovered)
             popen.assert_not_called()
-            self.assertEqual(2, checker.call_count)
+            self.assertEqual(1, checker.call_count)
 
-    def test_compatible_external_backend_is_never_claimed_or_stopped(self) -> None:
+    def test_compatible_external_backend_is_never_reused_claimed_or_stopped(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             layout = LAUNCHER.FriendPackageLayout.from_package_root(root / "AIFren")
             ready = subprocess.CompletedProcess([], 0, "aifren\n", "")
-            with mock.patch.object(LAUNCHER, "_checker", return_value=ready) as checker:
-                authority = LAUNCHER.ensure_backend(Path("python.exe"), layout, root / "data")
-                LAUNCHER.stop_backend(Path("python.exe"), layout, root / "data", authority)
-            self.assertFalse(authority.owned)
-            self.assertEqual(1, checker.call_count)
+            with mock.patch.object(LAUNCHER, "_checker", return_value=ready) as checker, \
+                    mock.patch.object(LAUNCHER, "_backend_port_is_open", return_value=True):
+                with self.assertRaisesRegex(RuntimeError, "not be stopped or reused"):
+                    LAUNCHER.ensure_backend(Path("python.exe"), layout, root / "data")
+            self.assertEqual(0, checker.call_count)
+
+    def test_package_discards_developer_environment_without_changing_host(self):
+        layout = LAUNCHER.FriendPackageLayout.from_package_root(Path(tempfile.gettempdir()) / "Synthetic bundle")
+        values = {"AIFREN_DATA_ROOT": "/unrelated/data", "AIFREN_LOCAL_LLM_MODEL_DIR": "/unrelated/models",
+                  "HF_HUB_CACHE": "/unrelated/cache", "HF_ASSETS_CACHE": "/unrelated/assets",
+                  "HF_TOKEN_PATH": "/unrelated/token", "HF_XET_CACHE": "/unrelated/xet",
+                  "PYTHONPATH": "/unrelated/code", "HF_HOME": "/unrelated/cache", "HOME": "/synthetic/home"}
+        with mock.patch.dict(LAUNCHER.os.environ, values, clear=True):
+            env = LAUNCHER.package_environment(layout, Path("/synthetic/data"))
+            self.assertEqual(env["AIFREN_DATA_ROOT"], "/synthetic/data")
+            self.assertNotIn("PYTHONPATH", env)
+            self.assertNotIn("AIFREN_LOCAL_LLM_MODEL_DIR", env)
+            for key in ("HF_HUB_CACHE", "HF_ASSETS_CACHE", "HF_TOKEN_PATH", "HF_XET_CACHE"):
+                self.assertNotIn(key, env)
+            self.assertEqual(env["HF_HUB_DISABLE_IMPLICIT_TOKEN"], "1")
+            self.assertEqual(env["HF_HOME"], "/synthetic/data/model-cache")
+            self.assertEqual(env["HOME"], values["HOME"])
+            self.assertEqual(dict(LAUNCHER.os.environ), values)
 
     def test_new_backend_is_not_authoritative_until_protocol_readiness(self) -> None:
         class Process:

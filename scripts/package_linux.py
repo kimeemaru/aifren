@@ -60,9 +60,14 @@ def copy_application(source: Path, target: Path) -> None:
         shutil.copyfile(path, destination)
 
 
-def write_clean_seed(app: Path) -> None:
+def write_clean_seed(app: Path, *, default_model="") -> None:
     seed = app / "seed_data"
     values = {
+        ".aifren_local_settings.json": {
+            "model_mode": "local", "local_endpoint": "http://127.0.0.1:8000/v1",
+            "local_model": default_model, "local_auto_start": bool(default_model),
+            "responsive_speech": True,
+        },
         "conversation.json": [],
         "conversation_summary.json": {"summary": "", "summarized_messages": 0},
         "memories.json": [],
@@ -80,13 +85,17 @@ def write_clean_seed(app: Path) -> None:
         "You are a friendly AI companion.\n", encoding="utf-8")
 
 
-def compose_linux_package(source: Path, staging: Path, output: Path, inputs: list[dict]) -> Path:
+def compose_package(source: Path, staging: Path, output: Path, inputs: list[dict], *, platform="linux-x64", default_model="") -> Path:
     """Copy exact approved runtime/player/model files, never a live tree.
 
     `inputs` is a separately reviewed list of {path, sha256}. Paths are under a
     clean staging root, with package-relative layout. Licensing/portable native
     runtime validation is a separate release prerequisite, not inferred here.
     """
+    if platform not in {"linux-x64", "windows-x64"}:
+        raise ValueError("unsupported_package_platform")
+    player_files = ({"AIFrenPoc.x86_64", "UnityPlayer.so", "UnityCrashHandler64"} if platform == "linux-x64" else
+                    {"AIFrenPoc.exe", "UnityPlayer.dll", "UnityCrashHandler64.exe"})
     if output.exists() or output.is_symlink() or staging.is_symlink():
         raise ValueError("package_root_not_fresh")
     for parent in (*output.absolute().parents, *staging.absolute().parents):
@@ -101,8 +110,8 @@ def compose_linux_package(source: Path, staging: Path, output: Path, inputs: lis
             raise ValueError("invalid_package_input")
         relative = relative_name(item["path"])
         name = relative.as_posix()
-        if name in seen or not (name.startswith(("runtime/python/", "runtime/app/models/", "AIFrenPoc_Data/"))
-                               or name in {"AIFrenPoc.x86_64", "UnityPlayer.so", "UnityCrashHandler64"}):
+        if name in seen or not (name.startswith(("runtime/python/", "runtime/app/models/", "AIFrenPoc_Data/", "ThirdPartyNotices/"))
+                               or name in player_files):
             raise ValueError("unapproved_package_destination")
         seen.add(name)
         path = owned_file(staging, relative)
@@ -111,23 +120,43 @@ def compose_linux_package(source: Path, staging: Path, output: Path, inputs: lis
         if digest != item["sha256"]:
             raise ValueError("package_input_digest_mismatch")
         approved.append((relative, path))
-    if not {"AIFrenPoc.x86_64", "runtime/python/bin/python"}.issubset(seen):
+    required = ({"AIFrenPoc.x86_64", "runtime/python/bin/python"} if platform == "linux-x64" else
+                {"AIFrenPoc.exe", "runtime/python/python.exe"})
+    if not required.issubset(seen):
         raise ValueError("required_package_input_missing")
+    if default_model and (Path(default_model).name != default_model or
+                          "runtime/app/models/llama/" + default_model not in seen):
+        raise ValueError("default_model_not_in_reviewed_inventory")
     copy_application(source, output / "runtime/app")
     for relative, path in approved:
         target = output / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
         target.chmod(0o755 if path.stat().st_mode & stat.S_IXUSR else 0o644)
-    write_clean_seed(output / "runtime/app")
-    launcher = output / "run-aifren.sh"
-    launcher.write_text('''#!/usr/bin/env bash
+    write_clean_seed(output / "runtime/app", default_model=default_model)
+    if platform == "linux-x64":
+        launcher = output / "run-aifren.sh"
+        launcher.write_text('''#!/usr/bin/env bash
 set -euo pipefail
+unset LD_PRELOAD LD_LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_INSERT_LIBRARIES
 bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-exec "$bundle_root/runtime/python/bin/python" "$bundle_root/runtime/app/scripts/launch_friend.py" --package-root "$bundle_root" "$@"
+exec "$bundle_root/runtime/python/bin/python" -I "$bundle_root/runtime/app/scripts/launch_friend.py" --package-root "$bundle_root" "$@"
 ''', encoding="utf-8")
-    launcher.chmod(0o755)
+        launcher.chmod(0o755)
+    else:
+        (output / "Launch AIFren.cmd").write_text(
+            '@echo off\r\n"%~dp0runtime\\python\\python.exe" -I "%~dp0runtime\\app\\scripts\\launch_friend.py" --package-root "%~dp0." %*\r\n', encoding="utf-8")
+    (output / "package.json").write_text(json.dumps({
+        "format_version": 2, "platform": platform, "resource_root": "runtime/app",
+        "default_model": default_model,
+        "writable_data": "explicit --portable uses UserData; otherwise per-user application data",
+        "inputs": inputs,
+    }, indent=2) + "\n", encoding="utf-8")
     return output
+
+
+def compose_linux_package(source: Path, staging: Path, output: Path, inputs: list[dict], *, default_model="") -> Path:
+    return compose_package(source, staging, output, inputs, platform="linux-x64", default_model=default_model)
 
 
 def main() -> int:
@@ -136,10 +165,11 @@ def main() -> int:
     parser.add_argument("--staging-root", type=Path, required=True)
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--default-model", default="", help="Reviewed included GGUF basename; no developer settings are read.")
     args = parser.parse_args()
     try:
         compose_linux_package(args.source_root, args.staging_root, args.output,
-                              json.loads(args.inputs.read_text(encoding="utf-8")))
+                              json.loads(args.inputs.read_text(encoding="utf-8")), default_model=args.default_model)
     except (OSError, ValueError):
         parser.exit(1, "Package selection failed; check approved inputs and fresh output.\n")
     return 0

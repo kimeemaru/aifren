@@ -37,12 +37,19 @@ An included sample must import as a humanoid with renderable geometry before the
 build can be published. Retrying an incomplete initial import does not replace or
 modify the supplied model bytes.
 
-The generic Linux package selector uses an explicit source allowlist and creates
+The Linux and Windows package selectors use one explicit source allowlist and create
 empty/generic runtime data. External runtime resources require separately reviewed
 regular-file paths and digests; an allowlist is not a license grant. Do not package
 a live environment or data directory wholesale. Portable Python/native/model/GPU
 redistribution still needs a final version-specific SBOM/license review. No portable
 package, public release or new tag is implied by this source sync.
+
+Reference-conditioned speech is a separate optional runtime. The adapter pins
+official GPT-SoVITS source and verifies registered source/model digests before
+starting its CPU worker. MIT source licensing does not by itself clear the model,
+phonemizer, codec, CUDA or other transitive binaries for redistribution. No private
+recording, transcript, conditioning cache or generated cloned speech is a package
+input. See [the voice installation boundary](CHARACTER_VOICE.md).
 
 ## Optional expression runtime
 
