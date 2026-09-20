@@ -167,6 +167,10 @@ def initialize(*, prepare_v1_memory=None):
 
         voice = VoiceInput()
         tts = TextToSpeech()
+        from aifren.tts.tts import KokoroTextToSpeech
+        if isinstance(tts, KokoroTextToSpeech):
+            from aifren.tts.character_voice import CharacterVoiceTTS
+            tts = CharacterVoiceTTS(tts, registry, active_character.character_id)
 
         character, personality = load_character(paths["character"], paths["personality"])
         # Runtime-only identity annotation.  It is never written back into the

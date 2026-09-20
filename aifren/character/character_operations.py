@@ -390,7 +390,7 @@ class CharacterOperationService:
                 self.registry._data["active_character_id"]=remaining[0]["character_id"] if remaining else None
             self.registry._save();return
         self._phase(identity,op,"resetting_files")
-        preserve={"character.json","personality.md","presentation.json",".continuity.lock"}
+        preserve={"character.json","personality.md","presentation.json","voice_profile.json","voice",".continuity.lock"}
         for path in directory.iterdir():
             if path.name in preserve: continue
             if path.is_dir(): shutil.rmtree(path)

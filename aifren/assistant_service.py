@@ -1027,6 +1027,9 @@ class AssistantService:
         self.character_prompt = character_prompt
         self._published_expression = None
         self._published_expression_owner = None
+        bind_voice = getattr(type(self.tts), "bind_character", None)
+        if callable(bind_voice):
+            bind_voice(self.tts, expected)
         # Explicitly supplied attention stores are character/archive-bound and
         # caller-owned. A character switch never carries their producer forward.
         self._transient_impulse_store = None
@@ -3323,6 +3326,7 @@ class AssistantService:
                     return None
                 self._set_pending_stream_speech(text, text, 0, turn_id, speech_generation, committed_stream=True)
                 queue = StreamingSpeechQueue(self.tts, committed_text=text, max_chunks=2,
+                    committed_unit_policy=(self.tts.committed_unit_policy if hasattr(type(self.tts), "committed_unit_policy") else None),
                     owner_current=lambda: speech_generation == self._speech_generation and not cancel_event.is_set(),
                     provider_generation_active=self.provider_request_active,
                     on_chunk_starting=lambda spoken, subtitle, index: self._set_pending_stream_speech(
@@ -3419,6 +3423,9 @@ class AssistantService:
                 return TurnResult(user_message=user_message, error=configuration_error)
 
             if _scene_reaction is None:
+                cancel_voice = getattr(type(self.tts), "cancel_voice_job", None)
+                if callable(cancel_voice):
+                    cancel_voice(self.tts)
                 turn_id, cancel_event, replaced_turn = self._claim_replacement_turn()
             else:
                 turn_id, cancel_event = _scene_reaction.turn_id, _scene_reaction.cancel_event
@@ -5905,6 +5912,9 @@ class AssistantService:
         self._retire_automatic_expression()
         started_at = time.monotonic()
         provider = self.tts
+        cancel_voice = getattr(type(provider), "cancel_voice_job", None)
+        if callable(cancel_voice):
+            cancel_voice(provider)
         conditional_stop = getattr(type(provider), "stop_if_generation", None)
         with self._speech_generation_lock:
             self._speech_generation += 1

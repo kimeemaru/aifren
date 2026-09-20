@@ -290,6 +290,11 @@ class AIFrenWebSocketHost:
         finally:
             if self._client is websocket:
                 self._client = None
+                voice_provider = getattr(self.service, "tts", None)
+                cancel_voice = getattr(type(voice_provider), "cancel_voice_job", None)
+                if callable(cancel_voice):
+                    cancel_voice(voice_provider)
+                    self.service.stop_speaking(interrupted=True)
                 self._log("Local frontend disconnected.")
                 # A focused Unity PTT hold cannot outlive its frontend.  The
                 # existing PTT implementation ignores unmatched releases.
@@ -349,7 +354,7 @@ class AIFrenWebSocketHost:
         binding = {}
         if command in {"submit_text", "continuity_control", "memory_view_query",
                        "memory_view_detail", "memory_view_mutate", "ptt_press",
-                       "ptt_release", "stop_tts"}:
+                       "ptt_release", "stop_tts", "character_voice"}:
             self._command_owner.set({
                 "character_id": str(command_data.get("character_id") or ""),
                 "character_session": str(command_data.get("character_session") or ""),
@@ -368,6 +373,59 @@ class AIFrenWebSocketHost:
                     return
 
         reply_owner = {**binding, "character_generation": self._character_generation}
+
+        if command == "character_voice":
+            from aifren.tts.character_voice import CharacterVoiceTTS
+            provider = self.service.tts
+            if not isinstance(provider, CharacterVoiceTTS):
+                await self._send_command_error(websocket, "character_voice_unavailable", "Character voices need the normal local speech runtime.")
+                return
+            action = command_data.get("action")
+            if action in {"get", "cancel", "stop"}:
+                if action != "get":
+                    self.service.stop_speaking(interrupted=True)
+                await self._send_json(websocket, {"type": "character_voice", **reply_owner,
+                    "request_id": self._command_request_id.get(), "data": {"tts": self._tts_snapshot()}})
+                return
+            if action not in {"prepare", "preview", "save"}:
+                await self._send_command_error(websocket, "character_voice_invalid", "Unsupported voice operation.")
+                return
+            if self._turn_tasks or self._character_switching:
+                await self._send_command_error(websocket, "character_voice_busy", "Stop the current reply before preparing or changing its voice.")
+                return
+            task = getattr(self, "_character_voice_task", None)
+            if task is not None and not task.done():
+                await self._send_command_error(websocket, "character_voice_busy", "The previous voice operation is finishing. Stop it or wait briefly.")
+                return
+            payload = {"engine": command_data.get("voice_engine", "kokoro"),
+                       "language": command_data.get("voice_language", "en"),
+                       "transcript": command_data.get("voice_transcript", ""),
+                       "reference_path": command_data.get("voice_reference", ""),
+                       "revision": command_data.get("voice_revision", "")}
+            if not all(isinstance(value, str) for value in payload.values()) or any(len(v) > 4096 for v in payload.values()):
+                await self._send_command_error(websocket, "character_voice_invalid", "Voice fields are invalid or too long.")
+                return
+            self.service.stop_speaking(interrupted=True)
+            job = provider.begin_voice_job()
+            request_id = self._command_request_id.get()
+            await self._send_json(websocket, {"type": "character_voice", **reply_owner,
+                "request_id": request_id, "data": {"tts": self._tts_snapshot()}})
+            async def run_voice_operation():
+                def guard():
+                    if (provider is not self.service.tts or self._character_switching
+                            or self._client is not websocket or self._stopping):
+                        raise RuntimeError("Character voice owner was retired.")
+                    self.service.require_character_binding(**binding)
+                result = await asyncio.to_thread(provider.edit_voice, action, payload, job=job, guard=guard)
+                if result is not None and provider._job_current(job):
+                    try:
+                        guard()
+                        await self._send_json(websocket, {"type": "character_voice", **reply_owner,
+                            "request_id": request_id, "data": {"tts": self._tts_snapshot()}})
+                    except RuntimeError:
+                        pass
+            self._character_voice_task = asyncio.create_task(run_voice_operation())
+            return
 
         if command == "development_flight_recorder_start":
             unity_pid = command_data.get("unity_pid")
@@ -1911,7 +1969,8 @@ class AIFrenWebSocketHost:
         from aifren.runtime.model_settings import kokoro_early_speech_status
         early_speech = kokoro_early_speech_status()
         return {
-            "provider": type(self.service.tts).__name__.replace("TextToSpeech", "").lower(),
+            "provider": (self.service.tts.effective_provider if hasattr(type(self.service.tts), "effective_provider")
+                         else type(self.service.tts).__name__.replace("TextToSpeech", "").lower()),
             "configured_provider": str(TTS_PROVIDER),
             "voice": str(getattr(self.service.tts, "voice", KOKORO_VOICE)),
             "device": str(getattr(self.service.tts, "device", KOKORO_DEVICE)),
@@ -1923,6 +1982,7 @@ class AIFrenWebSocketHost:
             "early_speech_configured": early_speech["configured"],
             "early_speech_overridden": early_speech["overridden"],
             "early_speech_supported": bool(getattr(self.service.tts, "supports_early_speech", False)),
+            "character_voice": (self.service.tts.snapshot() if callable(getattr(type(self.service.tts), "bind_character", None)) else None),
         }
 
     def _voice_snapshot(self) -> dict[str, Any]:

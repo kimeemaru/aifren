@@ -148,3 +148,8 @@ tools/memory_v2/memory_v2_replacement_evaluation.py
 tools/memory_v2/memory_v2_semantic_evaluation.py
 tools/memory_v2/memory_v2_source_containment_evaluation.py
 tools/memory_v2/memory_v2_source_span_experiment.py
+
+aifren/character/voice_profile.py
+aifren/tts/character_voice.py
+aifren/tts/clone_runtime.py
+aifren/tts/clone_worker.py
