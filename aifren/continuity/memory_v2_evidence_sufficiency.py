@@ -232,23 +232,15 @@ def _favorite_slot_value(text: object, slot: str) -> str:
     if not direct or re.search(r"\b(?:not|never|no|maybe|perhaps|possibly)\b", direct, re.I):
         return ""
     if slot in {"color", "colour"}:
-        from aifren.continuity.durable_fact_curation import (
-            _RELATIVE_VALUE_TIME, _TEMPORARY, _validated_kind_value,
-        )
+        from aifren.continuity.durable_fact_curation import _favorite_color_value
 
         # An explicit favorite-color assertion supplies a literal preference
         # value, not a color inferred from unrelated prose. Do not require a
         # fixed palette here: otherwise a valid past value can disappear and
         # an older, differently named color can become the answer. Keep the
-        # existing small phrase bound; clause polarity/ownership is checked by
+        # shared bounded label admission; clause polarity/ownership is checked by
         # the caller and the final response must preserve the full value.
-        if (len(direct) > 48
-                or not re.fullmatch(r"[A-Za-z][A-Za-z-]*(?:\s+[A-Za-z][A-Za-z-]*)?", direct)
-                or _validated_kind_value(direct, "favorite_color") != direct
-                or _TEMPORARY.search(direct) or _RELATIVE_VALUE_TIME.search(direct)
-                or set(direct.casefold().replace("-", " ").split()) & {
-                    "and", "or", "but", "because", "is", "was", "non",
-                }):
+        if _favorite_color_value(direct) != direct:
             return ""
         return direct
     return direct
