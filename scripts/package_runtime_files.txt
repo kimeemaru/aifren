@@ -153,3 +153,4 @@ aifren/character/voice_profile.py
 aifren/tts/character_voice.py
 aifren/tts/clone_runtime.py
 aifren/tts/clone_worker.py
+aifren/runtime/file_lock.py

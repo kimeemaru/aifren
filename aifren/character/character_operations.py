@@ -293,9 +293,8 @@ class CharacterOperationService:
                 if busy: raise CharacterStorageError("Migration destination is still busy")
             with staged.open("rb") as stream: os.fsync(stream.fileno())
             os.replace(staged,target)
-            descriptor=os.open(directory,os.O_RDONLY)
-            try: os.fsync(descriptor)
-            finally: os.close(descriptor)
+            from aifren.runtime.file_lock import sync_directory
+            sync_directory(directory)
         else:
             with closing(sqlite3.connect(target.as_uri()+"?mode=ro",uri=True)) as db:
                 meta=dict(db.execute("SELECT key,value FROM database_meta WHERE key IN ('storage_character_id','timeline_generation')"))

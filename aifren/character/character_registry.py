@@ -59,9 +59,8 @@ def write_json_atomic(path, value):
             json.dump(value, output, ensure_ascii=False, indent=2, sort_keys=True)
             output.write("\n"); output.flush(); os.fsync(output.fileno())
         os.replace(name, path)
-        descriptor = os.open(path.parent, os.O_RDONLY)
-        try: os.fsync(descriptor)
-        finally: os.close(descriptor)
+        from aifren.runtime.file_lock import sync_directory
+        sync_directory(path.parent)
     finally: Path(name).unlink(missing_ok=True)
 
 class CharacterRegistry:
@@ -74,20 +73,20 @@ class CharacterRegistry:
     def locked(self, *, reload=True):
         # The one registry write lock also serializes create idempotency and
         # operation pointer publication across backend/maintenance processes.
-        import fcntl
+        from aifren.runtime import file_lock
         with _registry_mutex:
             parent = self.application_dir / "characters"
             if parent.is_symlink(): raise CharacterRegistryError("Unsafe character registry directory")
             parent.mkdir(parents=True, exist_ok=True)
             lock = parent / ".registry.lock"
             if lock.is_symlink(): raise CharacterRegistryError("Unsafe registry lock")
-            descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            descriptor = file_lock.open_lock_file(lock)
             with os.fdopen(descriptor, "a+b") as handle:
-                fcntl.flock(handle, fcntl.LOCK_EX)
+                file_lock.flock(handle.fileno(), file_lock.LOCK_EX)
                 try:
                     if reload: self._data = self._load_or_initialize()
                     yield
-                finally: fcntl.flock(handle, fcntl.LOCK_UN)
+                finally: file_lock.flock(handle.fileno(), file_lock.LOCK_UN)
 
     @property
     def revision(self): return int(self._data.get("revision", 0))

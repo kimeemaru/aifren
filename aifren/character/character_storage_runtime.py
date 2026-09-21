@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
-import fcntl
+from aifren.runtime import file_lock as fcntl
 import os
 from pathlib import Path
 import sqlite3
@@ -39,7 +39,8 @@ def _file_identity(path: Path, *, directory: bool = False):
     except OSError as error:
         raise CharacterStorageError("Character storage is missing or inaccessible.") from error
     expected = stat.S_ISDIR if directory else stat.S_ISREG
-    if not expected(value.st_mode) or path.resolve() != path:
+    if (not expected(value.st_mode) or path.resolve() != path
+            or getattr(value, 'st_file_attributes', 0) & 0x400):
         raise CharacterStorageError("Character storage cannot use a symlink or special file.")
     return value.st_dev, value.st_ino
 
@@ -58,6 +59,8 @@ def _entry(registry, character_id, *, registry_locked):
 
 def _open_lock(registry, identity: _Identity):
     """Open only the registered directory; never follow a swapped lock link."""
+    if os.name == 'nt':
+        return _open_windows_lock(identity)
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
     descriptors = []
     descriptor = None
@@ -92,6 +95,26 @@ def _open_lock(registry, identity: _Identity):
     finally:
         for item in reversed(descriptors):
             os.close(item)
+
+
+def _open_windows_lock(identity):
+    descriptor = None
+    try:
+        before = _file_identity(identity.directory, directory=True)
+        path = identity.directory / '.continuity.lock'
+        descriptor = fcntl.open_lock_file(path)
+        value = os.fstat(descriptor)
+        lock_identity = (value.st_dev, value.st_ino)
+        if (before != _file_identity(identity.directory, directory=True)
+                or lock_identity != _file_identity(path)):
+            raise CharacterStorageError('Character storage changed while opening its lease.')
+        return descriptor, before, lock_identity
+    except Exception as error:
+        if descriptor is not None:
+            os.close(descriptor)
+        if isinstance(error, CharacterStorageError):
+            raise
+        raise CharacterStorageError('Character continuity lock is unavailable or unsafe.') from error
 
 
 def _database_identity(path, expected):
