@@ -25,7 +25,7 @@ namespace AIFren.UnityPoc.UI
                     return Path.Combine(Output, "application-data");
                 }
 #endif
-                return Application.persistentDataPath;
+                return PlayerPrefs.ManagedDataRoot ?? Application.persistentDataPath;
             }
         }
 #if UNITY_EDITOR || DEVELOPMENT_BUILD

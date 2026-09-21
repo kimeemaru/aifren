@@ -167,6 +167,31 @@ class ProviderReadinessOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_local_to_online_late_exception_is_private_and_discarded(self):
         await self.late_local("raise")
 
+    async def test_template_metadata_read_does_not_block_transport_or_install_after_retirement(self):
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        main_thread = threading.get_ident()
+
+        def slow_metadata(_model):
+            self.assertNotEqual(threading.get_ident(), main_thread)
+            entered.set()
+            release.wait(5)
+            return "system"
+
+        self.runtime.result = "ready"
+        with patch('aifren.llm.local_template.installed_policy_role', side_effect=slow_metadata):
+            task = await self.local_start()
+            self.runtime.release.set()
+            self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+            await self.command("get_snapshot")
+            self.assertFalse(task.done())
+            replacement = await self.online()
+            count = len(self.client.messages)
+            release.set()
+            await asyncio.wait_for(task, 3)
+            self.assertIs(self.service.llm, replacement)
+            self.assertEqual(len(self.client.messages), count)
+
     async def test_cancelled_superseded_worker_raises_after_online_replacement(self):
         self.runtime.result = "raise"
         old = await self.local_start()

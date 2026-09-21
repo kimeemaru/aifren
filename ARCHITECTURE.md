@@ -150,6 +150,15 @@ does not replay spoken words or pretend normal completion. Subtitle dwell/page s
 never controls PTT readiness. HiddenSubtitlePresenter owns hidden visual progression;
 CommittedSpeechTimeline accepts continuing timing without resetting the utterance.
 
+`CharacterVoiceTTS` selects the saved character voice while sharing
+`ContinuousPlaybackTTS` with Kokoro. The optional reference engine runs in a pinned,
+digest-verified CPU process over private pipes. Versioned character-owned profiles
+store supported settings and managed reference identity; native conditioning remains
+an in-process cache. Preparation/preview is fenced by character session and job,
+never canonical conversation. There is no implicit engine fallback. Preview timing
+cannot attach to the previous conversation's subtitles. Stop rejects obsolete PCM;
+an in-flight native call may still drain. See [character voices](docs/CHARACTER_VOICE.md).
+
 ACT preview is opt-in. Prefix-only bounded fresh-output parsing strips actual
 control markup before canonical/TTS/subtitle publication, buffers split prefixes,
 and accepts plain dialogue immediately. Quoted/history/user/source markers remain
@@ -170,6 +179,11 @@ remain independent. Unity maps semantic expressions/gestures to concrete VRM beh
 Direct rendering is normal; RenderTexture is debug rollback. Framing is scoped to
 character/asset/orientation, restored after the matching avatar-ready event; drawers
 and global UI hide never resize the avatar.
+
+Optional subtle body performance and Nod/HeadShake/Wave/Thinking previews use the
+same capability-aware resolver and animation controller. Procedural wave remains a
+fallback when no reviewed clip is present. Breathing modifies only its owned chest
+channel, never root/hips; disabling it preserves expression, gaze and lip sync.
 
 ## Source, runtime and validation boundaries
 

@@ -8,6 +8,14 @@ namespace AIFren.UnityPoc.Editor
     /// <summary>Developer-only reproducible standalone build entry points.</summary>
     public static class BuildAIFrenPoc
     {
+        /// <summary>Prove licensed project execution before a long native pass, without replacing a player.</summary>
+        public static void PreflightEditorExecution()
+        {
+            RefuseLocalPresentationAssetsByDefault();
+            EnsureBundledAvatarImported();
+            Debug.Log("AIFren Editor execution preflight passed.");
+        }
+
         public static void BuildWindows()
         {
             BuildStandalone(BuildTarget.StandaloneWindows64, "Windows", "AIFrenPoc.exe");

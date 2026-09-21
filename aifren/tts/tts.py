@@ -601,85 +601,10 @@ class LocalPlaybackTTS:
         return interrupted_playback
 
 
-class KokoroTextToSpeech(LocalPlaybackTTS):
-    """Optional hexgrad Kokoro-82M provider using the shared local player."""
+class ContinuousPlaybackTTS(LocalPlaybackTTS):
+    """Shared committed PCM queue; providers implement only audio preparation."""
 
-    supports_early_speech = True
     supports_owned_continuous_stream = True
-
-    @property
-    def synthesis_strategy(self):
-        from aifren.runtime.model_settings import kokoro_early_speech_status
-        return "complete_sentences" if kokoro_early_speech_status()["effective"] else "whole_response"
-
-    def __init__(self, voice=KOKORO_VOICE, speed=KOKORO_SPEED, device=KOKORO_DEVICE):
-        try:
-            import torch
-            from kokoro import KPipeline
-            from kokoro.model import KModel
-            from aifren.tts.kokoro_assets import REPOSITORY_ID, require_local_assets
-        except ImportError as error:
-            raise RuntimeError(
-                "Kokoro is not installed. Create an isolated environment with "
-                "requirements-kokoro.txt before selecting it."
-            ) from error
-
-        self._torch = torch
-        self._KPipeline = KPipeline
-        self._repo_id = REPOSITORY_ID
-        self.voice = str(voice).strip()
-        self.speed = float(speed)
-        if not self.voice or self.speed <= 0:
-            raise ValueError("Kokoro voice must be non-empty and speed must be positive.")
-        from aifren.tts.device_planning import plan_kokoro_device
-        device_plan = plan_kokoro_device(device, torch_module=torch)
-        self.device = device_plan.device
-        self.device_selection_reason = device_plan.reason
-        development_flight_recorder().mark(
-            "kokoro_device_selected", device=self.device,
-            reason=self.device_selection_reason,
-            gpu_total_bytes=device_plan.gpu_total_bytes,
-            managed_model_bytes=device_plan.managed_model_bytes,
-            device_required_bytes=device_plan.required_total_bytes,
-        )
-        print("Loading Kokoro TTS...")
-        config_path, model_path, self.voice_path = require_local_assets(KOKORO_MODEL_DIR, self.voice)
-        model = KModel(repo_id=REPOSITORY_ID, config=str(config_path), model=str(model_path))
-        model = model.to(self.device).eval()
-        self.pipeline = KPipeline(
-            lang_code=self.voice[:1], repo_id=REPOSITORY_ID, model=model, device=self.device
-        )
-        self._initialize_playback_state()
-        self._initialize_continuous_state()
-        print("Kokoro TTS loaded.")
-
-    def fallback_to_cpu_after_resource_failure(self) -> bool:
-        """Move the loaded model to CPU after repeated CUDA resource pressure."""
-        with self._kokoro_synthesis_lock:
-            if str(self.device).casefold() == "cpu":
-                return False
-            pipeline = getattr(self, "pipeline", None)
-            model = getattr(pipeline, "model", None)
-            if model is None:
-                return False
-            started_at = time.monotonic()
-            model = model.to("cpu").eval()
-            self.pipeline = self._KPipeline(
-                lang_code=self.voice[:1], repo_id=self._repo_id,
-                model=model, device="cpu",
-            )
-            self.device = "cpu"
-            self.device_selection_reason = "runtime_resource_failure_cpu_sticky"
-            try:
-                self._torch.cuda.empty_cache()
-            except Exception:
-                pass
-            development_flight_recorder().mark(
-                "kokoro_runtime_device_fallback", device="cpu",
-                reason=self.device_selection_reason,
-                duration_ms=(time.monotonic() - started_at) * 1000.0,
-            )
-            return True
 
     def _initialize_continuous_state(self):
         self._kokoro_synthesis_lock = threading.Lock()
@@ -693,145 +618,16 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
         self._continuous_submitted_samples = 0
         self._continuous_results = deque(maxlen=8)
 
-    def _generate_audio(self, text, generation=None, *, cancelled=None):
-        # Cancellation can retire a turn while a CUDA kernel is still winding
-        # down. Serialize at the provider boundary so the replacement turn can
-        # never start a second Kokoro inference concurrently.
-        resource_wait_started = time.monotonic()
-        recorder = development_flight_recorder()
-        while not self._kokoro_synthesis_lock.acquire(timeout=0.05):
-            if cancelled is not None and cancelled.is_set():
-                recorder.mark(
-                    "kokoro_synthesis_resource_wait", playback_id=int(generation or 0),
-                    duration_ms=(time.monotonic() - resource_wait_started) * 1000.0,
-                    cancelled=True, characters=len(str(text or "")),
-                )
-                return None
-        try:
-            retired = cancelled is not None and cancelled.is_set()
-            recorder.mark(
-                "kokoro_synthesis_resource_wait", playback_id=int(generation or 0),
-                duration_ms=(time.monotonic() - resource_wait_started) * 1000.0,
-                cancelled=retired, characters=len(str(text or "")),
-            )
-            if retired:
-                return None
-            return self._generate_audio_serial(text, generation, cancelled=cancelled)
-        finally:
-            self._kokoro_synthesis_lock.release()
-
-    def _generate_audio_serial(self, text, generation=None, *, cancelled=None):
-        synthesis_started_at = time.monotonic()
-        recorder = development_flight_recorder()
-        recorder.mark(
-            "kokoro_synthesis_start", playback_id=int(generation or 0), characters=len(str(text or "")),
-            words=len(re.findall(r"\S+", str(text or ""))), device=self.device, active_jobs=1,
-        )
-        chunks = []
-        word_starts = []
-        offset_seconds = 0.0
-        def retired():
-            return ((cancelled is not None and cancelled.is_set()) or
-                    (generation is not None and (self.stop_event.is_set() or
-                     not self._is_current_playback_generation(generation))))
-
-        def discard():
-            if generation is not None:
-                self._retire_synthesis(generation)
-            recorder.mark("tts_stale_result_discarded", playback_id=int(generation or 0))
-            recorder.mark("kokoro_synthesis_end", playback_id=int(generation or 0),
-                          duration_ms=(time.monotonic()-synthesis_started_at)*1000,
-                          cancelled=True, audio_samples=0, active_jobs=0)
-
-        units = (text,)
-        if cancelled is not None:
-            # Already projected/validated speech only. Reuse the existing
-            # sentence/clause policy, with substantial units (not word-sized
-            # playback chunks). Concatenate PCM before normal dispatch so no
-            # new queue starvation gaps, playback IDs or subtitle clocks arise.
-            from aifren.tts.chunker import SpeechChunker
-            chunker = SpeechChunker(minimum=80, preferred_maximum=220,
-                                    hard_maximum=260, preserve_whitespace=True)
-            units = chunker.feed(text) + chunker.finish()
-        for index, unit in enumerate(units):
-            if retired():
-                discard()
-                return None
-            unit_start = time.monotonic()
-            unit_samples = 0
-            recorder.mark("kokoro_synthesis_unit_start", chunk_index=index,
-                          characters=len(unit), words=len(re.findall(r"\S+", unit)))
-            for result in self.pipeline(unit, voice=str(self.voice_path), speed=self.speed):
-                # An in-flight native call is irreducible here. Never request
-                # its next yield/unit after cancellation, even in prepare mode.
-                if retired():
-                    discard()
-                    return None
-                audio = result.audio
-                if hasattr(audio, "detach"):
-                    audio = audio.detach().cpu().numpy()
-                chunk = np.asarray(audio, dtype=np.float32).reshape(-1)
-                chunks.append(chunk)
-                unit_samples += len(chunk)
-                word_starts.extend(self._result_word_starts(getattr(result, "tokens", None), offset_seconds))
-                offset_seconds += len(chunk) / 24000.0
-            recorder.mark("kokoro_synthesis_unit_end", chunk_index=index,
-                          duration_ms=(time.monotonic()-unit_start)*1000,
-                          audio_samples=unit_samples, sample_rate=24000)
-        if retired():
-            discard()
-            return None
-        if not chunks:
-            raise ValueError("Kokoro produced no audio.")
-        expected_words = re.findall(r"\S+", text or "")
-        # Kokoro tokenization can expand or normalize text. Only expose
-        # alignment when it still maps one-to-one to the exact spoken words;
-        # otherwise callers retain their deterministic fallback schedule.
-        if len(word_starts) != len(expected_words):
-            word_starts = []
-        print(
-            "[AIFren Timing] Kokoro synthesis/audio ready "
-            f"t={time.monotonic() - synthesis_started_at:.3f}s; "
-            f"aligned_words={len(word_starts)}/{len(expected_words)}"
-        )
-        recorder.mark(
-            "kokoro_synthesis_end", playback_id=int(generation or 0),
-            duration_ms=(time.monotonic() - synthesis_started_at) * 1000.0,
-            audio_samples=sum(len(chunk) for chunk in chunks), sample_rate=24000, active_jobs=0,
-        )
-        return np.concatenate(chunks).reshape(-1, 1), 24000, word_starts
-
-    @staticmethod
-    def _result_word_starts(tokens, offset_seconds):
-        starts = []
-        for token in tokens or ():
-            text = str(getattr(token, "text", "") or "").strip()
-            start = getattr(token, "start_ts", None)
-            if start is None or not text or not any(character.isalnum() for character in text):
-                continue
-            # MToken text is lexical for the English Kokoro pipeline; retain
-            # one timestamp for every whitespace-delimited spoken word.
-            starts.extend(offset_seconds + float(start) for _ in re.findall(r"\S+", text))
-        return starts
-
-    def synthesize(self, text, output_file):
-        if not text:
-            return False
-        audio, sample_rate, _ = self._generate_audio(text)
-        with wave.open(output_file, "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
-        return True
 
     def prepare_stream_chunk(self, text: str):
         """Synthesize the next chunk without disturbing current playback."""
         return self._generate_audio(str(text))
 
+
     def prepare_cancellable_stream_chunk(self, text: str, *, cancelled):
         """Prepare exact speech with cancellation between bounded native units."""
         return self._generate_audio(str(text), cancelled=cancelled)
+
 
     @staticmethod
     def _continuous_chunk(prepared, on_started=None, metadata=None):
@@ -860,6 +656,7 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
             "announced": False,
             "metadata": details,
         }
+
 
     def begin_prepared_stream(self, prepared, *, on_started=None, cancelled=None, metadata=None):
         """Open one queued PCM playback session for this assistant turn."""
@@ -896,6 +693,7 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
             )
             self.playback_thread.start()
             return generation
+
 
     def append_prepared_stream(self, prepared, *, on_started=None, stream_id=None,
                                cancelled=None, metadata=None) -> bool:
@@ -935,6 +733,7 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
         )
         return True
 
+
     def finish_prepared_stream(self, *, stream_id=None) -> bool:
         with self._continuous_condition:
             if stream_id is not None and stream_id != self._continuous_generation:
@@ -942,6 +741,7 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
             self._continuous_closed = True
             self._continuous_condition.notify_all()
             return True
+
 
     def abort_prepared_stream(self, stream_id) -> bool:
         """Retire only the queue's own session, never replacement playback."""
@@ -953,6 +753,7 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
             # A full-prepared/direct replacement can advance playback without
             # adopting the former continuous-session field. Check both owners.
             return self.stop_if_generation(stream_id) is not None
+
 
     def stop_if_generation(self, expected_generation: int) -> int | None:
         """Stop the observed owner, including full-prepared/direct playback.
@@ -981,14 +782,6 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
             )
             return int(interrupted_playback or 0)
 
-    def continuous_stream_outcome(self, stream_id):
-        with self._continuous_condition:
-            for generation, outcome in reversed(self._continuous_results):
-                if generation == stream_id:
-                    return outcome
-        if stream_id is not None and stream_id != self.playback_generation:
-            return "cancelled"
-        return None
 
     def _cancel_continuous_stream(self) -> None:
         with self._continuous_condition:
@@ -997,6 +790,7 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
             self._continuous_generation = None
             self._continuous_sample_rate = None
             self._continuous_condition.notify_all()
+
 
     def _play_continuous_audio(self, sample_rate, generation, cancelled=None):
         recorder = development_flight_recorder()
@@ -1189,11 +983,13 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
                 if naturally_completed:
                     self._notify_playback_finished(generation)
 
+
     def stop(self):
         with self._continuous_dispatch_lock:
             interrupted = super().stop()
             self._cancel_continuous_stream()
             return interrupted
+
 
     def start_prepared_chunk(self, prepared) -> bool:
         """Start an already-synthesized Kokoro chunk in source order."""
@@ -1202,6 +998,7 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
         self.stop_event.clear()
         self.playback_finished.clear()
         return self._start_playback(audio, sample_rate, generation, word_starts)
+
 
     def speak(self, text):
         if not text:
@@ -1224,6 +1021,246 @@ class KokoroTextToSpeech(LocalPlaybackTTS):
             self.playback_finished.set()
             print('[AIFren TTS] audio operation failed.')
             return False
+
+
+
+    def continuous_stream_outcome(self, stream_id):
+        with self._continuous_condition:
+            for generation, outcome in reversed(self._continuous_results):
+                if generation == stream_id:
+                    return outcome
+        if stream_id is not None and stream_id != self.playback_generation:
+            return "cancelled"
+        return None
+
+
+
+class KokoroTextToSpeech(ContinuousPlaybackTTS):
+    """Optional hexgrad Kokoro-82M provider using the shared local player."""
+
+    supports_early_speech = True
+    supports_owned_continuous_stream = True
+
+    @property
+    def synthesis_strategy(self):
+        from aifren.runtime.model_settings import kokoro_early_speech_status
+        return "complete_sentences" if kokoro_early_speech_status()["effective"] else "whole_response"
+
+    def __init__(self, voice=KOKORO_VOICE, speed=KOKORO_SPEED, device=KOKORO_DEVICE):
+        try:
+            import torch
+            from kokoro import KPipeline
+            from kokoro.model import KModel
+            from aifren.tts.kokoro_assets import REPOSITORY_ID, require_local_assets
+        except ImportError as error:
+            raise RuntimeError(
+                "Kokoro is not installed. Create an isolated environment with "
+                "requirements-kokoro.txt before selecting it."
+            ) from error
+
+        self._torch = torch
+        self._KPipeline = KPipeline
+        self._repo_id = REPOSITORY_ID
+        self.voice = str(voice).strip()
+        self.speed = float(speed)
+        if not self.voice or self.speed <= 0:
+            raise ValueError("Kokoro voice must be non-empty and speed must be positive.")
+        from aifren.tts.device_planning import plan_kokoro_device
+        device_plan = plan_kokoro_device(device, torch_module=torch)
+        self.device = device_plan.device
+        self.device_selection_reason = device_plan.reason
+        development_flight_recorder().mark(
+            "kokoro_device_selected", device=self.device,
+            reason=self.device_selection_reason,
+            gpu_total_bytes=device_plan.gpu_total_bytes,
+            managed_model_bytes=device_plan.managed_model_bytes,
+            device_required_bytes=device_plan.required_total_bytes,
+        )
+        print("Loading Kokoro TTS...")
+        config_path, model_path, self.voice_path = require_local_assets(KOKORO_MODEL_DIR, self.voice)
+        model = KModel(repo_id=REPOSITORY_ID, config=str(config_path), model=str(model_path))
+        model = model.to(self.device).eval()
+        self.pipeline = KPipeline(
+            lang_code=self.voice[:1], repo_id=REPOSITORY_ID, model=model, device=self.device
+        )
+        self._initialize_playback_state()
+        self._initialize_continuous_state()
+        print("Kokoro TTS loaded.")
+
+    def fallback_to_cpu_after_resource_failure(self) -> bool:
+        """Move the loaded model to CPU after repeated CUDA resource pressure."""
+        with self._kokoro_synthesis_lock:
+            if str(self.device).casefold() == "cpu":
+                return False
+            pipeline = getattr(self, "pipeline", None)
+            model = getattr(pipeline, "model", None)
+            if model is None:
+                return False
+            started_at = time.monotonic()
+            model = model.to("cpu").eval()
+            self.pipeline = self._KPipeline(
+                lang_code=self.voice[:1], repo_id=self._repo_id,
+                model=model, device="cpu",
+            )
+            self.device = "cpu"
+            self.device_selection_reason = "runtime_resource_failure_cpu_sticky"
+            try:
+                self._torch.cuda.empty_cache()
+            except Exception:
+                pass
+            development_flight_recorder().mark(
+                "kokoro_runtime_device_fallback", device="cpu",
+                reason=self.device_selection_reason,
+                duration_ms=(time.monotonic() - started_at) * 1000.0,
+            )
+            return True
+
+
+    def _generate_audio(self, text, generation=None, *, cancelled=None):
+        # Cancellation can retire a turn while a CUDA kernel is still winding
+        # down. Serialize at the provider boundary so the replacement turn can
+        # never start a second Kokoro inference concurrently.
+        resource_wait_started = time.monotonic()
+        recorder = development_flight_recorder()
+        while not self._kokoro_synthesis_lock.acquire(timeout=0.05):
+            if cancelled is not None and cancelled.is_set():
+                recorder.mark(
+                    "kokoro_synthesis_resource_wait", playback_id=int(generation or 0),
+                    duration_ms=(time.monotonic() - resource_wait_started) * 1000.0,
+                    cancelled=True, characters=len(str(text or "")),
+                )
+                return None
+        try:
+            retired = cancelled is not None and cancelled.is_set()
+            recorder.mark(
+                "kokoro_synthesis_resource_wait", playback_id=int(generation or 0),
+                duration_ms=(time.monotonic() - resource_wait_started) * 1000.0,
+                cancelled=retired, characters=len(str(text or "")),
+            )
+            if retired:
+                return None
+            return self._generate_audio_serial(text, generation, cancelled=cancelled)
+        finally:
+            self._kokoro_synthesis_lock.release()
+
+    def _generate_audio_serial(self, text, generation=None, *, cancelled=None):
+        synthesis_started_at = time.monotonic()
+        recorder = development_flight_recorder()
+        recorder.mark(
+            "kokoro_synthesis_start", playback_id=int(generation or 0), characters=len(str(text or "")),
+            words=len(re.findall(r"\S+", str(text or ""))), device=self.device, active_jobs=1,
+        )
+        chunks = []
+        word_starts = []
+        offset_seconds = 0.0
+        def retired():
+            return ((cancelled is not None and cancelled.is_set()) or
+                    (generation is not None and (self.stop_event.is_set() or
+                     not self._is_current_playback_generation(generation))))
+
+        def discard():
+            if generation is not None:
+                self._retire_synthesis(generation)
+            recorder.mark("tts_stale_result_discarded", playback_id=int(generation or 0))
+            recorder.mark("kokoro_synthesis_end", playback_id=int(generation or 0),
+                          duration_ms=(time.monotonic()-synthesis_started_at)*1000,
+                          cancelled=True, audio_samples=0, active_jobs=0)
+
+        units = (text,)
+        if cancelled is not None:
+            # Already projected/validated speech only. Reuse the existing
+            # sentence/clause policy, with substantial units (not word-sized
+            # playback chunks). Concatenate PCM before normal dispatch so no
+            # new queue starvation gaps, playback IDs or subtitle clocks arise.
+            from aifren.tts.chunker import SpeechChunker
+            chunker = SpeechChunker(minimum=80, preferred_maximum=220,
+                                    hard_maximum=260, preserve_whitespace=True)
+            units = chunker.feed(text) + chunker.finish()
+        for index, unit in enumerate(units):
+            if retired():
+                discard()
+                return None
+            unit_start = time.monotonic()
+            unit_samples = 0
+            recorder.mark("kokoro_synthesis_unit_start", chunk_index=index,
+                          characters=len(unit), words=len(re.findall(r"\S+", unit)))
+            for result in self.pipeline(unit, voice=str(self.voice_path), speed=self.speed):
+                # An in-flight native call is irreducible here. Never request
+                # its next yield/unit after cancellation, even in prepare mode.
+                if retired():
+                    discard()
+                    return None
+                audio = result.audio
+                if hasattr(audio, "detach"):
+                    audio = audio.detach().cpu().numpy()
+                chunk = np.asarray(audio, dtype=np.float32).reshape(-1)
+                chunks.append(chunk)
+                unit_samples += len(chunk)
+                word_starts.extend(self._result_word_starts(getattr(result, "tokens", None), offset_seconds))
+                offset_seconds += len(chunk) / 24000.0
+            recorder.mark("kokoro_synthesis_unit_end", chunk_index=index,
+                          duration_ms=(time.monotonic()-unit_start)*1000,
+                          audio_samples=unit_samples, sample_rate=24000)
+        if retired():
+            discard()
+            return None
+        if not chunks:
+            raise ValueError("Kokoro produced no audio.")
+        expected_words = re.findall(r"\S+", text or "")
+        # Kokoro tokenization can expand or normalize text. Only expose
+        # alignment when it still maps one-to-one to the exact spoken words;
+        # otherwise callers retain their deterministic fallback schedule.
+        if len(word_starts) != len(expected_words):
+            word_starts = []
+        print(
+            "[AIFren Timing] Kokoro synthesis/audio ready "
+            f"t={time.monotonic() - synthesis_started_at:.3f}s; "
+            f"aligned_words={len(word_starts)}/{len(expected_words)}"
+        )
+        recorder.mark(
+            "kokoro_synthesis_end", playback_id=int(generation or 0),
+            duration_ms=(time.monotonic() - synthesis_started_at) * 1000.0,
+            audio_samples=sum(len(chunk) for chunk in chunks), sample_rate=24000, active_jobs=0,
+        )
+        return np.concatenate(chunks).reshape(-1, 1), 24000, word_starts
+
+    @staticmethod
+    def _result_word_starts(tokens, offset_seconds):
+        starts = []
+        for token in tokens or ():
+            text = str(getattr(token, "text", "") or "").strip()
+            start = getattr(token, "start_ts", None)
+            if start is None or not text or not any(character.isalnum() for character in text):
+                continue
+            # MToken text is lexical for the English Kokoro pipeline; retain
+            # one timestamp for every whitespace-delimited spoken word.
+            starts.extend(offset_seconds + float(start) for _ in re.findall(r"\S+", text))
+        return starts
+
+    def synthesize(self, text, output_file):
+        if not text:
+            return False
+        audio, sample_rate, _ = self._generate_audio(text)
+        with wave.open(output_file, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
+        return True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class Audio8TextToSpeech(LocalPlaybackTTS):

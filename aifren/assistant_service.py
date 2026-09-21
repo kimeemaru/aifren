@@ -544,12 +544,17 @@ class AssistantService:
     ) -> None:
         """Forward actual local playback start without coupling to a frontend."""
         with self._speech_generation_lock:
+            preview = bool(chunk_metadata and chunk_metadata.get("voice_preview") is True)
+            if preview:
+                owns_preview = getattr(type(self.tts), "owns_voice_preview", None)
+                if not callable(owns_preview) or not owns_preview(self.tts, chunk_metadata.get("preview_job_id")):
+                    return
             stream_speech = self._pending_stream_speech
             if stream_speech is not None and stream_speech.get("speech_generation") == self._speech_generation:
                 self._pending_stream_speech = None
             else:
                 stream_speech = None
-            if chunk_metadata is not None and stream_speech is None:
+            if chunk_metadata is not None and stream_speech is None and not preview:
                 # A late continuous transition cannot fall back to direct
                 # speech and reopen a cancelled subtitle/lip-sync session.
                 return
@@ -573,6 +578,11 @@ class AssistantService:
                 )
             if chunk_metadata is not None:
                 event_data.update(chunk_metadata)
+            if preview:
+                # A voice preview is audio, never another canonical turn or a
+                # new timing sample attached to the previous conversation.
+                self._emit("tts_state", **event_data)
+                return
             callback_at = time.monotonic()
             self._mark_turn_timing("first_chunk_ready" if chunk_metadata is not None else "tts_synthesis_complete", callback_at)
             self._mark_turn_timing("playback_started", callback_at)
@@ -1027,6 +1037,9 @@ class AssistantService:
         self.character_prompt = character_prompt
         self._published_expression = None
         self._published_expression_owner = None
+        bind_voice = getattr(type(self.tts), "bind_character", None)
+        if callable(bind_voice):
+            bind_voice(self.tts, expected)
         # Explicitly supplied attention stores are character/archive-bound and
         # caller-owned. A character switch never carries their producer forward.
         self._transient_impulse_store = None
@@ -3323,6 +3336,7 @@ class AssistantService:
                     return None
                 self._set_pending_stream_speech(text, text, 0, turn_id, speech_generation, committed_stream=True)
                 queue = StreamingSpeechQueue(self.tts, committed_text=text, max_chunks=2,
+                    committed_unit_policy=(self.tts.committed_unit_policy if hasattr(type(self.tts), "committed_unit_policy") else None),
                     owner_current=lambda: speech_generation == self._speech_generation and not cancel_event.is_set(),
                     provider_generation_active=self.provider_request_active,
                     on_chunk_starting=lambda spoken, subtitle, index: self._set_pending_stream_speech(
@@ -3419,6 +3433,9 @@ class AssistantService:
                 return TurnResult(user_message=user_message, error=configuration_error)
 
             if _scene_reaction is None:
+                cancel_voice = getattr(type(self.tts), "cancel_voice_job", None)
+                if callable(cancel_voice):
+                    cancel_voice(self.tts)
                 turn_id, cancel_event, replaced_turn = self._claim_replacement_turn()
             else:
                 turn_id, cancel_event = _scene_reaction.turn_id, _scene_reaction.cancel_event
@@ -5900,11 +5917,33 @@ class AssistantService:
         except Exception as error:
             self._emit("open_thread_contextual_shadow", state="failed", reason=type(error).__name__)
 
+    def stop_voice_preview(self, job) -> None:
+        """A delayed preview control cannot retire a conversational reply."""
+        provider = self.tts
+        stop = getattr(type(provider), "stop_voice_preview", None)
+        if not callable(stop):
+            return
+        playback_id = stop(provider, job)
+        if not playback_id:
+            return
+        with self._speech_generation_lock:
+            if self.tts is not provider:
+                return
+            with self._tts_state_lock:
+                if self._active_tts_playback_id == playback_id:
+                    self._active_tts_playback_id = 0
+                    self._active_stream_playback = None
+            self._emit("tts_state", state="stopped", playback_id=playback_id,
+                       streamed=True, interrupted=True, voice_preview=True)
+
     def stop_speaking(self, *, interrupted: bool = False) -> None:
         """Immediately invalidate local speech; presentation observes only."""
         self._retire_automatic_expression()
         started_at = time.monotonic()
         provider = self.tts
+        cancel_voice = getattr(type(provider), "cancel_voice_job", None)
+        if callable(cancel_voice):
+            cancel_voice(provider)
         conditional_stop = getattr(type(provider), "stop_if_generation", None)
         with self._speech_generation_lock:
             self._speech_generation += 1

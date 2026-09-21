@@ -20,6 +20,10 @@ The normal Unity player has responsive committed speech, selectable Natural /
 Roleplay delivery, opt-in ACT cues and optional CPU expressions. Automatic faces
 are temporary response-owned overlays. Settings use Save/Cancel; they do not edit
 personality or history. See [delivery controls](docs/NATURAL_COMPANION_DESIGN.md).
+Character voice settings support optional CPU reference conditioning with real
+player preparation/preview/switch/restart checks. Kokoro remains the default.
+Body performance and gesture previews use the existing Humanoid presentation owner;
+portable package clearance and native Windows acceptance remain separate gates.
 
 New characters own their continuity directory and database. Settings > Character >
 Manage provides storage status, open folder, reviewed selected-character migration

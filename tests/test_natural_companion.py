@@ -40,8 +40,8 @@ class CompanionPreferenceTests(unittest.TestCase):
             self.assertEqual(before, self.file.read_bytes())
 
 
-class ManagedTemplateAdmissionTests(unittest.TestCase):
-    def test_only_ready_managed_matching_model_admits_reviewed_template_role(self):
+class ManagedTemplateAdmissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_ready_managed_matching_model_admits_reviewed_template_role(self):
         from aifren.backend_host import AIFrenWebSocketHost
         from unittest.mock import Mock
         for ownership, active, expected in (
@@ -55,9 +55,14 @@ class ManagedTemplateAdmissionTests(unittest.TestCase):
                     replace_llm=lambda llm: setattr(host.service, 'llm', llm),
                     report_model_runtime_available=Mock())
                 host._owns_model_operation = lambda operation: True
+                operation = SimpleNamespace(runtime=SimpleNamespace(start=Mock(return_value=dict(
+                    state='ready', ownership=ownership, active_model=active))), runtime_token=None,
+                    settings=dict(local_endpoint='http://127.0.0.1:9/v1',
+                                  local_model='selected.gguf', local_api_key=''))
                 with patch('aifren.llm.llm.create_llm', return_value=adapter), \
                         patch('aifren.llm.local_template.installed_policy_role', return_value='system') as admit:
-                    host._apply_local_result(object(), dict(state='ready', ownership=ownership, active_model=active))
+                    result = await host._probe_local_operation(operation, 'start')
+                    host._apply_local_result(operation, result)
                 self.assertEqual(adapter.application_policy_role, expected)
                 self.assertEqual(admit.call_count, int(expected == 'system'))
 

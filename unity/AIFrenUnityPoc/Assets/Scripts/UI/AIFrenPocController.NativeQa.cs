@@ -154,11 +154,13 @@ namespace AIFren.UnityPoc.UI
                         if (step.action == "wait_synthesis" && (qaTtsState == "starting" || qaTtsState == "synthesizing")) break;
                         if (step.action == "wait_playback" && qaTtsState == "playback_started") break;
                         if (step.action == "character_wait_ready" && QaCharacterReady(step.value)) break;
+                        if (step.action == "voice_wait" && !characterVoiceBusy && characterVoiceRequest == null) break;
                         yield return null;
                     }
                     if ((step.action == "submit" && (qaTerminal == terminalBefore || !QaTurnPresentationFinished())) ||
                         (step.action == "wait_synthesis" && qaTtsState != "starting" && qaTtsState != "synthesizing") ||
                         (step.action == "wait_playback" && qaTtsState != "playback_started") ||
+                        (step.action == "voice_wait" && (characterVoiceBusy || characterVoiceRequest != null)) ||
                         (step.action == "character_wait_ready" && !QaCharacterReady(step.value)))
                     { qaTimeouts++; QaMark("step_timeout"); }
                     yield return new WaitForEndOfFrame();
@@ -405,6 +407,39 @@ namespace AIFren.UnityPoc.UI
                     else if (step.value == "cancel") CancelAvatarCuesDraft();
                     else if (step.value == "preview") PreviewAvatarSmile();
                     else if (step.value == "reset") ResetAvatarExpression();
+                    else throw new InvalidOperationException();
+                    break;
+                case "character_voice":
+                    if (step.value.StartsWith("reference=", StringComparison.Ordinal)) voiceReferenceInput.text = step.value.Substring(10);
+                    else if (step.value.StartsWith("transcript=", StringComparison.Ordinal)) voiceTranscriptInput.text = step.value.Substring(11);
+                    else if (step.value == "engine") voiceEngineButton.onClick.Invoke();
+                    else if (step.value == "language") voiceLanguageButton.onClick.Invoke();
+                    else if (step.value == "reference") voiceReferenceInput.text = step.name;
+                    else if (step.value == "transcript") voiceTranscriptInput.text = step.name;
+                    else if (step.value == "prepare") voicePrepareButton.onClick.Invoke();
+                    else if (step.value == "preview") voicePreviewButton.onClick.Invoke();
+                    else if (step.value == "save") voiceSaveButton.onClick.Invoke();
+                    else if (step.value == "stop" || step.value == "cancel")
+                        voiceSaveButton.transform.parent.GetComponentsInChildren<Button>(true).Single(button =>
+                            button.name == (step.value == "stop" ? "Stop Character Voice" : "Cancel Character Voice")).onClick.Invoke();
+                    else if (step.value == "get") SendCharacterVoice(step.value);
+                    else throw new InvalidOperationException();
+                    break;
+                case "voice_wait": break;
+                case "voice_assert":
+                    string[] voiceExpected = step.value.Split('=');
+                    string voiceActual = voiceExpected[0] == "saved" ? savedCharacterVoice?.engine :
+                        voiceExpected[0] == "draft" ? draftVoiceEngine :
+                        voiceExpected[0] == "state" ? savedCharacterVoice?.state : null;
+                    if (voiceExpected.Length != 2 || voiceActual != voiceExpected[1]) throw new InvalidOperationException();
+                    break;
+                case "performance":
+                    if (step.value == "on") subtlePerformanceToggle.isOn = true;
+                    else if (step.value == "off") subtlePerformanceToggle.isOn = false;
+                    else if (step.value == "save") settingsTabContent["Appearance"].GetComponentsInChildren<Button>()
+                        .Single(button => button.name == "Save Performance").onClick.Invoke();
+                    else if (step.value == "stop") avatarAnimation?.RetireResponseMotion();
+                    else if (System.Enum.TryParse<AvatarGestureIntent>(step.value, out var previewIntent)) PreviewPerformanceGesture(previewIntent);
                     else throw new InvalidOperationException();
                     break;
                 case "companion_preferences":

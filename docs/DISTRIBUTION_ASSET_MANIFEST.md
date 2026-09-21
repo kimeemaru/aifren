@@ -52,3 +52,9 @@ converted graph, tokenizer cache or generated voice data is included. Preserve
 model/card and runtime dependency notices for any later distribution. Existing
 public binary resources are unchanged in this catch-up; no new avatar, motion pack,
 font, background or recording is admitted.
+
+Reference-conditioned speech is a separate optional runtime. The adapter pins
+reviewed GPT-SoVITS source and verifies registered source/model digests. Source
+licensing alone does not clear models or transitive runtime binaries. Private
+reference recordings, transcripts, conditioning caches and generated cloned audio
+are never source or distribution inputs. See [character voices](CHARACTER_VOICE.md).

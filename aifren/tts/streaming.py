@@ -50,10 +50,15 @@ class CommittedSpeechUnitPolicy:
     minimum: int = 48
     preferred_maximum: int = 96
     hard_maximum: int = 120
+    opening_minimum: int = 48
+    opening_preferred: int = 120
+    opening_maximum: int = 160
 
     def __post_init__(self) -> None:
         if not 1 <= self.minimum <= self.preferred_maximum <= self.hard_maximum:
             raise ValueError("invalid committed TTS work bounds")
+        if not 1 <= self.opening_minimum <= self.opening_preferred <= self.opening_maximum:
+            raise ValueError("invalid opening TTS work bounds")
 
 
 class TtsSynthesisResourceManager:
@@ -344,8 +349,9 @@ class StreamingSpeechQueue:
         from aifren.tts.chunker import SpeechChunker
         if not text.strip():
             return ()
-        opening = SpeechChunker(minimum=48, preferred_maximum=120,
-                                hard_maximum=160, preserve_whitespace=True)
+        policy = policy or CommittedSpeechUnitPolicy()
+        opening = SpeechChunker(minimum=policy.opening_minimum, preferred_maximum=policy.opening_preferred,
+                                hard_maximum=policy.opening_maximum, preserve_whitespace=True)
         first_units = (opening.feed(text) + opening.finish())[:2]
         # The opening must cover preparation of its successor. Jumping
         # directly from one short sentence to a much larger unit caused a

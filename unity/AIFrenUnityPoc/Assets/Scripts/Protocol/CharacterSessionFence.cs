@@ -72,13 +72,14 @@ namespace AIFren.UnityPoc.Protocol
             {
                 case "submit_text": case "continuity_control": case "memory_view_query":
                 case "memory_view_detail": case "memory_view_mutate":
-                case "ptt_press": case "ptt_release": case "stop_tts": return true;
+                case "ptt_press": case "ptt_release": case "stop_tts": case "character_voice": return true;
                 default: return false;
             }
         }
 
         private static bool IsScopedMessage(ServerMessage message)
         {
+            if (message.type == "character_voice") return true;
             if (message.type == "command_error")
             {
                 string code = message.error?.code ?? "";

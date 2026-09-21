@@ -1,5 +1,3 @@
-#define DEVELOPMENT_BUILD // Private release builds intentionally retain hidden avatar QA.
-
 using System;
 using System.Collections;
 using System.Reflection;
@@ -13,7 +11,10 @@ namespace AIFren.UnityPoc.Avatar
     /// Small presentation-only layer over standard VRM 1.0 expressions.
     /// It never changes avatar framing, persistence, or the source VRM asset.
     /// </summary>
-    [DefaultExecutionOrder(12010)]
+    // AvatarLoader restores the relaxed ControlRig pose at the default order.
+    // Apply body offsets before UniVRM's LateUpdate (11000) copies that rig to
+    // rendered bones. Writing afterwards is erased by the next idle restoration.
+    [DefaultExecutionOrder(10900)]
     public sealed class AvatarAnimationController : MonoBehaviour
     {
         // The project intentionally has no assembly-definition dependency on
@@ -31,6 +32,10 @@ namespace AIFren.UnityPoc.Avatar
         private object happyKey;
         private object surprisedKey;
         private Transform head;
+        private Transform chest;
+        private Quaternion chestBaseRotation;
+        private float performanceIntensity;
+        private bool attentivePresentation;
         private Transform leftShoulder;
         private Transform rightShoulder;
         private Transform leftUpperArm;
@@ -89,6 +94,8 @@ namespace AIFren.UnityPoc.Avatar
             if (humanoidAnimator != null && humanoidAnimator.avatar != null && humanoidAnimator.avatar.isHuman)
             {
                 head = humanoidAnimator.GetBoneTransform(HumanBodyBones.Head);
+                chest = humanoidAnimator.GetBoneTransform(HumanBodyBones.UpperChest) ?? humanoidAnimator.GetBoneTransform(HumanBodyBones.Chest);
+                if (chest != null) chestBaseRotation = chest.localRotation;
                 if (head != null) headBaseRotation = head.localRotation;
                 leftShoulder = humanoidAnimator.GetBoneTransform(HumanBodyBones.LeftShoulder);
                 rightShoulder = humanoidAnimator.GetBoneTransform(HumanBodyBones.RightShoulder);
@@ -120,6 +127,8 @@ namespace AIFren.UnityPoc.Avatar
 
         public void ClearAvatar()
         {
+            if (chest != null) chest.localRotation = chestBaseRotation;
+            chest = null;
             StopSpeech();
             vrmaGesturePlayer?.ClearAvatar();
             StopAuthoredGesture();
@@ -297,19 +306,8 @@ namespace AIFren.UnityPoc.Avatar
                 Debug.Log("[AvatarGesture] started native VRMA " + intent + ".");
                 return true;
             }
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-            if (intent == AvatarGestureIntent.Wave)
-            {
-                Debug.LogWarning("[AvatarGesture] no QA VRMA is ready; Wave was not played.");
-                return false;
-            }
-#endif
-            if (intent == AvatarGestureIntent.Wave && TryStartAuthoredWave())
-            {
-                StartGesture(intent, now, GetAuthoredWaveClip().length);
-                Debug.Log("[AvatarGesture] started authored " + intent + ".");
-                return true;
-            }
+            // If no reviewed VRMA is ready, use the existing Humanoid
+            // procedural gesture. Do not revive the legacy FBX trial path.
             if (!CanPlay(intent))
             {
                 Debug.LogWarning("[AvatarGesture] cannot start " + intent + "; required Humanoid bones are unavailable.");
@@ -377,9 +375,22 @@ namespace AIFren.UnityPoc.Avatar
             // or replace UniVRM's optional look-at setup.
             float yaw = Mathf.Sin(time * .37f) * .7f;
             float pitch = Mathf.Sin(time * .23f + .8f) * .35f;
+            if (chest != null && performanceIntensity > 0f)
+                chest.localRotation = chestBaseRotation * Quaternion.Euler(
+                    Mathf.Sin(time * 1.1f) * .35f * performanceIntensity, 0f, 0f);
+            if (attentivePresentation && !sleepingPresentation)
+                pitch -= .8f * performanceIntensity;
             if (head != null) head.localRotation = headBaseRotation * Quaternion.Euler(pitch, yaw, 0f);
             ApplyGesture(time, pitch, yaw);
         }
+
+        public void SetSubtlePerformance(bool enabled, float intensity)
+        {
+            performanceIntensity = enabled && !float.IsNaN(intensity) ? Mathf.Clamp01(intensity) : 0f;
+            if (performanceIntensity == 0f && chest != null) chest.localRotation = chestBaseRotation;
+        }
+
+        public void SetAttentivePresentation(bool attentive) => attentivePresentation = attentive;
 
         private void ApplyGesture(float now, float idlePitch, float idleYaw)
         {
@@ -413,8 +424,11 @@ namespace AIFren.UnityPoc.Avatar
                 Quaternion upperArmBase = useRightArm ? rightUpperArmBaseRotation : leftUpperArmBaseRotation;
                 Quaternion lowerArmBase = useRightArm ? rightLowerArmBaseRotation : leftLowerArmBaseRotation;
                 float side = useRightArm ? 1f : -1f;
-                if (upperArm != null) upperArm.localRotation = upperArmBase * Quaternion.Euler(-42f * pulse, 8f * pulse, -38f * side * pulse);
-                if (lowerArm != null) lowerArm.localRotation = lowerArmBase * Quaternion.Euler(-18f * pulse, 0f, Mathf.Sin(progress * Mathf.PI * 5f) * 34f * side * pulse);
+                // Lift out of the relaxed arms-down pose, then bend the elbow
+                // upward. Mirrored signs keep the fallback beside the body
+                // instead of sweeping the hand across the torso.
+                if (upperArm != null) upperArm.localRotation = upperArmBase * Quaternion.Euler(-10f * pulse, 8f * pulse, 55f * side * pulse);
+                if (lowerArm != null) lowerArm.localRotation = lowerArmBase * Quaternion.Euler(-10f * pulse, 0f, (70f + Mathf.Sin(progress * Mathf.PI * 5f) * 16f) * side * pulse);
             }
             else if (activeGesture == AvatarGestureIntent.Shrug)
             {
@@ -475,7 +489,7 @@ namespace AIFren.UnityPoc.Avatar
             {
                 case AvatarGestureIntent.Nod: return .72f;
                 case AvatarGestureIntent.HeadShake: return .82f;
-                case AvatarGestureIntent.Wave: return 1.0f;
+                case AvatarGestureIntent.Wave: return 1.6f;
                 case AvatarGestureIntent.Shrug: return .74f;
                 case AvatarGestureIntent.HeadTilt: return .76f;
                 case AvatarGestureIntent.Thinking: return 1.05f;

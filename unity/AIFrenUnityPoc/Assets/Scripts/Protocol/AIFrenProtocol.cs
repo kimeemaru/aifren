@@ -52,6 +52,12 @@ namespace AIFren.UnityPoc.Protocol
         public string category;
         public int importance;
         public int unity_pid;
+        public string voice_engine;
+        public string voice_language;
+        public string voice_transcript;
+        public string voice_reference;
+        public string voice_revision;
+        public string voice_operation_id;
     }
 
     [Serializable]
@@ -375,6 +381,23 @@ namespace AIFren.UnityPoc.Protocol
         public bool early_speech_configured;
         public bool early_speech_overridden;
         public bool early_speech_supported;
+        public CharacterVoiceSnapshot character_voice;
+    }
+
+    [Serializable]
+    public sealed class CharacterVoiceSnapshot
+    {
+        public int version;
+        public string engine;
+        public string language;
+        public string transcript;
+        public string revision;
+        public string reference_name;
+        public string state;
+        public string message;
+        public bool installed;
+        public string active_engine;
+        public long job_id;
     }
 
     [Serializable]
@@ -473,6 +496,7 @@ namespace AIFren.UnityPoc.Protocol
         public float peak_unity_rss_mb;
         public float peak_llama_rss_mb;
         public bool streamed;
+        public bool voice_preview;
         public bool committed_stream;
         public string complete_text;
         public string chunk_text;

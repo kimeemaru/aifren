@@ -143,7 +143,8 @@ class CharacterRegistry:
                      conversation=canonical / "conversation.json", memory=canonical / "memories.json",
                      summary=canonical / "conversation_summary.json", memory_v2=database,
                      attention=directory / "transient_impulses.sqlite3", presentation=directory / "presentation.json",
-                     cache=directory / "derived", directory=directory)
+                     cache=directory / "derived", voice_profile=directory / "voice_profile.json",
+                     voice_assets=directory / "voice", directory=directory)
         for value in paths.values():
             if value.is_symlink() or value.resolve() != value:
                 raise CharacterStorageError("A character-owned path escapes its directory")

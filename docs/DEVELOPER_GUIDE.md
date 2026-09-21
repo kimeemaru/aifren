@@ -115,12 +115,18 @@ first import after package shaders are available, then fails visibly if the bund
 avatar still cannot load; a successful empty-avatar build is not sufficient.
 
 ```bash
+UNITY_EDITOR="$UNITY_EDITOR" scripts/build_aifren_linux.sh --preflight
 "$UNITY_EDITOR" -batchmode -projectPath "$PWD/unity/AIFrenUnityPoc"   -runTests -testPlatform EditMode -testResults "$PWD/native-tests.xml"   -logFile "$PWD/native-tests.log"
 UNITY_EDITOR="$UNITY_EDITOR" scripts/build_aifren_linux.sh --development
 ```
 
 Set `UNITY_EDITOR` to your installed executable. Do not add `-quit` to the test
 command; require completed XML. Keep results/builds outside version control.
+Run the preflight early in a native work session: it executes the actual project's
+asset checks and requires a fresh completion marker, without replacing the player.
+An Editor version string or standalone C# compilation is not this execution gate.
+If licensing fails, restore sign-in/entitlement through the normal Unity controls;
+do not change HOME/XDG or carry offline application-test namespaces into the Editor.
 Finite native fixtures establish `PresentationPreferences` isolation before first
 access/Awake/Start. Never borrow normal keys and restore a snapshot at exit, clear
 normal preferences or overwrite concurrent user edits. Engine/window state must
