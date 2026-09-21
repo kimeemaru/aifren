@@ -69,14 +69,16 @@ jobs:
           root = pathlib.Path(sys.argv[1]); source = pathlib.Path(sys.argv[2])
           os.environ['AIFREN_DATA_ROOT'] = str(root/'synthetic-data')
           os.environ['AIFREN_RESOURCE_ROOT'] = str(root/'runtime/app')
+          # Match backend_command: prepare before Kokoro imports Misaki and
+          # captures the data path, not after those modules are cached.
+          from scripts.launch_friend import prepare_packaged_phonemizer
+          prepare_packaged_phonemizer()
           for name in ('numpy','hnswlib','torch','llama_cpp','kokoro','faster_whisper','onnxruntime','sounddevice','pynput','aifren.assistant_service'):
               module = importlib.import_module(name)
               assert pathlib.Path(module.__file__).is_relative_to(root), name
               print('Bundled import passed:', name)
           # Exercise the actual bundled native phonemizer, not merely Kokoro's
           # Python import. No voice/model download, recording or device input.
-          from scripts.launch_friend import prepare_packaged_phonemizer
-          prepare_packaged_phonemizer()
           import misaki.espeak
           from phonemizer.backend import EspeakBackend
           phonemes = EspeakBackend('en-us', preserve_punctuation=True).phonemize(['Amber is a color.'], strip=True)

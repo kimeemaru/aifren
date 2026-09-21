@@ -32,6 +32,25 @@ OWNERSHIP_DESCRIPTOR = "backend-owner.json"
 _phonemizer_data = None
 
 
+def _native_phoneme_path(path):
+    """The pinned Windows eSpeak uses narrow stat/fopen, not UTF-8 paths."""
+    value = str(path)
+    if sys.platform == "win32" and not value.isascii():
+        import ctypes
+        get_short = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+        get_short.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        get_short.restype = ctypes.c_uint32
+        size = get_short(value, None, 0)
+        buffer = ctypes.create_unicode_buffer(size) if size else None
+        written = get_short(value, buffer, size) if buffer is not None else 0
+        if not written or written >= size or not buffer.value.isascii():
+            raise RuntimeError("The phonemizer needs an ASCII-compatible system temporary path; a short path is unavailable.")
+        value = buffer.value
+    if len(os.fsencode(value)) > 128:
+        raise RuntimeError("The system temporary directory exceeds the phonemizer's native path limit.")
+    return value
+
+
 def prepare_packaged_phonemizer():
     """Keep eSpeak 1.52's small native path buffer independent of install depth.
 
@@ -53,7 +72,11 @@ def prepare_packaged_phonemizer():
             raise RuntimeError("Packaged phonemizer resources cannot follow links.")
     # Leave space for the native buffer's resource suffixes, measured in UTF-8
     # bytes, not Python characters. The pinned library has a 160-byte buffer.
-    if len(os.fsencode(source)) <= 128:
+    # Windows's pinned native library also treats UTF-8 as an ANSI filename.
+    # A shallow Unicode installation therefore needs the same bounded alias.
+    if len(os.fsencode(source)) <= 128 and (
+        sys.platform != "win32" or str(source).isascii()
+    ):
         return None
     files = []
     size = 0
@@ -71,16 +94,15 @@ def prepare_packaged_phonemizer():
     temporary = tempfile.TemporaryDirectory(prefix="aifren-phonemes-")
     destination = Path(temporary.name) / "espeak-ng-data"
     try:
-        if len(os.fsencode(destination)) > 128:
-            raise RuntimeError("The system temporary directory exceeds the phonemizer's native path limit.")
         destination.mkdir()
+        native_path = _native_phoneme_path(destination)
         for path in files:
             target = destination / path.relative_to(source)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, target)
         # Misaki obtains this resource path before constructing its eSpeak
         # wrapper. Do not change the library, inference or installed module.
-        espeakng_loader.get_data_path = lambda: str(destination)
+        espeakng_loader.get_data_path = lambda: native_path
         _phonemizer_data = temporary
         atexit.register(temporary.cleanup)
         return temporary

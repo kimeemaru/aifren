@@ -196,6 +196,26 @@ class WindowsPackagingTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "cannot follow links"):
                     LAUNCHER.prepare_packaged_phonemizer()
 
+    def test_shallow_windows_unicode_phonemes_use_existing_bounded_copy(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "Bundle Ω"
+            data = root / "runtime/python/espeak-ng-data"
+            data.mkdir(parents=True)
+            (data / "phontab").write_bytes(b"synthetic phonemes")
+            self.assertLess(len(str(data).encode()), 128)
+            loader = SimpleNamespace(get_data_path=lambda: str(data))
+            with mock.patch.dict(sys.modules, espeakng_loader=loader), \
+                    mock.patch.object(LAUNCHER, "APPLICATION_ROOT", root / "runtime/app"), \
+                    mock.patch.object(LAUNCHER, "_phonemizer_data", None), \
+                    mock.patch.object(sys, "platform", "win32"):
+                temporary = LAUNCHER.prepare_packaged_phonemizer()
+                try:
+                    self.assertIsNotNone(temporary)
+                    self.assertTrue(loader.get_data_path().isascii())
+                    self.assertEqual(b"synthetic phonemes", (Path(loader.get_data_path()) / "phontab").read_bytes())
+                finally:
+                    temporary.cleanup()
+
     def test_existing_windows_developer_powershell_test_path_remains_available(self) -> None:
         ensure = ROOT / "scripts" / "ensure_aifren_backend.ps1"
         stop = ROOT / "scripts" / "stop_aifren_backend.ps1"
