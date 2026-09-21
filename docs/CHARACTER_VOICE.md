@@ -1,9 +1,9 @@
 # Character voices
 
-Implementation status: the backend has been exercised with real local speech.
-The new client controls still require a matching Unity build and native validation;
-the validation host lacked a valid Editor entitlement. Do not treat this branch as
-a completed portable player or a voice-similarity guarantee.
+The normal Linux Development player includes these controls. Native tests and
+synthetic player checks cover preparation, real preview/reply synthesis, Save /
+Cancel, character switching and restart. This does not certify portable packages
+or voice similarity; CPU cloning remains slower than the default Kokoro path.
 
 Kokoro remains the default responsive speech engine. The character voice controls
 in **Settings → Audio → Character voice** also support an explicitly installed,
@@ -74,3 +74,18 @@ Clone similarity, prosody and latency depend on the recording and hardware. A
 successful PCM callback is not an acoustic quality assessment. Private reference
 audio, transcripts, conditioning and generated speech are excluded from source,
 public test fixtures, diagnostics, demonstrations and distribution packages.
+
+## Body performance
+
+**Settings → Appearance → Body performance** offers optional subtle breathing /
+attention, intensity, Save / Cancel and Nod, Head shake, Greeting wave and Thinking
+previews. Successful previews close Settings to reveal the existing avatar while
+retaining drafts and framing. Reopen Settings to continue editing. Gestures return
+to idle; capability restrictions, cancellation and character ownership still apply.
+Wave has a procedural Humanoid fallback when no reviewed VRMA is available.
+
+Procedural body offsets run after the relaxed-pose owner and before UniVRM copies
+the control rig to the rendered skeleton. Changing only control-bone transforms
+after that copy does not prove visible animation. Facial ownership, blink, gaze
+and lip-sync remain separate. Automatic expressions are temporary proposals, not
+guarantees of appropriate acting.

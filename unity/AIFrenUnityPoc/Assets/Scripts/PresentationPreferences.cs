@@ -16,6 +16,9 @@ namespace AIFren.UnityPoc
         private static readonly Dictionary<string, object> isolated = qaIsolation
             ? new Dictionary<string, object>() : package?.Values;
         public static bool IsIsolated => qaIsolation;
+        // An explicit portable preference file also owns the client's imported
+        // resources. It must not reopen the host's normal managed asset library.
+        internal static string ManagedDataRoot => package?.DataDirectory;
 
         // A finite file plan is the only automation entry. Decide before any
         // preference read; validation failures remain isolated and fail closed.
@@ -86,6 +89,7 @@ namespace AIFren.UnityPoc
             [Serializable] private sealed class Document { public int version = 1; public Entry[] entries; }
             public readonly Dictionary<string, object> Values = new Dictionary<string, object>();
             private readonly string path;
+            public string DataDirectory => Path.GetDirectoryName(path);
             private const int MaximumBytes = 1024 * 1024;
 
             public PreferenceFile(string filename)

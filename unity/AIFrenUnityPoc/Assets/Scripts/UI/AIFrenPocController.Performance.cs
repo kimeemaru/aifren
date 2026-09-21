@@ -54,7 +54,7 @@ namespace AIFren.UnityPoc.UI
             Button stop = CreateButton(parent, "Stop gesture", Panel); stop.name = "Stop Performance";
             PlaceTop(stop.GetComponent<RectTransform>(), y, 38f); y -= 46f;
             stop.onClick.AddListener(() => avatarAnimation?.RetireResponseMotion());
-            performanceHint = CompanionPreferenceHint(parent, "Previews change only presentation. Capabilities still apply. Blink, gaze, speech and facial choices remain independent.", ref y, 72f);
+            performanceHint = CompanionPreferenceHint(parent, "A preview closes Settings so you can see the gesture. Reopen Settings to continue; your drafts stay here. Capabilities still apply.", ref y, 72f);
             PreviewSubtlePerformance();
         }
 
@@ -68,6 +68,14 @@ namespace AIFren.UnityPoc.UI
             bool played = resolver != null && resolver.TryGesture(intent);
             if (performanceHint != null) performanceHint.text = played ? "Previewing " + intent + ". Returns to idle automatically." :
                 "This gesture is unavailable, still playing, or limited by the current capability state.";
+            if (played)
+            {
+                // Reveal the existing avatar without cancelling unrelated drafts,
+                // moving its framing, or scheduling a stale panel reopen.
+                settingsPanel?.SetActive(false);
+                modalScrim?.SetActive(false);
+                RefreshSceneDrawerAvailability();
+            }
         }
     }
 }

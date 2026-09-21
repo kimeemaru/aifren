@@ -11,7 +11,10 @@ namespace AIFren.UnityPoc.Avatar
     /// Small presentation-only layer over standard VRM 1.0 expressions.
     /// It never changes avatar framing, persistence, or the source VRM asset.
     /// </summary>
-    [DefaultExecutionOrder(12010)]
+    // AvatarLoader restores the relaxed ControlRig pose at the default order.
+    // Apply body offsets before UniVRM's LateUpdate (11000) copies that rig to
+    // rendered bones. Writing afterwards is erased by the next idle restoration.
+    [DefaultExecutionOrder(10900)]
     public sealed class AvatarAnimationController : MonoBehaviour
     {
         // The project intentionally has no assembly-definition dependency on
@@ -421,8 +424,11 @@ namespace AIFren.UnityPoc.Avatar
                 Quaternion upperArmBase = useRightArm ? rightUpperArmBaseRotation : leftUpperArmBaseRotation;
                 Quaternion lowerArmBase = useRightArm ? rightLowerArmBaseRotation : leftLowerArmBaseRotation;
                 float side = useRightArm ? 1f : -1f;
-                if (upperArm != null) upperArm.localRotation = upperArmBase * Quaternion.Euler(-42f * pulse, 8f * pulse, -38f * side * pulse);
-                if (lowerArm != null) lowerArm.localRotation = lowerArmBase * Quaternion.Euler(-18f * pulse, 0f, Mathf.Sin(progress * Mathf.PI * 5f) * 34f * side * pulse);
+                // Lift out of the relaxed arms-down pose, then bend the elbow
+                // upward. Mirrored signs keep the fallback beside the body
+                // instead of sweeping the hand across the torso.
+                if (upperArm != null) upperArm.localRotation = upperArmBase * Quaternion.Euler(-10f * pulse, 8f * pulse, 55f * side * pulse);
+                if (lowerArm != null) lowerArm.localRotation = lowerArmBase * Quaternion.Euler(-10f * pulse, 0f, (70f + Mathf.Sin(progress * Mathf.PI * 5f) * 16f) * side * pulse);
             }
             else if (activeGesture == AvatarGestureIntent.Shrug)
             {
@@ -483,7 +489,7 @@ namespace AIFren.UnityPoc.Avatar
             {
                 case AvatarGestureIntent.Nod: return .72f;
                 case AvatarGestureIntent.HeadShake: return .82f;
-                case AvatarGestureIntent.Wave: return 1.0f;
+                case AvatarGestureIntent.Wave: return 1.6f;
                 case AvatarGestureIntent.Shrug: return .74f;
                 case AvatarGestureIntent.HeadTilt: return .76f;
                 case AvatarGestureIntent.Thinking: return 1.05f;

@@ -12,6 +12,14 @@ namespace AIFren.UnityPoc.Tests.EditMode
     public sealed class CharacterVoiceAndPerformanceTests
     {
         [Test]
+        public void ProceduralBodyRunsAfterIdleAndBeforeVrmCopiesTheControlRig()
+        {
+            int Order(Type type) => type.GetCustomAttribute<DefaultExecutionOrder>()?.order ?? 0;
+            Assert.That(Order(typeof(AvatarAnimationController)), Is.GreaterThan(Order(typeof(AvatarLoader))));
+            Assert.That(Order(typeof(AvatarAnimationController)), Is.LessThan(Order(typeof(UniVRM10.Vrm10Instance))));
+        }
+
+        [Test]
         public void VoiceCommandRequiresCapturedCharacterSession()
         {
             Assert.That(CharacterSessionFence.IsScopedCommand("character_voice"), Is.True);
@@ -91,10 +99,12 @@ namespace AIFren.UnityPoc.Tests.EditMode
             try
             {
                 var store = new PresentationPreferences.PreferenceFile(Path.Combine(root, "prefs.json"));
+                Assert.That(store.DataDirectory, Is.EqualTo(root));
                 store.Values["style"] = "natural"; store.Values["volume"] = .5f; store.Values["enabled"] = 1;
                 store.Save();
                 Directory.Move(root, moved);
                 var reopened = new PresentationPreferences.PreferenceFile(Path.Combine(moved, "prefs.json"));
+                Assert.That(reopened.DataDirectory, Is.EqualTo(moved));
                 Assert.That(reopened.Values["style"], Is.EqualTo("natural"));
                 Assert.That(reopened.Values["volume"], Is.EqualTo(.5f));
                 Assert.That(reopened.Values["enabled"], Is.EqualTo(1));

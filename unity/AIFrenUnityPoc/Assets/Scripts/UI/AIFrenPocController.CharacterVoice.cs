@@ -36,13 +36,14 @@ namespace AIFren.UnityPoc.UI
             });
             CompanionPreferenceHint(parent, "Reference: a clean 3–10 second PCM WAV. Enter exactly the words in that excerpt below. Imported originals stay untouched; Save makes a character-owned copy.", ref y, 74f);
             voiceReferenceInput = CreateInputField(parent); voiceReferenceInput.name = "Voice Reference Path";
+            voiceReferenceInput.gameObject.AddComponent<RectMask2D>();
             PlaceTop(voiceReferenceInput.GetComponent<RectTransform>(), y, 42f, .05f, .72f);
             voiceReferenceInput.characterLimit = 4096;
             voiceReferenceInput.onValueChanged.AddListener(_ => characterVoiceDirty = true);
             voiceImportButton = CreateButton(parent, "Browse", Panel); voiceImportButton.name = "Browse Voice Reference";
             PlaceTop(voiceImportButton.GetComponent<RectTransform>(), y, 42f, .75f, .95f); y -= 50f;
             voiceImportButton.onClick.AddListener(BrowseVoiceReference);
-            voiceTranscriptInput = CreateInputField(parent); voiceTranscriptInput.name = "Voice Reference Transcript";
+            voiceTranscriptInput = CreateInputField(parent, true); voiceTranscriptInput.name = "Voice Reference Transcript";
             voiceTranscriptInput.lineType = TMP_InputField.LineType.MultiLineNewline;
             voiceTranscriptInput.characterLimit = 2000;
             PlaceTop(voiceTranscriptInput.GetComponent<RectTransform>(), y, 104f); y -= 112f;

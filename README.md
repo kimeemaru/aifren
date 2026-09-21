@@ -34,6 +34,11 @@ inventory, anatomy, pathfinding, or general world simulator.
   the rest is synthesized in order. Natural/Roleplay delivery is selectable;
   ACT preview and automatic CPU expressions are optional, with temporary automatic
   expression ownership. See [controls and limits](docs/NATURAL_COMPANION_DESIGN.md).
+- Character-owned reference voices are selectable in Audio settings, with Prepare,
+  Preview / Stop and Save / Cancel. Kokoro remains the default; CPU cloning requires
+  a separately installed reviewed runtime and can be slow. Appearance settings
+  include subtle body performance and visible gesture previews. See
+  [character voices and performance](docs/CHARACTER_VOICE.md).
 - Character-local continuity and database storage, confirmed management operations,
   live switching and per-character/avatar/orientation framing. Settings > Character
   > Manage includes Reset timeline, Delete and selected legacy-storage migration.
