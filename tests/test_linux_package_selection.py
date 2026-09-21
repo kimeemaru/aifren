@@ -122,6 +122,18 @@ class LinuxPackageSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fresh"):
             self.compose()
 
+    def test_only_explicit_native_wheel_hidden_files_are_admitted(self):
+        for name in PACKAGE.REVIEWED_HIDDEN_NATIVE_INPUTS:
+            self.assertEqual(Path(name), PACKAGE.relative_name(name))
+        for name in (
+            "runtime/python/Lib/site-packages/sklearn/.libs/private.wav",
+            "runtime/python/Lib/site-packages/sklearn/.libs/unreviewed.dll",
+            "runtime/python/Lib/site-packages/other/.libs/msvcp140.dll",
+            "runtime/python/Lib/site-packages/sklearn/.libs/../msvcp140.dll",
+        ):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                PACKAGE.relative_name(name)
+
     def test_manifest_resolves_only_reviewed_source_files(self):
         for name in PACKAGE.application_inputs():
             self.assertTrue((ROOT / name).is_file(), name)

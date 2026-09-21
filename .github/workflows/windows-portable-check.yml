@@ -73,6 +73,20 @@ jobs:
               module = importlib.import_module(name)
               assert pathlib.Path(module.__file__).is_relative_to(root), name
               print('Bundled import passed:', name)
+          # Exercise the actual bundled native phonemizer, not merely Kokoro's
+          # Python import. No voice/model download, recording or device input.
+          from scripts.launch_friend import prepare_packaged_phonemizer
+          prepare_packaged_phonemizer()
+          import misaki.espeak
+          from phonemizer.backend import EspeakBackend
+          phonemes = EspeakBackend('en-us', preserve_punctuation=True).phonemize(['Amber is a color.'], strip=True)
+          assert len(phonemes) == 1 and phonemes[0].strip()
+          print('Bundled native phonemization passed')
+          import onnxruntime, sounddevice, av
+          assert 'CPUExecutionProvider' in onnxruntime.get_available_providers()
+          assert isinstance(sounddevice.query_hostapis(), tuple)
+          assert av.library_versions
+          print('ONNX CPU, audio host discovery and codec runtime passed (no playback claim)')
           # aifren is already bound to the staged tree; public tests are fixtures,
           # not a fallback implementation or bundled application dependency.
           sys.path[:0] = [str(source/'tests'),str(source)]

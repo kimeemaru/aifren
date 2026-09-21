@@ -14,6 +14,13 @@ SOURCE_MANIFEST = Path(__file__).with_name("package_runtime_files.txt")
 FORBIDDEN = {"characters", "logs", "cache", "caches", "seed_data",
              "conversation.json", "conversation_summary.json", "memories.json",
              "config_secret.py", "local_settings.py", "config_private.py"}
+# These two upstream Windows wheel dependencies must retain their loader-relative
+# location. This is not permission to copy arbitrary hidden directories; normal
+# per-file digest, ownership and symlink checks still apply.
+REVIEWED_HIDDEN_NATIVE_INPUTS = frozenset({
+    "runtime/python/Lib/site-packages/sklearn/.libs/msvcp140.dll",
+    "runtime/python/Lib/site-packages/sklearn/.libs/vcomp140.dll",
+})
 
 
 def relative_name(value: str) -> Path:
@@ -21,7 +28,9 @@ def relative_name(value: str) -> Path:
         raise ValueError("invalid_package_path")
     path = PurePosixPath(value)
     if path.is_absolute() or not path.parts or any(
-        part in {".", ".."} or part.startswith(".") or part.casefold() in FORBIDDEN
+        part in {".", ".."}
+        or (part.startswith(".") and value not in REVIEWED_HIDDEN_NATIVE_INPUTS)
+        or part.casefold() in FORBIDDEN
         for part in path.parts
     ) or any(value.casefold().endswith(suffix) for suffix in (".log", ".sqlite3", ".sqlite", ".db", ".wav")):
         raise ValueError("unapproved_package_path")
