@@ -18,6 +18,28 @@ MAX_REQUEST = 40000
 MAX_PCM = 32 * 1024 * 1024
 
 
+def prepare_conditioning(tts, request, sentence_endings):
+    """Complete both reference caches before reporting ready.
+
+    The pinned MIT GPT-SoVITS TTS.run API normalizes reference punctuation and
+    caches text features independently of set_ref_audio. Use the same cache
+    contract here; do not generate throwaway speech to warm it. A profile key
+    change (including language/model) always recomputes both parts.
+    """
+    transcript = request["transcript"].strip("\n")
+    language = request["language"]
+    if not transcript or language not in tts.configs.languages:
+        raise ValueError("invalid conditioning")
+    if transcript[-1] not in sentence_endings:
+        transcript += "." if language == "en" else "。"
+    tts.set_ref_audio(request["reference"])
+    tts.prompt_cache["prompt_text"] = None
+    phones, features, normalized = tts.text_preprocessor.segment_and_extract_feature_for_text(
+        transcript, language, tts.configs.version)
+    tts.prompt_cache.update(prompt_text=transcript, prompt_lang=language,
+                            phones=phones, bert_features=features, norm_text=normalized)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--installation", required=True)
@@ -46,6 +68,7 @@ def main():
         torch.set_num_threads(4)
         torch.set_num_interop_threads(1)
         from TTS_infer_pack.TTS import TTS, TTS_Config
+        from TTS_infer_pack.text_segmentation_method import splits
         start = time.monotonic()
         models = root / "GPT_SoVITS/pretrained_models"
         configuration = TTS_Config({"custom": {
@@ -72,10 +95,7 @@ def main():
         try:
             with contextlib.redirect_stdout(sys.stderr):
                 if key != request["key"]:
-                    tts.set_ref_audio(request["reference"])
-                    # Upstream caches prompt text independently of language.
-                    # Invalidate it when any conditioning input changes.
-                    tts.prompt_cache["prompt_text"] = None
+                    prepare_conditioning(tts, request, splits)
                     key = request["key"]
                 if request["op"] == "prepare":
                     send({"id": request["id"], "state": "ready", "seconds": time.monotonic()-started})

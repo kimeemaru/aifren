@@ -11,7 +11,9 @@ reference-conditioned GPT-SoVITS v2ProPlus runtime on CPU. This is zero-shot
 conditioning, not training. It uses more memory and preparation time than Kokoro.
 
 Choose an engine, select a **3–10 second uncompressed PCM WAV**, enter exactly its
-transcript, and choose its language. Prepare checks the reference; Preview plays
+transcript, and choose its language. Prepare conditions the reference audio and
+transcript features before reporting ready; it does not synthesize a test reply.
+Preview plays
 a fixed line; Stop cancels pending playback. **Save voice** applies the draft to
 the selected character. Cancel restores that character's saved draft. These voice
 actions do not save unrelated presentation settings or create conversation/memory.
@@ -21,6 +23,10 @@ does not silently substitute another voice. Choosing and saving Kokoro is the
 explicit recovery path, including for a damaged saved voice profile. A saved clone
 is not proof of successful conditioning; Prepare/Preview checks the installed
 runtime. Conditioning is cached in process and rebuilt after runtime restart.
+Changing the reference, transcript or language invalidates that conditioning.
+Ready does not promise instantaneous speech: target-text processing and native
+audio synthesis still occur for each committed unit. PCM currently arrives after
+the complete unit; stopping playback does not make its native worker free early.
 
 ## Installation boundary
 
