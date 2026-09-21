@@ -204,9 +204,15 @@ host Unity preferences. Older clients are rejected before launch.
 
 A selected inventory is not a working platform certification. Validate native
 libraries, licenses, offline models, a fresh extraction, restart and directory move.
-The current Windows path still needs a validated Windows runtime and adaptation
-of POSIX-only continuity locking/filesystem guards; do not disable those guards.
-Cross-compilation or Wine alone does not certify Windows graphical/audio behavior.
+Windows continuity locking now uses native shared/exclusive locks and rejects
+reparse-point/hardlink substitution; the POSIX path keeps its existing guards.
+The pinned Windows dependency list and public-code-only `windows-portable-check`
+workflow assemble an embedded interpreter and exercise synthetic backend ownership
+and recall on a native runner. The assembled candidate includes a matching client
+and local resources, but native graphical/audio/GPU acceptance remains separate.
+Cross-compilation or Wine alone does not certify those behaviors. See the current
+distribution manifest for the unresolved speech-license and transitive-binary
+clearance gates; do not promote an archive while they remain open.
 
 ### History and Memory recovery
 
