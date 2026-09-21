@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 import subprocess
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -149,7 +150,51 @@ class WindowsPackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "isolated persistent preferences"):
                 layout.validate()
             assembly.write_bytes("-aifren-preferences-file".encode("utf-16le"))
+            with self.assertRaisesRegex(RuntimeError, "isolated persistent preferences"):
+                layout.validate()
+            assembly.write_bytes(assembly.read_bytes() + b"get_ManagedDataRoot")
             layout.validate()
+
+    def test_deep_unicode_phoneme_resources_are_private_temporary_and_reused(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / ("Synthetic voice path " + "音" * 45)
+            data = root / "runtime/python/espeak-ng-data"
+            data.mkdir(parents=True)
+            (data / "phontab").write_bytes(b"synthetic phonemes")
+            (data / "lang").mkdir()
+            (data / "lang/en").write_bytes(b"synthetic language")
+            loader = SimpleNamespace(get_data_path=lambda: str(data))
+            with mock.patch.dict(sys.modules, espeakng_loader=loader), \
+                    mock.patch.object(LAUNCHER, "APPLICATION_ROOT", root / "runtime/app"), \
+                    mock.patch.object(LAUNCHER, "_phonemizer_data", None):
+                temporary = LAUNCHER.prepare_packaged_phonemizer()
+                destination = Path(loader.get_data_path())
+                self.assertLessEqual(len(str(destination).encode("utf-8")), 128)
+                self.assertEqual(b"synthetic phonemes", (destination / "phontab").read_bytes())
+                self.assertEqual(b"synthetic language", (destination / "lang/en").read_bytes())
+                self.assertIs(temporary, LAUNCHER.prepare_packaged_phonemizer())
+                self.assertEqual(b"synthetic phonemes", (data / "phontab").read_bytes())
+                temporary.cleanup()
+                self.assertFalse(destination.exists())
+
+    def test_phonemizer_cannot_escape_bundle_or_follow_resource_links(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "package"
+            source = root / "outside"
+            source.mkdir()
+            loader = SimpleNamespace(get_data_path=lambda: str(source))
+            with mock.patch.dict(sys.modules, espeakng_loader=loader), \
+                    mock.patch.object(LAUNCHER, "APPLICATION_ROOT", package / "runtime/app"), \
+                    mock.patch.object(LAUNCHER, "_phonemizer_data", None):
+                with self.assertRaisesRegex(RuntimeError, "outside this bundle"):
+                    LAUNCHER.prepare_packaged_phonemizer()
+                package.mkdir()
+                link = package / "linked-data"
+                link.symlink_to(source, target_is_directory=True)
+                loader.get_data_path = lambda: str(link)
+                with self.assertRaisesRegex(RuntimeError, "cannot follow links"):
+                    LAUNCHER.prepare_packaged_phonemizer()
 
     def test_existing_windows_developer_powershell_test_path_remains_available(self) -> None:
         ensure = ROOT / "scripts" / "ensure_aifren_backend.ps1"

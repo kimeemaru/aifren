@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
 import socket
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -26,6 +29,64 @@ from aifren.runtime.runtime_layout import absolute_path, packaged_user_data_root
 
 READY_TIMEOUT_SECONDS = 60.0
 OWNERSHIP_DESCRIPTOR = "backend-owner.json"
+_phonemizer_data = None
+
+
+def prepare_packaged_phonemizer():
+    """Keep eSpeak 1.52's small native path buffer independent of install depth.
+
+    Only packaged, generic phoneme resources are copied to a private process
+    temporary directory. No character/reference data, source edits or symlinks.
+    The installed application and its saved paths remain in place.
+    """
+    global _phonemizer_data
+    if _phonemizer_data is not None:
+        return _phonemizer_data
+    import espeakng_loader
+
+    source = Path(espeakng_loader.get_data_path()).absolute()
+    package = APPLICATION_ROOT.parents[1]
+    if not source.is_relative_to(package):
+        raise RuntimeError("Packaged phonemizer resolved outside this bundle.")
+    for parent in (source, *source.parents):
+        if parent.is_symlink():
+            raise RuntimeError("Packaged phonemizer resources cannot follow links.")
+    # Leave space for the native buffer's resource suffixes, measured in UTF-8
+    # bytes, not Python characters. The pinned library has a 160-byte buffer.
+    if len(os.fsencode(source)) <= 128:
+        return None
+    files = []
+    size = 0
+    for path in source.rglob("*"):
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            raise RuntimeError("Unsupported packaged phonemizer resource.")
+        if stat.S_ISREG(mode):
+            size += path.stat().st_size
+            files.append(path)
+        if len(files) > 8192 or size > 64 * 1024 * 1024:
+            raise RuntimeError("Packaged phonemizer resources exceed their bound.")
+    if not (source / "phontab").is_file():
+        raise RuntimeError("Packaged phonemizer resources are incomplete.")
+    temporary = tempfile.TemporaryDirectory(prefix="aifren-phonemes-")
+    destination = Path(temporary.name) / "espeak-ng-data"
+    try:
+        if len(os.fsencode(destination)) > 128:
+            raise RuntimeError("The system temporary directory exceeds the phonemizer's native path limit.")
+        destination.mkdir()
+        for path in files:
+            target = destination / path.relative_to(source)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+        # Misaki obtains this resource path before constructing its eSpeak
+        # wrapper. Do not change the library, inference or installed module.
+        espeakng_loader.get_data_path = lambda: str(destination)
+        _phonemizer_data = temporary
+        atexit.register(temporary.cleanup)
+        return temporary
+    except BaseException:
+        temporary.cleanup()
+        raise
 
 
 def package_environment(layout, data_root=None):
@@ -92,8 +153,9 @@ class FriendPackageLayout:
         assembly = self.package_root / "AIFrenPoc_Data/Managed/AIFren.UnityPoc.dll"
         # Older clients ignore the package preference argument and would use
         # host PlayerPrefs. Fail before opening data or launching such a client.
-        if (not assembly.is_file() or assembly.stat().st_size > 32 * 1024 * 1024
-                or "-aifren-preferences-file".encode("utf-16le") not in assembly.read_bytes()):
+        contents = assembly.read_bytes() if assembly.is_file() and assembly.stat().st_size <= 32 * 1024 * 1024 else b""
+        if ("-aifren-preferences-file".encode("utf-16le") not in contents
+                or b"get_ManagedDataRoot" not in contents):
             raise RuntimeError("The packaged player lacks isolated persistent preferences. Rebuild the current client before launching this bundle.")
 
 
@@ -107,7 +169,7 @@ def backend_command(
         str(python),
         "-I",
         "-c",
-        "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module('aifren.backend_host',run_name='__main__')",
+        "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); from scripts.launch_friend import prepare_packaged_phonemizer; prepare_packaged_phonemizer(); runpy.run_module('aifren.backend_host',run_name='__main__')",
         str(layout.resource_root),
         "--resource-root", str(layout.resource_root),
         "--data-root", str(data_root),

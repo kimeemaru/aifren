@@ -44,6 +44,20 @@ a live environment or data directory wholesale. Portable Python/native/model/GPU
 redistribution still needs a final version-specific SBOM/license review. No portable
 package, public release or new tag is implied by this source sync.
 
+The current Linux Development client has also been exercised from an extracted
+candidate with bundled Python/models, network access restricted to loopback,
+development checkouts/caches unavailable, and a spaces/Unicode installation path.
+Closing and relocating that candidate preserved its synthetic history and saved
+voice/presentation choices. This is runtime evidence, not redistribution clearance.
+The pinned eSpeak data-path limit is handled with a bounded, process-owned temporary
+copy of generic bundled phoneme resources; installed files and user data stay put.
+
+A Windows x86_64 client cross-build passes. A complete Windows backend/native
+runtime and native graphical/audio acceptance remain outstanding. No Windows-ready
+or cleared offline distribution claim follows from the client build. The Linux
+candidate still needs complete third-party notices, applicable source obligations
+and compatibility review; local candidate archives are not releases.
+
 Reference-conditioned speech is a separate optional runtime. The adapter pins
 official GPT-SoVITS source and verifies registered source/model digests before
 starting its CPU worker. MIT source licensing does not by itself clear the model,
