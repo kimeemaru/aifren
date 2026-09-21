@@ -1375,7 +1375,17 @@ class MemoryV2ShadowWriter:
             or (
                 row["curator_name"], row["curator_version"],
                 row["curator_policy_version"],
-            ) != direct_curator
+            ) not in (
+                direct_curator,
+                # v6 expands literal preference-label admission, not the
+                # stored schema. An already admitted v5 claim still has to
+                # pass every exact source/content/scope check above.
+                (DURABLE_FACT_CURATOR_NAME, "5", DURABLE_FACT_POLICY_VERSION)
+                if direct_curator == (DURABLE_FACT_CURATOR_NAME,
+                                      DURABLE_FACT_CURATOR_VERSION,
+                                      DURABLE_FACT_POLICY_VERSION)
+                else direct_curator,
+            )
         ):
             return "conflict", None
         return "replayed", str(row["claim_id"])

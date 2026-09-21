@@ -2,7 +2,7 @@
 
 The conversational model is never the database authority.  This lightweight
 curator deliberately accepts only clear present-tense user biography and
-preference forms, leaving ambiguous language to Memory V1.
+preference forms. Ambiguous language is not promoted to durable authority.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import re
 
 
 DURABLE_FACT_CURATOR_NAME = "bounded_durable_fact_curator"
-DURABLE_FACT_CURATOR_VERSION = "5"
+DURABLE_FACT_CURATOR_VERSION = "6"
 DURABLE_FACT_POLICY_VERSION = "closed_schema_v5"
 
 
@@ -257,7 +257,7 @@ def _proposal(text: str, subject_key: str, value: str, kind: str, *, stance: str
     return DurableFactProposal(subject_key, compact, kind, start, end, stance)
 
 
-def _favorite_color_value(value: object) -> str | None:
+def _legacy_favorite_color_value(value: object) -> str | None:
     compact = _compact(str(value or ""), maximum=32)
     if compact is None:
         return None
@@ -267,6 +267,22 @@ def _favorite_color_value(value: object) -> str | None:
     if len(words) == 2 and words[0] not in _COLOR_MODIFIERS:
         return None
     return compact
+
+
+def _favorite_color_value(value: str) -> str | None:
+    """Preserve an explicit preference label, not a physical color inference.
+
+    The full first-person assertion supplies the relation. Its value needs the
+    same bounded, non-referential admission as other favorite labels, not an
+    exhaustive color vocabulary. Keep the legacy imported-text bridge separate.
+    """
+    if (_safe_text(value) is None or len(value) > 64
+            or not re.fullmatch(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'’-]*(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'’-]*){0,5}", value)
+            or set(value.casefold().replace("-", " ").split()) & {
+                "and", "or", "but", "because", "is", "was", "non",
+            }):
+        return None
+    return _validated_kind_value(value, "favorite_color")
 
 
 def _retirement_proposal(content: object) -> DurableFactProposal | None:
@@ -330,7 +346,7 @@ def extract_v1_favorite_color_memory(content: object) -> str | None:
         r"The user(?:'s|’s) (?:absolute )?favorite color is (?P<value>[^.]{1,32})\.",
         content.strip(), re.IGNORECASE,
     )
-    return _favorite_color_value(match.group("value")) if match is not None else None
+    return _legacy_favorite_color_value(match.group("value")) if match is not None else None
 
 
 def extract_durable_fact_proposal(
