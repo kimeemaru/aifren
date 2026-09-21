@@ -408,12 +408,14 @@ namespace AIFren.UnityPoc.UI
         private float subtitlePlaybackStartedAt;
         private int subtitlePlaybackId;
         private float subtitleResponseReceivedAt;
+        // Proactive turns affect ordinary presentation in every build. Only
+        // their diagnostic counters belong behind the Development guard.
+        private bool activeTurnIsProactive;
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
         private DevelopmentFrameProfiler developmentFrameProfiler;
         private DevelopmentFlightRecorder developmentFlightRecorder;
         private string flightRecorderDumpBuffer = string.Empty;
         private int flightRecorderTurnId;
-        private bool activeTurnIsProactive;
         private bool flightRecorderFirstDeltaSeen;
         private bool developmentProfileQa;
         private bool verboseSubtitleDiagnostics;
