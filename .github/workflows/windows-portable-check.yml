@@ -11,6 +11,7 @@ on:
       - scripts/windows_runtime_requirements.txt
       - scripts/check_windows_stock_runtime.py
       - scripts/prepare_stock_runtime.py
+      - scripts/prepare_windows_msvc.py
       - scripts/launch_friend.py
 permissions:
   contents: read
@@ -65,6 +66,9 @@ jobs:
           $root = $env:PORTABLE_TEST_ROOT
           python scripts/prepare_stock_runtime.py --site "$root/runtime/python/Lib/site-packages" --materials "$root/ThirdPartyNotices/runtime-patches"
           if ($LASTEXITCODE) { throw 'Reviewed runtime patch failed' }
+          python -c "import sys,urllib.request;sys.path.insert(0,'scripts');from prepare_windows_msvc import URL;urllib.request.urlretrieve(URL,sys.argv[1])" "$root/msvc.exe"
+          python scripts/prepare_windows_msvc.py --installer "$root/msvc.exe" --runtime "$root/runtime/python" --materials "$root/ThirdPartyNotices/MSVC"
+          if ($LASTEXITCODE) { throw 'MSVC runtime identity or extraction failed' }
           $lts = Join-Path $env:RUNNER_TEMP 'lts-source'
           New-Item -ItemType Directory -Force $lts | Out-Null
           foreach ($name in @('cmu_lts_model.c','cmu_lts_model.h','cmu_lts_rules.c')) {

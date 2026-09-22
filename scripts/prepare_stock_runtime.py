@@ -38,6 +38,15 @@ def prune(site: Path):
             raise ValueError("Staged runtime directory must not be a link")
         if directory.exists():
             shutil.rmtree(directory)
+    # The wheel also carries standalone llama CLI support in bin. The app uses
+    # llama_cpp/lib, not those duplicate command-line libraries or their codecs.
+    command_line = site / "bin"
+    if command_line.is_dir():
+        for name in ("ggml-base.dll", "ggml-cpu.dll", "ggml-cuda.dll", "ggml.dll",
+                     "llama-common.dll", "llama.dll", "mtmd.dll"):
+            path = command_line/name
+            if path.is_symlink(): raise ValueError("Staged command-line library must not be a link")
+            path.unlink(missing_ok=True)
     headers = site / "nvidia/cuda_runtime/include"
     if headers.exists():
         for path in headers.rglob("*"):
