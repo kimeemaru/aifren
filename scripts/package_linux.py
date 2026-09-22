@@ -118,12 +118,15 @@ def compose_package(source: Path, staging: Path, output: Path, inputs: list[dict
         raise ValueError("invalid_package_inputs")
     approved = []
     seen = set()
+    runtime_prefixes = ("runtime/python/", "runtime/app/models/", "AIFrenPoc_Data/", "ThirdPartyNotices/")
+    if platform == "windows-x64":
+        runtime_prefixes += ("MonoBleedingEdge/",)
     for item in inputs:
         if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
             raise ValueError("invalid_package_input")
         relative = relative_name(item["path"])
         name = relative.as_posix()
-        if name in seen or not (name.startswith(("runtime/python/", "runtime/app/models/", "AIFrenPoc_Data/", "ThirdPartyNotices/"))
+        if name in seen or not (name.startswith(runtime_prefixes)
                                or name in player_files):
             raise ValueError("unapproved_package_destination")
         seen.add(name)
@@ -134,7 +137,10 @@ def compose_package(source: Path, staging: Path, output: Path, inputs: list[dict
             raise ValueError("package_input_digest_mismatch")
         approved.append((relative, path))
     required = ({"AIFrenPoc.x86_64", "runtime/python/bin/python"} if platform == "linux-x64" else
-                {"AIFrenPoc.exe", "runtime/python/python.exe"})
+                {"AIFrenPoc.exe", "UnityPlayer.dll", "runtime/python/python.exe",
+                 "MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll",
+                 "MonoBleedingEdge/EmbedRuntime/MonoPosixHelper.dll",
+                 "MonoBleedingEdge/etc/mono/config"})
     if not required.issubset(seen):
         raise ValueError("required_package_input_missing")
     if default_model and (Path(default_model).name != default_model or

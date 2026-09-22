@@ -38,6 +38,10 @@ class WindowsPackagingTests(unittest.TestCase):
         (player / "AIFrenPoc.exe").write_bytes(b"player")
         (player / "AIFrenPoc_Data").mkdir()
         (player / "UnityPlayer.dll").write_bytes(b"unity")
+        for name in ("EmbedRuntime/mono-2.0-bdwgc.dll", "EmbedRuntime/MonoPosixHelper.dll", "etc/mono/config"):
+            path=player/"MonoBleedingEdge"/name
+            path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_bytes(b"synthetic Unity managed runtime")
 
         (repository / 'backend_host.py').write_text("# backend\n", encoding="utf-8")
         scripts = repository / "scripts"
@@ -88,16 +92,28 @@ class WindowsPackagingTests(unittest.TestCase):
                 "runtime/app/models/kokoro-82m/config.json": repository / "models/kokoro-82m/config.json",
                 "runtime/app/models/llama/test.gguf": repository / "models/llama/test.gguf",
             }
+            for name in ("EmbedRuntime/mono-2.0-bdwgc.dll", "EmbedRuntime/MonoPosixHelper.dll", "etc/mono/config"):
+                relative="MonoBleedingEdge/"+name
+                sources[relative]=repository/"unity/AIFrenUnityPoc/Builds/Windows"/relative
             inputs = []
             for name, source in sources.items():
                 target = staging / name; target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, target)
                 inputs.append({"path": name, "sha256": hashlib.sha256(target.read_bytes()).hexdigest()})
+            # A backend-complete archive can still lack the managed player runtime.
+            for missing in ("UnityPlayer.dll", "MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll",
+                            "MonoBleedingEdge/EmbedRuntime/MonoPosixHelper.dll", "MonoBleedingEdge/etc/mono/config"):
+                with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, "required_package_input_missing"):
+                    PACKAGER.compose_windows_package(repository,staging,output,
+                        [item for item in inputs if item['path']!=missing])
+                self.assertFalse(output.exists())
             result = PACKAGER.compose_windows_package(repository, staging, output, inputs)
 
             self.assertEqual(output, result)
             self.assertTrue((output / "AIFrenPoc.exe").is_file())
             self.assertTrue((output / "runtime" / "python" / "python.exe").is_file())
+            self.assertEqual(b"synthetic Unity managed runtime",
+                (output/"MonoBleedingEdge/EmbedRuntime/mono-2.0-bdwgc.dll").read_bytes())
             app = output / "runtime" / "app"
             self.assertTrue((app / 'backend_host.py').is_file())
             self.assertTrue((app / "models" / "kokoro-82m" / "config.json").is_file())
