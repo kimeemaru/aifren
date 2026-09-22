@@ -14,20 +14,34 @@ def check(root, source):
                       AIFREN_ENGLISH_G2P='flite', AIFREN_STT_PCM_ONLY='1',
                       HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
                       PYNPUT_BACKEND='dummy')
-    from scripts.launch_friend import prepare_packaged_runtime
+    from scripts.launch_friend import prepare_packaged_runtime, FriendPackageLayout, package_environment
+    (root/'package.json').write_text(json.dumps({'runtime_profile':'nvidia-stock-v1'}))
+    os.environ.update(package_environment(FriendPackageLayout.from_package_root(root), root/'synthetic-data'))
+    os.environ['PYNPUT_BACKEND']='dummy'
     prepare_packaged_runtime()
-    for name in ('numpy', 'hnswlib', 'torch', 'llama_cpp', 'kokoro',
+    for name in ('numpy', 'hnswlib', 'torch', 'kokoro',
                  'faster_whisper', 'onnxruntime', 'cupy', 'sounddevice',
                  'pynput', 'aifren.assistant_service'):
         module = importlib.import_module(name)
         assert Path(module.__file__).is_relative_to(root), name
         print('Bundled import:', name)
     import torch
-    import llama_cpp
     import onnxruntime
     import sounddevice
     assert torch.version.cuda == '12.8', torch.version.cuda
-    assert llama_cpp.llama_supports_gpu_offload()
+    # The official CUDA llama build imports nvcuda.dll directly. A hosted CPU
+    # runner has no NVIDIA driver. Never add a fake driver or replace its wheel
+    # with the CPU build to turn this hardware gate into a passing import.
+    import ctypes
+    try:
+        driver = ctypes.WinDLL('nvcuda.dll')
+    except OSError:
+        print('CUDA llama native import: NOT RUN (NVIDIA driver absent)')
+    else:
+        import llama_cpp
+        assert Path(llama_cpp.__file__).is_relative_to(root)
+        assert llama_cpp.llama_supports_gpu_offload()
+        print('CUDA llama native import passed; inference not exercised')
     assert 'CUDAExecutionProvider' in onnxruntime.get_available_providers()
     assert isinstance(sounddevice.query_hostapis(), tuple)
     for name in ('av', 'phonemizer', 'espeakng_loader'):
@@ -46,7 +60,7 @@ def check(root, source):
     print('English fallback/number coverage passed; no acoustic claim')
     print(json.dumps({'torch_cuda_build': torch.version.cuda,
                       'cuda_device_available': torch.cuda.is_available(),
-                      'llama_cuda_build': True, 'ort_cuda_build': True,
+                      'llama_cuda_build': 'pinned official cu125; driver-dependent import above', 'ort_cuda_build': True,
                       'gpu_inference': 'NOT RUN', 'audio_playback': 'NOT RUN'}))
     sys.path[:0] = [str(source/'tests'), str(source)]
     suite = unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromName(name) for name in (

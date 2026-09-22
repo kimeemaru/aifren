@@ -37,7 +37,7 @@ def prepare_packaged_runtime():
     """Retain Windows DLL search handles before importing neural providers."""
     if sys.platform == "win32" and not _native_dll_directories:
         site = APPLICATION_ROOT.parents[1] / "runtime/python/Lib/site-packages"
-        for directory in (site / "torch/lib", site / "nvidia/cuda_runtime/bin"):
+        for directory in (site / "torch/lib", site / "llama_cpp/lib", site / "nvidia/cuda_runtime/bin"):
             if directory.is_dir():
                 _native_dll_directories.append(os.add_dll_directory(str(directory)))
     prepare_packaged_phonemizer()
@@ -147,7 +147,7 @@ def package_environment(layout, data_root=None):
         site = layout.package_root / "runtime/python/Lib/site-packages"
         # Exact bundled native search locations; no development CUDA toolkit.
         environment["CUDA_PATH"] = str(site / "nvidia/cuda_runtime")
-        environment["PATH"] = os.pathsep.join([str(site / "torch/lib"),
+        environment["PATH"] = os.pathsep.join([str(site / "torch/lib"), str(site / "llama_cpp/lib"),
             str(site / "nvidia/cuda_runtime/bin"), str(site / "nvidia/cublas/bin"),
             str(site / "nvidia/cudnn/bin"), environment.get("PATH", "")])
     if sys.platform.startswith("linux"):

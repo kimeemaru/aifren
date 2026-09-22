@@ -45,6 +45,13 @@ def prune(site: Path):
                 raise ValueError("Staged CUDA headers must not be links")
             if path.is_file() and path.relative_to(headers).as_posix() not in CUDA_RUNTIME_HEADERS:
                 path.unlink()
+    if (site / "nvidia/cuda_runtime").is_dir():
+        # llama-cpp-python's Windows loader registers CUDA_PATH/lib even when
+        # only runtime DLLs (bin) and NVRTC headers are needed, not import libs.
+        directory = site / "nvidia/cuda_runtime/lib"
+        directory.mkdir(exist_ok=True)
+        (directory / "README.txt").write_text(
+            "Runtime-only CUDA layout. DLLs are in ../bin; no import libraries or compiler are required.\n")
     audio = site / "_sounddevice_data/portaudio-binaries"
     for pattern in ("*asio.dll", "*32bit*"):
         for path in audio.glob(pattern):
