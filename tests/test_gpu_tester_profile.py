@@ -29,6 +29,25 @@ class GpuTesterProfileTests(unittest.TestCase):
             self.assertEqual(str(root/'UserData'),result['AIFREN_DATA_ROOT'])
             self.assertNotIn('SD_ENABLE_ASIO',result)
 
+    def test_packaged_dll_search_handles_are_retained_and_coalesced(self):
+        import scripts.launch_friend as launcher
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            for name in ('torch/lib','llama_cpp/lib','sklearn/.libs','nvidia/cuda_runtime/bin'):
+                (root/'runtime/python/Lib/site-packages'/name).mkdir(parents=True)
+            app=root/'runtime/app'
+            with patch.object(launcher,'APPLICATION_ROOT',app), \
+                    patch.object(launcher,'_native_dll_directories',[]), \
+                    patch.object(launcher.sys,'platform','win32'), \
+                    patch.object(launcher.os,'add_dll_directory',create=True) as add, \
+                    patch.object(launcher,'prepare_packaged_phonemizer'):
+                handles=[object() for _ in range(4)]
+                add.side_effect=handles
+                launcher.prepare_packaged_runtime();launcher.prepare_packaged_runtime()
+                self.assertEqual(handles,launcher._native_dll_directories)
+                self.assertEqual(4,add.call_count)
+                self.assertTrue(all(Path(call.args[0]).is_relative_to(root) for call in add.call_args_list))
+
     def test_unavailable_gpu_is_visible_without_cpu_fallback(self):
         torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda:False))
         with self.assertRaisesRegex(InferenceDeviceUnavailable,'NVIDIA CUDA'):

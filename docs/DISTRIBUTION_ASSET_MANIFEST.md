@@ -62,70 +62,65 @@ imports, character locking and synthetic source-backed recall. This does not pro
 native graphical/audio operation or GPU transcription. Those Windows gates remain
 open; neither candidate is a cleared distribution or release.
 
-## Current candidate contract
+## Windows NVIDIA tester contract
 
-| Component | Linux candidate | Windows candidate |
-| --- | --- | --- |
-| Platform | x86_64, Ubuntu 24.04 / glibc 2.39 baseline | x86_64, Windows 10/11 target; headless checks on Windows Server 2022 |
-| Client | Current Unity 2022.3 Development player, reviewed public sample/resources | Current cross-built Unity 2022.3 Development player, same public resources |
-| Backend | Bundled CPython 3.12, explicit application source inventory, Linux native libraries | CPython 3.12.10 embedded distribution and genuine Windows wheels/native libraries; never a copied Linux environment |
-| Local chat | Qwen3.5-4B Q4_K_M, bartowski conversion of stock Qwen weights; llama-cpp-python 0.3.35 | Same GGUF, pinned official llama-cpp-python 0.3.35 Windows CPU wheel; GPU chat acceleration is not claimed |
-| Speech | Kokoro 0.9.4 / Kokoro-82M v1.0, `af_heart`, CPU | Same voice/model, CPU PyTorch 2.7.0 |
-| Retrieval / input | MiniLM-L6-v2; faster-whisper-small and CTranslate2 | Same resources; Windows native hnswlib, CTranslate2 and NVIDIA libraries |
-| Optional face proposal | Included pinned Cardiff ONNX resource; user-selectable | Same resource, CPU ONNX runtime |
-| Voice cloning | Not bundled; separately installed/verified GPT-SoVITS runtime remains optional | No validated Windows cloning runtime pack included |
+The `nvidia-stock-v1` package profile is a Windows x86-64 tester preview, not a
+certified release. It combines the current public Unity Development client,
+CPython 3.12.10, genuine Windows CUDA wheels and the reviewed sample resources.
+The launcher explicitly selects package-local `UserData`; the developer application's
+normal data route is unchanged. See [profile details](WINDOWS_TESTER.md).
 
-The declared local resources are present in staging; no first-launch download,
-user Python, compiler or development checkout is intended. The existing GPU STT
-startup requires a compatible NVIDIA GPU/driver even when the selected chat wheel
-and Kokoro run on CPU. A GPU-free full application is not claimed. RAM/VRAM demand
-includes the client, transcription and chat context, not just GGUF file size.
+Included resources are stock Qwen3.5-4B Q4_K_M (the reviewed bartowski conversion),
+Kokoro-82M v1.0 / American-English `af_heart`, MiniLM-L6-v2, Whisper small and
+optional Cardiff expression weights. The selected chat model retains 16,384 context
+capacity and the normal responsive working target. Cloning/private voice references
+are not bundled. No first-launch dependency or model download is intended.
 
-`run-aifren.sh --portable` or `Launch AIFren.cmd --portable` keeps writable state
-in the extracted directory's `UserData`. Without `--portable`, the launcher uses
-the platform's per-user application-data location. Resources remain package-local;
-developer configuration/cache overrides are removed. Relocate only after closing.
-The launcher validates client compatibility and retains exact owned child-process
-handles; it never terminates an unrelated process occupying a port.
+CUDA inference is explicit. The CPU-only chat/Torch wheels from the earlier local
+candidate are not tester inputs. The stock runtime removes the optional GPL
+phonemizer/eSpeak dependency and unused PyAV/FFmpeg codecs through hash-bound
+staging changes, with Flite rules preserving unknown-word pronunciation. This does
+not change Kokoro's Apache license or AIFren's license. Earlier Linux candidates
+still carry their old, uncleared speech closure and are not promoted by this work.
 
-Windows dependency URLs and SHA-256 values are pinned in
-[`scripts/windows_runtime_requirements.txt`](../scripts/windows_runtime_requirements.txt).
-The public-code-only Windows workflow records interpreter/index digests, assembles
-an isolated embedded runtime, and runs the synthetic checks. It uploads no binaries,
-models, private voice inputs or application data. Package composition still uses
-the explicit per-file manifest; successful imports do not certify every device.
+A new file inventory describes the actual redistributed subset, including modified
+source/METADATA/RECORD bytes. Keep original and modified source, upstream notices,
+LGPL/MPL corresponding source, selected NVIDIA header permissions and exact
+vendor binary/version mappings. Component-only restrictions do not override open
+library replacement/debugging rights. A top-level MIT/BSD/Apache label is never
+blanket clearance for a wheel's native dependencies.
 
-### Distribution gates that remain open
+The Microsoft MSVC runtime is a separate distribution condition: its listed DLL
+redistribution grant requires a valid Visual Studio license. Preparing a local
+candidate or running CI does not establish the distributor's entitlement. Confirm
+that right before calling an archive shareable; do not change AIFren's license as
+a workaround. The pinned private DLL extraction never runs an installer or modifies
+a tester's Windows installation.
 
-Kokoro's Misaki fallback imports `phonemizer-fork` 3.3.2 (GPLv3+) and loads eSpeak NG
-1.52.0 (GPLv3) in the application process. Compatibility with the current AIFren
-license's no-sale restrictions has **not** been cleared. Adding a notice is not a
-resolution, and removing the fallback can silently lose out-of-vocabulary words.
-No license change or degraded speech fallback is implied. See the actual
-[eSpeak terms](https://github.com/espeak-ng/espeak-ng/blob/1.52.0/COPYING) and
-[application license](../LICENSE.md).
+The public Windows workflow checks the embedded interpreter, patched imports,
+pronunciation and synthetic ownership/recall. The official CUDA llama library
+imports the NVIDIA driver directly; absence of that driver on a headless runner
+is an explicit hardware gate, not permission to replace it with the CPU wheel.
+Windows GPU, desktop, playback and microphone acceptance remain separate from
+these checks. Linux GPU component execution is useful evidence, not a Windows
+certification. The supplied artifact matrix must retain failures and NOT RUN gates.
 
-The candidate inventories record file digests, model revisions, wheel provenance
-and retained notices. Native FFmpeg/codec, NVIDIA, libc/runtime and copyleft source
-obligations still require completed version-specific review/materials before
-redistribution. An upstream Python package's MIT/BSD label does not clear all of
-its bundled binaries. Model-card declarations are recorded separately from code
-licenses. Current candidates stay local and explicitly uncleared; no replacement
-archive is promoted merely because runtime checks pass.
+The full enabled stack exceeded available memory for Whisper transcription on an
+8-GiB GPU with the rendered client and other models resident. Chat/speech/retrieval/
+expressions executed on CUDA; transcription did not silently fall back. Do not
+advertise that measurement as full-stack 8-GiB support or guarantee larger devices
+without testing. No model/context substitution is made to conceal the limitation.
 
-Reference-conditioned speech is a separate optional runtime. The adapter pins
-official GPT-SoVITS source and verifies registered source/model digests before
-starting its CPU worker. MIT source licensing does not by itself clear the model,
-phonemizer, codec, CUDA or other transitive binaries for redistribution. No private
-recording, transcript, conditioning cache or generated cloned speech is a package
-input. See [the voice installation boundary](CHARACTER_VOICE.md).
+The existing Linux Development player and both normal launcher actions remain
+supported. Older CPU distribution candidates remain local and separately labelled;
+no package, release or binary upload is authorized merely by source publication.
 
 ## Optional expression runtime
 
 The Cardiff expression model is a pinned MIT-declared optional local resource;
 source/configuration hashes are in automatic_expression.py. Its weights and graph
-are excluded from Git; the local candidate includes a separately inventoried graph
-and tokenizer. Preserve model/card and runtime dependency notices for distribution. Existing
+are excluded from Git; the local candidates inventory their graph/tokenizer and, for CUDA, the pinned
+original FP32 weights separately. Preserve model/card and runtime dependency notices for distribution. Existing
 public binary resources are unchanged in this catch-up; no new avatar, motion pack,
 font, background or recording is admitted.
 
