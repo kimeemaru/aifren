@@ -103,7 +103,14 @@ class GpuTesterProfileTests(unittest.TestCase):
         stt._model_lock=threading.Lock();stt._device='cuda';stt._allow_cpu_fallback=False
         stt.model=Mock();stt.model.transcribe.side_effect=RuntimeError('CUDA out of memory')
         stt._switch_to_cpu=Mock()
-        with self.assertRaisesRegex(RuntimeError,'CUDA out of memory'):stt.transcribe('synthetic.wav')
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'synthetic.wav'
+            with wave.open(str(path),'wb') as output:
+                output.setparams((1,2,16000,0,'NONE','not compressed'))
+                output.writeframes(b'\0'*320)
+            with patch.dict(os.environ,{'AIFREN_STT_PCM_ONLY':'1'}):
+                with self.assertRaisesRegex(RuntimeError,'CUDA out of memory'):
+                    stt.transcribe(path)
         stt._switch_to_cpu.assert_not_called()
         self.assertEqual(1,stt.model.transcribe.call_count)
 
