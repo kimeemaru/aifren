@@ -214,6 +214,10 @@ Cross-compilation or Wine alone does not certify those behaviors. See the curren
 distribution manifest for the unresolved speech-license and transitive-binary
 clearance gates; do not promote an archive while they remain open.
 
+See [the NVIDIA stock tester profile](WINDOWS_TESTER.md) for the strict GPU
+composition and reproducible speech-dependency preparation. Each artifact must
+carry its own final inventory and validation matrix.
+
 ### History and Memory recovery
 
 History has **Refresh** in its header. Memory uses its existing query button:

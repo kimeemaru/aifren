@@ -18,8 +18,8 @@ _selector = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_selector)
 
 
-def compose_windows_package(source, staging, output, inputs, *, default_model=""):
-    return _selector.compose_package(Path(source), Path(staging), Path(output), inputs, platform="windows-x64", default_model=default_model)
+def compose_windows_package(source, staging, output, inputs, *, default_model="", nvidia_tester=False):
+    return _selector.compose_package(Path(source), Path(staging), Path(output), inputs, platform="windows-x64", default_model=default_model, nvidia_tester=nvidia_tester)
 
 
 def main():
@@ -30,10 +30,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--archive", action="store_true")
     parser.add_argument("--default-model", default="")
+    parser.add_argument("--nvidia-tester", action="store_true", help="Strict NVIDIA stock voice profile, package-local UserData.")
     args = parser.parse_args()
     try:
         package = compose_windows_package(args.source_root, args.staging_root, args.output,
-                                          json.loads(args.inputs.read_text(encoding="utf-8")), default_model=args.default_model)
+                                          json.loads(args.inputs.read_text(encoding="utf-8")), default_model=args.default_model,
+                                          nvidia_tester=args.nvidia_tester)
         if args.archive:
             archive = package.parent / (package.name + ".zip")
             if archive.exists():

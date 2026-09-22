@@ -270,7 +270,12 @@ def install_model(model_dir: Path | str = DEFAULT_MODEL_DIR, *, cancel_event=Non
 class CpuExpressionClassifier:
     """One local ONNX encoder; only explicit installation has network access."""
 
-    def __init__(self, model_dir: Path | str = DEFAULT_MODEL_DIR):
+    def __init__(self, model_dir: Path | str = DEFAULT_MODEL_DIR, *, device=None):
+        from aifren.runtime.config import configured_inference_device
+        self.device = device or configured_inference_device() or "cpu"
+        if self.device not in {"cpu", "cuda"}:
+            raise ValueError("Unsupported expression device")
+        self._cuda_model = None
         self.model_dir = Path(model_dir)
         self._session = None
         self._tokenizer = None
@@ -279,21 +284,24 @@ class CpuExpressionClassifier:
 
     def status(self) -> dict:
         detail = {
-            "not_loaded": "Optional CPU expression model is not loaded.",
-            "loading": "Loading the optional CPU expression model.",
-            "ready": "Ready on CPU",
+            "not_loaded": "Optional local expression model is not loaded.",
+            "loading": "Loading the optional local expression model.",
+            "ready": "Ready on " + self.device.upper(),
             "model_missing_or_invalid": "Optional expression model files are missing or invalid.",
-            "dependency_unavailable": "Optional CPU expression dependencies are unavailable.",
-            "model_load_failed": "Optional CPU expression model could not be loaded.",
-        }.get(self._state, "Optional CPU expressions are unavailable.")
+            "dependency_unavailable": "Optional local expression dependencies are unavailable.",
+            "model_load_failed": "Optional local expression model could not be loaded.",
+        }.get(self._state, "Optional local expressions are unavailable.")
         return {"state": self._state, "ready": self._state == "ready", "detail": detail,
                 "model": MODEL_ID, "revision": MODEL_REVISION,
-                "device": "cpu", "threads": 1, "load_ms": round(self.load_ms, 3),
-                "model_bytes": MODEL_FILES["model_quantized.onnx"][0]}
+                "device": self.device, "threads": 1, "load_ms": round(self.load_ms, 3),
+                "model_bytes": (MODEL_SOURCE_FILES["model.safetensors"][0] if self.device == "cuda"
+                                else MODEL_FILES["model_quantized.onnx"][0])}
 
     def load(self) -> bool:
-        if self._session is not None:
+        if self._session is not None or self._cuda_model is not None:
             return True
+        if self.device == "cuda":
+            return self._load_cuda()
         self._state = "loading"
         start = time.monotonic()
         if not all(_file_valid(self.model_dir / name, expected) for name, expected in MODEL_FILES.items()):
@@ -328,11 +336,49 @@ class CpuExpressionClassifier:
         finally:
             self.load_ms = (time.monotonic() - start) * 1000
 
+    def _load_cuda(self) -> bool:
+        # The int8 ONNX graph has CPU-only kernels. Use the same pinned original
+        # weights in FP32 on CUDA; never silently partition neural work to CPU.
+        self._state = "loading"
+        start = time.monotonic()
+        required = {k: v for k, v in MODEL_FILES.items() if k != "model_quantized.onnx"}
+        required.update(MODEL_SOURCE_FILES)
+        if not all(_file_valid(self.model_dir / name, value) for name, value in required.items()):
+            self._state = "model_missing_or_invalid"
+            return False
+        try:
+            import torch
+            from transformers import AutoModelForSequenceClassification
+            from tokenizers import Tokenizer
+            from aifren.runtime.config import require_torch_device
+            require_torch_device(torch, "cuda")
+            model = AutoModelForSequenceClassification.from_pretrained(
+                self.model_dir, local_files_only=True, trust_remote_code=False,
+                use_safetensors=True, attn_implementation="eager").float().to("cuda").eval()
+            if tuple(model.config.id2label[i] for i in range(len(LABELS))) != LABELS:
+                raise ValueError("Unexpected expression labels")
+            if any(p.device.type != "cuda" for p in model.parameters()):
+                raise ValueError("Expression weights did not move to CUDA")
+            tokenizer = Tokenizer.from_file(str(self.model_dir / "tokenizer.json"))
+            tokenizer.no_padding()
+            tokenizer.no_truncation()
+            self._cuda_model, self._tokenizer = model, tokenizer
+            self._state = "ready"
+            return True
+        except (ImportError, ModuleNotFoundError):
+            self._state = "dependency_unavailable"
+            return False
+        except Exception:
+            self._state = "model_load_failed"
+            return False
+        finally:
+            self.load_ms = (time.monotonic() - start) * 1000
+
     def classify(self, dialogue: str) -> ExpressionResult:
         projected = project_expression_input(dialogue)
         if projected.reason != "ready":
             return ExpressionResult(reason=projected.reason)
-        if self._session is None or self._tokenizer is None:
+        if (self._session is None and self._cuda_model is None) or self._tokenizer is None:
             return ExpressionResult(reason="not_ready")
         start = time.monotonic()
         token_count = 0
@@ -343,10 +389,18 @@ class CpuExpressionClassifier:
             if token_count > MAX_INPUT_TOKENS:
                 return ExpressionResult(reason="token_bound", input_characters=len(projected.text),
                                         input_tokens=token_count)
-            values = self._session.run(None, {
-                "input_ids": np.array([tokens.ids], dtype=np.int64),
-                "attention_mask": np.array([tokens.attention_mask], dtype=np.int64),
-            })[0]
+            inputs = {"input_ids": np.array([tokens.ids], dtype=np.int64),
+                      "attention_mask": np.array([tokens.attention_mask], dtype=np.int64)}
+            if self.device == "cuda":
+                import torch
+                with torch.inference_mode():
+                    result = self._cuda_model(**{k: torch.as_tensor(v, device="cuda")
+                                                for k, v in inputs.items()}).logits
+                    if result.device.type != "cuda":
+                        raise RuntimeError("Expression result did not execute on CUDA")
+                    values = result.cpu().numpy()
+            else:
+                values = self._session.run(None, inputs)[0]
             if values.shape != (1, len(LABELS)) or not np.all(np.isfinite(values)):
                 return ExpressionResult(reason="invalid_logits", input_characters=len(projected.text),
                                         input_tokens=token_count)
@@ -392,7 +446,7 @@ class AutomaticExpressionWorker:
     def status_text(self) -> str:
         status = self.status()
         prefix = "" if status["enabled"] else "Off. "
-        return prefix + str(status.get("detail", "Optional CPU expressions."))
+        return prefix + str(status.get("detail", "Optional local expressions."))
 
     def set_enabled(self, enabled: bool) -> None:
         if not isinstance(enabled, bool):

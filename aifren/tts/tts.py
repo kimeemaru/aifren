@@ -1065,6 +1065,10 @@ class KokoroTextToSpeech(ContinuousPlaybackTTS):
         self.speed = float(speed)
         if not self.voice or self.speed <= 0:
             raise ValueError("Kokoro voice must be non-empty and speed must be positive.")
+        from aifren.runtime.config import configured_inference_device, require_torch_device
+        device = configured_inference_device() or device
+        self._allow_cpu_fallback = str(device).lower() == "auto"
+        require_torch_device(torch, device)
         from aifren.tts.device_planning import plan_kokoro_device
         device_plan = plan_kokoro_device(device, torch_module=torch)
         self.device = device_plan.device
@@ -1080,15 +1084,34 @@ class KokoroTextToSpeech(ContinuousPlaybackTTS):
         config_path, model_path, self.voice_path = require_local_assets(KOKORO_MODEL_DIR, self.voice)
         model = KModel(repo_id=REPOSITORY_ID, config=str(config_path), model=str(model_path))
         model = model.to(self.device).eval()
+        pipeline_options = {}
+        pronunciation = None
+        if os.environ.get("AIFREN_ENGLISH_G2P") == "flite":
+            from aifren.tts.flite_lts import FliteEnglishFallback
+            from aifren.runtime.runtime_layout import resource_path
+            import spacy
+            if self.device == "cuda":
+                spacy.require_gpu()
+            else:
+                spacy.require_cpu()
+            pronunciation = FliteEnglishFallback(
+                resource_path("models/english-lts/cmu_lts.json"),
+                british=self.voice.startswith("b"))
+            pipeline_options["en_fallback"] = pronunciation
         self.pipeline = KPipeline(
-            lang_code=self.voice[:1], repo_id=REPOSITORY_ID, model=model, device=self.device
+            lang_code=self.voice[:1], repo_id=REPOSITORY_ID, model=model, device=self.device,
+            **pipeline_options
         )
+        if pronunciation is not None:
+            pronunciation.lexicon = self.pipeline.g2p.lexicon
         self._initialize_playback_state()
         self._initialize_continuous_state()
         print("Kokoro TTS loaded.")
 
     def fallback_to_cpu_after_resource_failure(self) -> bool:
         """Move the loaded model to CPU after repeated CUDA resource pressure."""
+        if not getattr(self, "_allow_cpu_fallback", True):
+            return False
         with self._kokoro_synthesis_lock:
             if str(self.device).casefold() == "cpu":
                 return False

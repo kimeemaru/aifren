@@ -126,6 +126,7 @@ aifren/tts/device_planning.py
 aifren/tts/kokoro_assets.py
 aifren/tts/streaming.py
 aifren/tts/tts.py
+aifren/tts/flite_lts.py
 aifren/tts/ui_sound.py
 aifren/voice/__init__.py
 aifren/voice/ptt.py

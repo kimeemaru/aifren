@@ -128,3 +128,11 @@ are excluded from Git; the local candidate includes a separately inventoried gra
 and tokenizer. Preserve model/card and runtime dependency notices for distribution. Existing
 public binary resources are unchanged in this catch-up; no new avatar, motion pack,
 font, background or recording is admitted.
+
+## Stock NVIDIA tester delta
+
+The Windows stock profile replaces the optional GPL pronunciation fallback,
+excludes the unused compressed-media codecs, and uses pinned CUDA runtimes.
+See [the profile and preparation boundary](WINDOWS_TESTER.md). Prior CPU candidate
+clearance does not imply this changed subset is cleared; final component-specific
+notices/source materials and file inventory accompany each tested artifact.

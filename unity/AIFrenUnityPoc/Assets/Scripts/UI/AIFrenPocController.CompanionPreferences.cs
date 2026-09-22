@@ -47,7 +47,7 @@ namespace AIFren.UnityPoc.UI
         private void AddAutomaticExpressionControls(Transform parent, ref float y)
         {
             AddSettingsHeading(parent, "AUTOMATIC EXPRESSIONS", ref y);
-            automaticExpressionToggle = CreateToggle(parent, "Automatic expressions (local CPU)", false);
+            automaticExpressionToggle = CreateToggle(parent, "Automatic expressions (local)", false);
             automaticExpressionToggle.name = "Automatic Expressions";
             PlaceTop(automaticExpressionToggle.GetComponent<RectTransform>(), y, 48f); y -= 56f;
             automaticExpressionToggle.onValueChanged.AddListener(_ => facePreferenceDirty = true);
@@ -119,7 +119,7 @@ namespace AIFren.UnityPoc.UI
             if (automaticExpressionSave != null) automaticExpressionSave.interactable = ready;
             if (automaticExpressionHint != null)
                 automaticExpressionHint.text = "Status: " + automaticExpressionStatus.TrimEnd('.') +
-                    ". CPU only; about 128 MB on disk and 240 MB RAM. Choices are tentative; uncertainty keeps the face. Manual and explicit cues take priority.";
+                    ". The active device is reported above. Choices are tentative; uncertainty makes no new request. Manual and explicit cues take priority.";
         }
 
         private async void SaveCompanionPreference(CompanionPreference kind)

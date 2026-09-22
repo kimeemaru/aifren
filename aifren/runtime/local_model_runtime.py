@@ -452,6 +452,9 @@ class LocalModelRuntime:
             return False
 
     def _gpu_compute(self) -> str:
+        from aifren.runtime.config import configured_inference_device
+        if configured_inference_device() == "cpu":
+            return "CPU"
         try:
             return "GPU offload requested" if self._gpu_offload_probe() else "CPU"
         except Exception:
@@ -492,7 +495,11 @@ class LocalModelRuntime:
                     with self._lock:
                         if process is not self._process:
                             continue
-                        if "offload" in normalized and "gpu" in normalized and (
+                        from aifren.runtime.config import configured_inference_device
+                        complete = re.search(r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers to gpu", normalized)
+                        confirmed = (bool(complete and int(complete[1]) > 0 and complete[1] == complete[2])
+                                     if configured_inference_device() == "cuda" else True)
+                        if confirmed and "offload" in normalized and "gpu" in normalized and (
                             "offloaded" in normalized or "offloading" in normalized
                         ):
                             self._gpu_offload_confirmed = True
@@ -692,11 +699,16 @@ class LocalModelRuntime:
         model_path = self.resolve_installed(selected_model)
         address = self._local_server_address(endpoint)
         compute = self._gpu_compute() if model_path is not None and address is not None else "unknown"
+        from aifren.runtime.config import configured_inference_device
+        require_gpu = configured_inference_device() == "cuda"
         with self._lock:
             if not self._owns_operation(operation):
                 return self._superseded()
             if model_path is None or address is None:
                 self._set_error("selected local model is missing" if model_path is None else "managed local models require a loopback HTTP endpoint")
+                return self.snapshot(selected_model=selected_model)
+            if require_gpu and compute != "GPU offload requested":
+                self._set_error("The NVIDIA chat runtime is unavailable. Check the bundled CUDA runtime and supported driver; CPU fallback is disabled.")
                 return self.snapshot(selected_model=selected_model)
             host, port = address
             self._gpu_offload_confirmed = False
@@ -795,6 +807,10 @@ class LocalModelRuntime:
                 if selected_model not in models:
                     retired = self._detach_owned_locked()
                     self._set_error("managed server did not advertise the selected model")
+                    break
+                if require_gpu and not self._gpu_offload_confirmed:
+                    retired = self._detach_owned_locked()
+                    self._set_error("Full NVIDIA model-layer offload was not confirmed; inference was stopped without CPU fallback.")
                     break
                 self._status.state = "ready"
                 self._status.ownership = "managed"

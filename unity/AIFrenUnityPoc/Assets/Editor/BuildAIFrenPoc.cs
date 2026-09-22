@@ -21,6 +21,13 @@ namespace AIFren.UnityPoc.Editor
             BuildStandalone(BuildTarget.StandaloneWindows64, "Windows", "AIFrenPoc.exe");
         }
 
+        /// <summary>Tester build with the existing bounded, local flight recorder.</summary>
+        public static void BuildWindowsDevelopment()
+        {
+            BuildStandalone(BuildTarget.StandaloneWindows64, "Windows", "AIFrenPoc.exe",
+                BuildOptions.Development);
+        }
+
         public static void BuildLinux()
         {
             BuildStandalone(BuildTarget.StandaloneLinux64, "Linux", "AIFrenPoc.x86_64");

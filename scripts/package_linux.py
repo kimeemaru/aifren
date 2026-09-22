@@ -14,12 +14,14 @@ SOURCE_MANIFEST = Path(__file__).with_name("package_runtime_files.txt")
 FORBIDDEN = {"characters", "logs", "cache", "caches", "seed_data",
              "conversation.json", "conversation_summary.json", "memories.json",
              "config_secret.py", "local_settings.py", "config_private.py"}
-# These two upstream Windows wheel dependencies must retain their loader-relative
-# location. This is not permission to copy arbitrary hidden directories; normal
+# These reviewed Windows wheel resources retain their loader-relative location.
+# This is not permission to copy arbitrary hidden directories; normal
 # per-file digest, ownership and symlink checks still apply.
 REVIEWED_HIDDEN_NATIVE_INPUTS = frozenset({
     "runtime/python/Lib/site-packages/sklearn/.libs/msvcp140.dll",
     "runtime/python/Lib/site-packages/sklearn/.libs/vcomp140.dll",
+    "runtime/python/Lib/site-packages/cupy/.data/_depends.json",
+    "runtime/python/Lib/site-packages/cupy/.data/_wheel.json",
 })
 
 
@@ -94,7 +96,7 @@ def write_clean_seed(app: Path, *, default_model="") -> None:
         "You are a friendly AI companion.\n", encoding="utf-8")
 
 
-def compose_package(source: Path, staging: Path, output: Path, inputs: list[dict], *, platform="linux-x64", default_model="") -> Path:
+def compose_package(source: Path, staging: Path, output: Path, inputs: list[dict], *, platform="linux-x64", default_model="", nvidia_tester=False) -> Path:
     """Copy exact approved runtime/player/model files, never a live tree.
 
     `inputs` is a separately reviewed list of {path, sha256}. Paths are under a
@@ -103,6 +105,8 @@ def compose_package(source: Path, staging: Path, output: Path, inputs: list[dict
     """
     if platform not in {"linux-x64", "windows-x64"}:
         raise ValueError("unsupported_package_platform")
+    if nvidia_tester and platform != "windows-x64":
+        raise ValueError("tester_profile_requires_windows")
     player_files = ({"AIFrenPoc.x86_64", "UnityPlayer.so", "UnityCrashHandler64"} if platform == "linux-x64" else
                     {"AIFrenPoc.exe", "UnityPlayer.dll", "UnityCrashHandler64.exe"})
     if output.exists() or output.is_symlink() or staging.is_symlink():
@@ -154,10 +158,12 @@ exec "$bundle_root/runtime/python/bin/python" -I "$bundle_root/runtime/app/scrip
         launcher.chmod(0o755)
     else:
         (output / "Launch AIFren.cmd").write_text(
-            '@echo off\r\n"%~dp0runtime\\python\\python.exe" -I "%~dp0runtime\\app\\scripts\\launch_friend.py" --package-root "%~dp0." %*\r\n', encoding="utf-8")
+            '@echo off\r\n"%~dp0runtime\\python\\python.exe" -I "%~dp0runtime\\app\\scripts\\launch_friend.py" --package-root "%~dp0." '
+            + ('--portable ' if nvidia_tester else '') + '%*\r\nif errorlevel 1 pause\r\n', encoding="utf-8")
     (output / "package.json").write_text(json.dumps({
         "format_version": 2, "platform": platform, "resource_root": "runtime/app",
         "default_model": default_model,
+        "runtime_profile": "nvidia-stock-v1" if nvidia_tester else "legacy-candidate",
         "writable_data": "explicit --portable uses UserData; otherwise per-user application data",
         "inputs": inputs,
     }, indent=2) + "\n", encoding="utf-8")

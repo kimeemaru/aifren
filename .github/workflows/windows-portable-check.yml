@@ -24,7 +24,7 @@ jobs:
         run: python -m unittest discover -s tests -p test_portable_file_lock.py -v
   embedded-backend:
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -38,7 +38,7 @@ jobs:
           Invoke-WebRequest 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip' -OutFile "$root/python.zip"
           if ((Get-FileHash "$root/python.zip" -Algorithm SHA256).Hash.ToLower() -ne '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3') { throw 'Interpreter digest mismatch' }
           Expand-Archive "$root/python.zip" "$root/runtime/python"
-          python -m pip install --no-deps --target "$root/runtime/python/Lib/site-packages" -r scripts/windows_runtime_requirements.txt
+          python -m pip install --no-cache-dir --no-deps --target "$root/runtime/python/Lib/site-packages" -r scripts/windows_runtime_requirements.txt
           if ($LASTEXITCODE) { throw 'Windows dependency staging failed' }
           Invoke-WebRequest 'https://api.anaconda.org/download/conda-forge/hnswlib/0.8.0/win-64/hnswlib-0.8.0-py312h9b46583_2.conda' -OutFile "$root/hnswlib.zip"
           if ((Get-FileHash "$root/hnswlib.zip" -Algorithm SHA256).Hash.ToLower() -ne '3a4510cbe62013478b171496a7bc362abf629b04a6db8ffa8a502607f3ef1e47') { throw 'Index runtime digest mismatch' }
@@ -57,46 +57,23 @@ jobs:
           "python312.zip`n.`nLib/site-packages`n../app`nimport site" | Set-Content "$root/runtime/python/python312._pth" -Encoding utf8NoBOM
           python -c "import sys; from pathlib import Path; sys.path.insert(0,'scripts'); from package_linux import copy_application; copy_application(Path.cwd(),Path(sys.argv[1]))" "$root/runtime/app"
           "PORTABLE_TEST_ROOT=$root" >> $env:GITHUB_ENV
-      - name: Native packaged imports and the same synthetic amber service fixture
+      - name: Apply reviewed stock runtime patches and pronunciation data
         shell: pwsh
-        env:
-          HF_HUB_OFFLINE: '1'
-          TRANSFORMERS_OFFLINE: '1'
-          PYNPUT_BACKEND: dummy
         run: |
-          @'
-          import importlib, os, pathlib, sys, tempfile, unittest
-          root = pathlib.Path(sys.argv[1]); source = pathlib.Path(sys.argv[2])
-          os.environ['AIFREN_DATA_ROOT'] = str(root/'synthetic-data')
-          os.environ['AIFREN_RESOURCE_ROOT'] = str(root/'runtime/app')
-          # Match backend_command: prepare before Kokoro imports Misaki and
-          # captures the data path, not after those modules are cached.
-          from scripts.launch_friend import prepare_packaged_phonemizer
-          prepare_packaged_phonemizer()
-          for name in ('numpy','hnswlib','torch','llama_cpp','kokoro','faster_whisper','onnxruntime','sounddevice','pynput','aifren.assistant_service'):
-              module = importlib.import_module(name)
-              assert pathlib.Path(module.__file__).is_relative_to(root), name
-              print('Bundled import passed:', name)
-          # Exercise the actual bundled native phonemizer, not merely Kokoro's
-          # Python import. No voice/model download, recording or device input.
-          import misaki.espeak
-          from phonemizer.backend import EspeakBackend
-          phonemes = EspeakBackend('en-us', preserve_punctuation=True).phonemize(['Amber is a color.'], strip=True)
-          assert len(phonemes) == 1 and phonemes[0].strip()
-          print('Bundled native phonemization passed')
-          import onnxruntime, sounddevice, av
-          assert 'CPUExecutionProvider' in onnxruntime.get_available_providers()
-          assert isinstance(sounddevice.query_hostapis(), tuple)
-          assert av.library_versions
-          print('ONNX CPU, audio host discovery and codec runtime passed (no playback claim)')
-          # aifren is already bound to the staged tree; public tests are fixtures,
-          # not a fallback implementation or bundled application dependency.
-          sys.path[:0] = [str(source/'tests'),str(source)]
-          import test_literal_preference_recall as regression
-          suite = unittest.defaultTestLoader.loadTestsFromModule(regression)
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
-          assert all(pathlib.Path(m.__file__).is_relative_to(root) for n,m in sys.modules.items() if n.startswith('aifren.') and getattr(m,'__file__',None))
-          raise SystemExit(0 if result.wasSuccessful() else 1)
-          '@ | Set-Content "$env:PORTABLE_TEST_ROOT/check.py" -Encoding utf8NoBOM
+          $root = $env:PORTABLE_TEST_ROOT
+          python scripts/prepare_stock_runtime.py --site "$root/runtime/python/Lib/site-packages" --materials "$root/ThirdPartyNotices/runtime-patches"
+          if ($LASTEXITCODE) { throw 'Reviewed runtime patch failed' }
+          $lts = Join-Path $env:RUNNER_TEMP 'lts-source'
+          New-Item -ItemType Directory -Force $lts | Out-Null
+          foreach ($name in @('cmu_lts_model.c','cmu_lts_model.h','cmu_lts_rules.c')) {
+            Invoke-WebRequest "https://raw.githubusercontent.com/festvox/flite/6c9f20dc915b17f5619340069889db0aa007fcdc/lang/cmulex/$name" -OutFile "$lts/$name"
+          }
+          New-Item -ItemType Directory -Force "$root/runtime/app/models/english-lts" | Out-Null
+          python scripts/prepare_english_lts.py --sources $lts --output "$root/runtime/app/models/english-lts/cmu_lts.json"
+          if ($LASTEXITCODE) { throw 'Pronunciation identity mismatch' }
+      - name: Native GPU-build imports and synthetic service checks (no GPU host)
+        shell: pwsh
+        run: |
+          Copy-Item scripts/check_windows_stock_runtime.py "$env:PORTABLE_TEST_ROOT/check.py"
           & "$env:PORTABLE_TEST_ROOT/runtime/python/python.exe" -I "$env:PORTABLE_TEST_ROOT/check.py" "$env:PORTABLE_TEST_ROOT" "$env:GITHUB_WORKSPACE"
-          if ($LASTEXITCODE) { throw 'Packaged native backend checks failed' }
+          if ($LASTEXITCODE) { throw 'Packaged native checks failed' }

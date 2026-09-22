@@ -2,6 +2,30 @@ import os
 
 from aifren.runtime.runtime_layout import resource_path
 
+
+def configured_inference_device():
+    """Explicit deployment choice, independent of model and user data settings.
+
+    None preserves an existing installation's component policy. Portable NVIDIA
+    builds select cuda and never negotiate down to CPU.
+    """
+    value = os.environ.get("AIFREN_INFERENCE_DEVICE", "").strip().lower()
+    if value not in {"", "cuda", "cpu"}:
+        raise ValueError("Inference device must be cuda or explicit cpu compatibility mode.")
+    return value or None
+
+
+class InferenceDeviceUnavailable(RuntimeError):
+    """Bounded resource failure; character management remains accessible."""
+
+
+def require_torch_device(torch, device):
+    if device == "cuda" and not torch.cuda.is_available():
+        raise InferenceDeviceUnavailable(
+            "NVIDIA CUDA inference is unavailable. This build needs a supported NVIDIA GPU "
+            "and driver. Your characters are kept; settings and character management remain available."
+        )
+
 CHARACTER_DIR = "characters/default"
 
 # Provider/model selection is user-owned local configuration. These defaults

@@ -96,8 +96,11 @@ class SpeechToText:
             raise FileNotFoundError("Local STT model is unavailable.")
 
         self._model_lock = threading.Lock()
-        self._device = "cuda"
-        self._compute_type = "float16"
+        from aifren.runtime.config import configured_inference_device
+        requested = configured_inference_device()
+        self._allow_cpu_fallback = requested is None
+        self._device = requested or "cuda"
+        self._compute_type = "int8" if self._device == "cpu" else "float16"
         self.model = self._create_model(self._device, self._compute_type)
 
         print(
@@ -128,6 +131,19 @@ class SpeechToText:
 
     @staticmethod
     def _transcribe_once(model, audio_file):
+        if os.environ.get("AIFREN_STT_PCM_ONLY") == "1":
+            # The application's recorder owns 16 kHz mono PCM16 WAV. Pass its
+            # samples directly; the tester bundle needs no video/codec runtime.
+            import wave
+            import numpy as np
+            with wave.open(str(audio_file), "rb") as audio:
+                if (audio.getnchannels(), audio.getsampwidth(), audio.getframerate(),
+                        audio.getcomptype()) != (1, 2, 16000, "NONE"):
+                    raise ValueError("Speech input must be 16 kHz mono PCM16 WAV.")
+                if audio.getnframes() > 16000 * 60:
+                    raise ValueError("Speech input exceeds the supported capture duration.")
+                audio_file = np.frombuffer(audio.readframes(audio.getnframes()),
+                                           dtype="<i2").astype(np.float32) / 32768.0
         segments, _info = model.transcribe(
             audio_file,
             language="en",
@@ -203,6 +219,8 @@ class SpeechToText:
         try:
             return self._transcribe_once(model, audio_file)
         except Exception as error:
+            if not getattr(self, "_allow_cpu_fallback", True):
+                raise
             reason = self._cuda_fallback_reason(error) if device == "cuda" else None
             if reason is None:
                 raise

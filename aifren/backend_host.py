@@ -1400,6 +1400,7 @@ class AIFrenWebSocketHost:
     def _create_service_or_management(self):
         from aifren.character.character_unavailable import CharacterUnavailableService
         from aifren.conversation.conversation import ConversationPersistenceError
+        from aifren.runtime.config import InferenceDeviceUnavailable
         selected=self._registry().active_or_none()
         if selected is None:
             self._status={"state":"character_required","message":"Create a character in Settings > Character."}
@@ -1407,6 +1408,9 @@ class AIFrenWebSocketHost:
         try:
             self._registry().assert_storage_ready(selected.character_id)
             return self._service_factory()
+        except InferenceDeviceUnavailable as error:
+            self._status={"state":"runtime_unavailable","message":str(error)}
+            return CharacterUnavailableService(selected,str(error))
         except (CharacterStorageError, ConversationPersistenceError) as error:
             self._status={"state":"storage_unavailable","message":str(error)}
             return CharacterUnavailableService(selected,str(error))

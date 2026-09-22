@@ -32,10 +32,14 @@ class EmbeddingModel:
                 "inside the models directory."
             )
 
+        from aifren.runtime.config import configured_inference_device, require_torch_device
+        import torch
+        device = configured_inference_device()
+        require_torch_device(torch, device)
         self.model = SentenceTransformer(
-            MODEL_DIR,
-            local_files_only=True
-        )
+            MODEL_DIR, local_files_only=True, **({"device": device} if device else {}))
+        if device and self.model.device.type != device:
+            raise RuntimeError("Embedding model did not load on the requested inference device.")
 
         print(
             "Local embedding model loaded."

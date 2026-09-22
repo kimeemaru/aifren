@@ -124,6 +124,11 @@ def initialize(*, prepare_v1_memory=None):
         "Initializing AI Companion..."
     )
 
+    from aifren.runtime.config import configured_inference_device, require_torch_device
+    if configured_inference_device() == "cuda":
+        import torch
+        require_torch_device(torch, "cuda")
+
     llm = create_llm()
 
     registry = CharacterRegistry(".")

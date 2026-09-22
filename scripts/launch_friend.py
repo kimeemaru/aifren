@@ -30,6 +30,17 @@ from aifren.runtime.runtime_layout import absolute_path, packaged_user_data_root
 READY_TIMEOUT_SECONDS = 60.0
 OWNERSHIP_DESCRIPTOR = "backend-owner.json"
 _phonemizer_data = None
+_native_dll_directories = []
+
+
+def prepare_packaged_runtime():
+    """Retain Windows DLL search handles before importing neural providers."""
+    if sys.platform == "win32" and not _native_dll_directories:
+        site = APPLICATION_ROOT.parents[1] / "runtime/python/Lib/site-packages"
+        for directory in (site / "torch/lib", site / "nvidia/cuda_runtime/bin"):
+            if directory.is_dir():
+                _native_dll_directories.append(os.add_dll_directory(str(directory)))
+    prepare_packaged_phonemizer()
 
 
 def _native_phoneme_path(path):
@@ -59,6 +70,8 @@ def prepare_packaged_phonemizer():
     The installed application and its saved paths remain in place.
     """
     global _phonemizer_data
+    if os.environ.get("AIFREN_ENGLISH_G2P") == "flite":
+        return None  # The stock tester contains no eSpeak/phonemizer runtime.
     if _phonemizer_data is not None:
         return _phonemizer_data
     import espeakng_loader
@@ -116,7 +129,7 @@ def package_environment(layout, data_root=None):
     forbidden = {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "HF_HOME", "HF_TOKEN",
                  "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE",
                  "HF_HUB_CACHE", "HF_ASSETS_CACHE", "HF_TOKEN_PATH", "HF_XET_CACHE",
-                 "TORCH_HOME", "OPENAI_API_KEY", "GOOGLE_API_KEY"}
+                 "TORCH_HOME", "OPENAI_API_KEY", "GOOGLE_API_KEY", "SD_ENABLE_ASIO"}
     forbidden.update({"LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "LLAMA_CPP_LIB_PATH"})
     environment = {key: value for key, value in os.environ.items()
                    if key not in forbidden and not key.startswith("AIFREN_")}
@@ -125,6 +138,18 @@ def package_environment(layout, data_root=None):
                        HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                        HF_HUB_DISABLE_IMPLICIT_TOKEN="1",
                        AIFREN_KOKORO_DEVICE="cpu")
+    manifest = layout.package_root / "package.json"
+    profile = json.loads(manifest.read_text(encoding="utf-8")).get("runtime_profile") if manifest.is_file() else None
+    if profile == "nvidia-stock-v1":
+        environment.update(AIFREN_INFERENCE_DEVICE="cuda", AIFREN_KOKORO_DEVICE="cuda",
+                           AIFREN_ENGLISH_G2P="flite", AIFREN_STT_PCM_ONLY="1",
+                           AIFREN_TTS_PROVIDER="kokoro")
+        site = layout.package_root / "runtime/python/Lib/site-packages"
+        # Exact bundled native search locations; no development CUDA toolkit.
+        environment["CUDA_PATH"] = str(site / "nvidia/cuda_runtime")
+        environment["PATH"] = os.pathsep.join([str(site / "torch/lib"),
+            str(site / "nvidia/cuda_runtime/bin"), str(site / "nvidia/cublas/bin"),
+            str(site / "nvidia/cudnn/bin"), environment.get("PATH", "")])
     if sys.platform.startswith("linux"):
         runtime = layout.package_root / "runtime/python"
         libraries = [runtime / "lib"]
@@ -137,6 +162,7 @@ def package_environment(layout, data_root=None):
         environment.update(AIFREN_DATA_ROOT=str(data_root),
                            HF_HOME=str(data_root / "model-cache"),
                            TORCH_HOME=str(data_root / "model-cache"))
+        environment["CUPY_CACHE_DIR"] = str(data_root / "compute-cache")
     return environment
 
 
@@ -191,7 +217,7 @@ def backend_command(
         str(python),
         "-I",
         "-c",
-        "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); from scripts.launch_friend import prepare_packaged_phonemizer; prepare_packaged_phonemizer(); runpy.run_module('aifren.backend_host',run_name='__main__')",
+        "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); from scripts.launch_friend import prepare_packaged_runtime; prepare_packaged_runtime(); runpy.run_module('aifren.backend_host',run_name='__main__')",
         str(layout.resource_root),
         "--resource-root", str(layout.resource_root),
         "--data-root", str(data_root),
@@ -477,6 +503,7 @@ def launch_friend(
         raise RuntimeError("Package preferences and QA isolation are owned by the launcher.")
     python = absolute_path(sys.executable)
     with WindowsLaunchMutex(data):
+        print("Starting AIFren and its local inference runtime. Please wait…", flush=True)
         authority = ensure_backend(python, layout, data)
         try:
             player = subprocess.Popen(
