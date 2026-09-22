@@ -69,7 +69,7 @@ The font keeps its own license; generated TMP resources do not change it.
 No newly supplied avatar, external VRMA, motion-trial file or animation pack is
 included in this source sync.
 
-## Optional CPU expression classifier
+## Optional local expression classifier
 
 The optional automatic-expression component uses
 [Cardiff NLP twitter-roberta-base-emotion-latest, pinned revision](https://huggingface.co/cardiffnlp/twitter-roberta-base-emotion-latest/tree/415620c4fbc8bd82b82b9fd46642fcec6519d537).
@@ -83,7 +83,10 @@ verifies SHA-256 identities. `aifren/dialogue/expression_model_export.py` perfor
 local CPU conversion using built-in Transformers, ONNX export and ONNX Runtime
 INT8 quantization. The source safetensors are 498,640,508 bytes. The derived graph
 is 125,860,185 bytes; graph/tokenizer/configuration total 127,970,095 bytes.
-None of these model files belong in Git. Runtime inference is offline/CPU only.
+None of these model files belong in Git. Inference is offline. The explicit NVIDIA
+tester profile uses the pinned original FP32 weights through CUDA PyTorch; the
+derived INT8 ONNX graph belongs to the CPU compatibility path. Model identity,
+confidence and expression-lifetime rules are shared by both paths.
 The tested converter uses ONNX 1.19.1 ([Apache-2.0](https://github.com/onnx/onnx/blob/v1.19.1/LICENSE));
 retain its applicable notices as well as Torch/Transformers and runtime notices.
 
