@@ -9,6 +9,9 @@ on:
       - tests/test_portable_file_lock.py
       - .github/workflows/windows-portable-check.yml
       - scripts/windows_runtime_requirements.txt
+      - scripts/check_windows_stock_runtime.py
+      - scripts/prepare_stock_runtime.py
+      - scripts/launch_friend.py
 permissions:
   contents: read
 jobs:
@@ -53,7 +56,6 @@ jobs:
           if ($LASTEXITCODE) { throw 'Native index extraction failed' }
           Pop-Location
           Copy-Item "$indexBuild/Lib/*" "$root/runtime/python/Lib" -Recurse -Force
-          Copy-Item "$root/runtime/python/Lib/site-packages/torch/lib/msvcp140*.dll" "$root/runtime/python"
           "python312.zip`n.`nLib/site-packages`n../app`nimport site" | Set-Content "$root/runtime/python/python312._pth" -Encoding utf8NoBOM
           python -c "import sys; from pathlib import Path; sys.path.insert(0,'scripts'); from package_linux import copy_application; copy_application(Path.cwd(),Path(sys.argv[1]))" "$root/runtime/app"
           "PORTABLE_TEST_ROOT=$root" >> $env:GITHUB_ENV
